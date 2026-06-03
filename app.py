@@ -10,17 +10,22 @@ from ta.trend import MACD, SMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 from datetime import datetime
 import time
-import requests
 import warnings
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="Aktie Dashboard", layout="wide", page_icon="📈")
+# curl_cffi efterligner Chrome browser → bypasser Yahoo rate limits
+try:
+    from curl_cffi import requests as curl_requests
+    def make_session():
+        return curl_requests.Session(impersonate="chrome")
+except ImportError:
+    import requests
+    def make_session():
+        s = requests.Session()
+        s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
+        return s
 
-# Custom session med User-Agent for at undgå rate limits
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-})
+st.set_page_config(page_title="Aktie Dashboard", layout="wide", page_icon="📈")
 
 st.markdown("<h1 style='background:linear-gradient(90deg,#00d4aa,#0099ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;'>📈 Pro Aktie Analyse Dashboard</h1>", unsafe_allow_html=True)
 st.caption("Valideret data · Multi-faktor scoring · Langsigtet & Kortsigtet")
@@ -30,10 +35,10 @@ if "watchlist" not in st.session_state:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_data(ticker, period="5y", max_retries=3):
-    """Henter data med retry-logik for at håndtere rate limits"""
     last_error = None
     for attempt in range(max_retries):
         try:
+            session = make_session()
             tk = yf.Ticker(ticker, session=session)
             info = tk.info
             if not info or len(info) < 5:
@@ -226,6 +231,11 @@ def recommendation(s):
 with st.sidebar:
     st.markdown("### ⚙️ Indstillinger")
     period = st.selectbox("Periode", ["1y", "2y", "5y", "10y", "max"], index=2)
+    if st.button("🔄 Ryd cache (hvis rate limited)", use_container_width=True):
+        st.cache_data.clear()
+        st.success("Cache ryddet!")
+        time.sleep(1)
+        st.rerun()
     st.markdown("---")
     st.markdown("### ⭐ Watchlist")
     for w in st.session_state.watchlist:
@@ -254,19 +264,17 @@ if go_btn or "selected_ticker" in st.session_state:
         ticker = st.session_state.selected_ticker
         del st.session_state.selected_ticker
 
-    with st.spinner(f"Henter data for {ticker}... (kan tage et øjeblik)"):
+    with st.spinner(f"Henter data for {ticker}..."):
         data = fetch_data(ticker, period=period)
 
     if data is None:
-        st.error(f"❌ Kunne ikke finde ticker '{ticker}'. Tjek symbolet.")
-        st.info("💡 **Tips til ticker-symboler:**\n- US aktier: `AAPL`, `MSFT`, `TSLA`\n- Danske aktier: `NOVO-B.CO`, `MAERSK-B.CO`\n- Europæiske: `ASML.AS`, `SAP.DE`")
+        st.error(f"❌ Kunne ikke finde ticker '{ticker}'.")
         st.stop()
 
     if isinstance(data, dict) and "error" in data:
         if data["error"] == "rate_limit":
-            st.warning("⏳ **Yahoo Finance er midlertidigt overbelastet.**")
-            st.info("Dette sker ofte på Streamlit Cloud fordi mange brugere deler IP. Prøv:\n1. **Vent 1-2 minutter** og tryk Analysér igen\n2. **Genindlæs siden** (F5)\n3. Prøv en anden ticker først (data caches i 1 time)")
-            if st.button("🔄 Prøv igen nu"):
+            st.warning("⏳ Yahoo Finance er midlertidigt overbelastet. Prøv en anden ticker eller vent et par minutter.")
+            if st.button("🔄 Prøv igen"):
                 st.cache_data.clear()
                 st.rerun()
         else:
