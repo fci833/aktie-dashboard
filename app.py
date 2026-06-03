@@ -49,13 +49,12 @@ if "last_source" not in st.session_state:
 if "current_ticker" not in st.session_state:
     st.session_state.current_ticker = ""
 
-# ============ OPTION A: FASTE ANALYSE-PERIODER ============
 ANALYSIS_PERIODS = {
-    "technical": 365,    # Tekniske indikatorer: 12 måneder
-    "targets": 180,      # Kursmål: 6 måneder (recent volatilitet)
-    "risk": 365 * 3,     # Risk metrics: 3 år (statistisk signifikant)
-    "monte_carlo": 730,  # Monte Carlo: 2 år (recent regime)
-    "week52": 252,       # 52-uger: altid 252 handelsdage
+    "technical": 365,
+    "targets": 180,
+    "risk": 365 * 3,
+    "monte_carlo": 730,
+    "week52": 252,
 }
 
 # ============ FX RATES ============
@@ -200,7 +199,6 @@ def fetch_twelve_single(symbol):
         quote = q.json()
         if quote.get("status") == "error" or "code" in quote:
             return None
-        # Hent altid max data så vi har til alle perioder
         ts = plain_requests.get(f"{base}/time_series", params={
             "symbol": symbol, "interval": "1day",
             "outputsize": 5000, "apikey": TWELVE_KEY
@@ -296,7 +294,6 @@ def fetch_finnhub(ticker):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_data(ticker):
-    """Henter altid MAX data - filter sker senere baseret på behov"""
     result = fetch_yahoo(ticker, "max")
     if result and result != "RATE_LIMIT":
         return result
@@ -318,14 +315,12 @@ def fetch_data(ticker):
     return None
 
 def filter_by_days(hist, days):
-    """Filtrerer historik til de seneste N dage"""
     if hist is None or hist.empty:
         return hist
     cutoff = pd.Timestamp.now(tz=hist.index.tz) - pd.Timedelta(days=days)
     return hist[hist.index >= cutoff]
 
 def filter_chart_period(hist, period):
-    """Filtrerer til chart-visning"""
     if hist is None or hist.empty or period == "max":
         return hist
     days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650}.get(period, 1825)
@@ -471,13 +466,51 @@ def add_indicators(hist):
     df["ATR"] = AverageTrueRange(df["High"], df["Low"], df["Close"]).average_true_range()
     return df
 
+def technical_score_at_row(df, idx):
+    """Beregn teknisk score på et HISTORISK tidspunkt - bruges til backtest"""
+    if idx < 200:
+        return None
+    score = 50
+    last = df.iloc[idx]
+    pris = last["Close"]
+    if pd.isna(pris): return None
+    if not np.isnan(last["SMA50"]) and not np.isnan(last["SMA200"]):
+        if last["SMA50"] > last["SMA200"]: score += 10
+        else: score -= 10
+    if not np.isnan(last["SMA200"]):
+        if pris > last["SMA200"]: score += 5
+        else: score -= 5
+    rsi = last["RSI"]
+    if not np.isnan(rsi):
+        if rsi < 30: score += 12
+        elif rsi < 45: score += 5
+        elif rsi < 60: score += 0
+        elif rsi < 70: score -= 5
+        else: score -= 12
+    if not np.isnan(last["MACD"]):
+        if last["MACD"] > last["MACD_signal"]: score += 8
+        else: score -= 8
+    if not np.isnan(last["STOCH_K"]):
+        if last["STOCH_K"] < 20: score += 5
+        elif last["STOCH_K"] > 80: score -= 5
+    if not np.isnan(last["ADX"]) and last["ADX"] > 25:
+        score += 3
+    if idx > 20:
+        mom = (pris/df["Close"].iloc[idx-21]-1)*100
+        if mom > 10: score += 6
+        elif mom > 0: score += 2
+        elif mom < -10: score -= 6
+    return max(0, min(100, score))
+
 def technical_score(df):
-    score, det = 50, []
+    score = technical_score_at_row(df, len(df)-1)
+    if score is None:
+        score = 50
+    # Detaljer (kun for live)
+    det = []
     last = df.iloc[-1]
     pris = last["Close"]
     def add(s, l, v):
-        nonlocal score
-        score += s
         det.append({"label": l, "value": v, "impact": s})
     if not np.isnan(last["SMA50"]) and not np.isnan(last["SMA200"]):
         if last["SMA50"] > last["SMA200"]: add(10, "✅ Golden cross", "SMA50>SMA200")
@@ -505,7 +538,7 @@ def technical_score(df):
         if mom > 10: add(6, "✅ Stærkt momentum", f"+{mom:.1f}%")
         elif mom > 0: add(2, "➕ Pos. momentum", f"+{mom:.1f}%")
         elif mom < -10: add(-6, "⚠️ Neg. momentum", f"{mom:.1f}%")
-    return max(0, min(100, score)), det
+    return score, det
 
 def calculate_price_targets(df, current_price, fair_value=None):
     last = df.iloc[-1]
@@ -577,8 +610,163 @@ def recommendation(s):
     if s >= 30: return "🔴 SÆLG", "#ef4444"
     return "🔴 STÆRKT SÆLG", "#b91c1c"
 
+def recommendation_label(s):
+    if s >= 75: return "STÆRKT KØB"
+    if s >= 60: return "KØB"
+    if s >= 45: return "HOLD"
+    if s >= 30: return "SÆLG"
+    return "STÆRKT SÆLG"
+
+# ============ BACKTEST ============
+
+def run_backtest(hist_full, holding_days=90, sample_freq=5):
+    """
+    Walk-forward backtest:
+    - Hver 'sample_freq' dage: beregn score på data UP TIL det punkt
+    - Følg afkast 'holding_days' frem
+    - Sammenlign med buy & hold
+    """
+    df = add_indicators(hist_full)
+    if len(df) < 250 + holding_days:
+        return None
+
+    results = []
+    # Start efter SMA200 har data + nok til at evaluere fremad
+    start_idx = 250
+    end_idx = len(df) - holding_days
+
+    for i in range(start_idx, end_idx, sample_freq):
+        score = technical_score_at_row(df, i)
+        if score is None:
+            continue
+        entry_price = df["Close"].iloc[i]
+        exit_price = df["Close"].iloc[i + holding_days]
+        if pd.isna(entry_price) or pd.isna(exit_price) or entry_price <= 0:
+            continue
+        forward_return = (exit_price / entry_price - 1) * 100
+        rec = recommendation_label(score)
+        results.append({
+            "date": df.index[i],
+            "score": score,
+            "recommendation": rec,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "return_pct": forward_return,
+        })
+
+    if not results:
+        return None
+
+    df_results = pd.DataFrame(results)
+
+    # Stats per kategori
+    stats = {}
+    for rec in ["STÆRKT KØB", "KØB", "HOLD", "SÆLG", "STÆRKT SÆLG"]:
+        subset = df_results[df_results["recommendation"] == rec]
+        if len(subset) > 0:
+            stats[rec] = {
+                "count": len(subset),
+                "avg_return": subset["return_pct"].mean(),
+                "median_return": subset["return_pct"].median(),
+                "win_rate": (subset["return_pct"] > 0).sum() / len(subset) * 100,
+                "best": subset["return_pct"].max(),
+                "worst": subset["return_pct"].min(),
+            }
+        else:
+            stats[rec] = None
+
+    # Buy & Hold benchmark over samme periode
+    bh_start = df["Close"].iloc[start_idx]
+    bh_end = df["Close"].iloc[end_idx]
+    bh_return = (bh_end / bh_start - 1) * 100
+
+    return {
+        "results": df_results,
+        "stats": stats,
+        "buy_hold_return": bh_return,
+        "holding_days": holding_days,
+        "n_trades": len(df_results),
+        "start_date": df.index[start_idx],
+        "end_date": df.index[end_idx],
+    }
+
+def simulate_strategy(hist_full, buy_threshold=60, sell_threshold=30, sample_freq=5):
+    """
+    Simulerer en strategi: KØB når score >= threshold, SÆLG når score <= threshold
+    Returnerer equity curve sammenlignet med buy & hold
+    """
+    df = add_indicators(hist_full)
+    if len(df) < 250:
+        return None
+
+    start_idx = 250
+    cash = 10000.0  # Start kapital
+    shares = 0
+    initial_cash = cash
+
+    equity_curve = []
+    trades = []
+    in_position = False
+
+    for i in range(start_idx, len(df), sample_freq):
+        score = technical_score_at_row(df, i)
+        if score is None:
+            continue
+        price = df["Close"].iloc[i]
+        if pd.isna(price) or price <= 0:
+            continue
+
+        # Køb signal
+        if score >= buy_threshold and not in_position:
+            shares = cash / price
+            cash = 0
+            in_position = True
+            trades.append({"date": df.index[i], "action": "KØB", "price": price, "score": score})
+        # Sælg signal
+        elif score <= sell_threshold and in_position:
+            cash = shares * price
+            shares = 0
+            in_position = False
+            trades.append({"date": df.index[i], "action": "SÆLG", "price": price, "score": score})
+
+        # Track equity
+        equity = cash + shares * price
+        equity_curve.append({"date": df.index[i], "strategy": equity, "price": price})
+
+    # Slut: sælg hvis i position
+    if in_position:
+        final_price = df["Close"].iloc[-1]
+        cash = shares * final_price
+        shares = 0
+
+    final_value = cash
+    strategy_return = (final_value / initial_cash - 1) * 100
+
+    # Buy & hold sammenligning
+    bh_start_price = df["Close"].iloc[start_idx]
+    bh_end_price = df["Close"].iloc[-1]
+    bh_shares = initial_cash / bh_start_price
+    bh_final = bh_shares * bh_end_price
+    bh_return = (bh_final / initial_cash - 1) * 100
+
+    df_eq = pd.DataFrame(equity_curve)
+    if len(df_eq) > 0:
+        df_eq["buy_hold"] = initial_cash * (df_eq["price"] / bh_start_price)
+
+    return {
+        "equity_curve": df_eq,
+        "trades": pd.DataFrame(trades),
+        "final_value": final_value,
+        "strategy_return": strategy_return,
+        "buy_hold_return": bh_return,
+        "outperformance": strategy_return - bh_return,
+        "n_trades": len(trades),
+        "initial_cash": initial_cash,
+    }
+
+# ============ HTML HELPERS ============
+
 def make_price_box(label, value, currency, color, sublabel="", show_secondary=True):
-    """HTML boks for kursniveau - INGEN INDRYKNING (Markdown problem!)"""
     if value is None or (isinstance(value, float) and np.isnan(value)):
         primary_str = "-"
         secondary_div = ""
@@ -590,7 +778,6 @@ def make_price_box(label, value, currency, color, sublabel="", show_secondary=Tr
             secondary_div = f"<div style='font-size:0.7rem;opacity:0.8;color:#00d4aa'>≈ {secondary_val:,.2f} DKK</div>"
         else:
             secondary_div = ""
-    # VIGTIGT: Ingen indrykning på linjerne!
     html = f"<div style='padding:0.8rem;border-radius:8px;background:{color}22;border:1px solid {color}'>"
     html += f"<div style='font-size:0.75rem;opacity:0.7'>{label}</div>"
     html += f"<div style='font-size:1.1rem;font-weight:700'>{primary_str}</div>"
@@ -600,7 +787,6 @@ def make_price_box(label, value, currency, color, sublabel="", show_secondary=Tr
     return html
 
 def make_range_box(label, low, high, currency, color, sublabel="", show_secondary=True):
-    """HTML boks for kurs-range (køb zone)"""
     primary_str = f"{low:,.2f} - {high:,.2f} {currency}"
     if show_secondary and currency != "DKK":
         rate = get_fx_rate(currency, "DKK")
@@ -626,11 +812,8 @@ with st.sidebar:
         st.success(f"Sidst: **{st.session_state.last_source}**")
     st.markdown("---")
     st.markdown("### ⚙️ Indstillinger")
-    period = st.selectbox(
-        "📅 Chart visningsperiode",
-        ["1y", "2y", "5y", "10y", "max"], index=2,
-        help="Påvirker KUN chart visning. Alle beregninger bruger faste optimerede tidsrammer."
-    )
+    period = st.selectbox("📅 Chart visningsperiode", ["1y", "2y", "5y", "10y", "max"], index=2,
+        help="Påvirker kun chart visning. Beregninger bruger faste perioder.")
     show_secondary = st.checkbox("💱 Vis priser i DKK også", value=True)
     if st.button("🔄 Ryd cache", use_container_width=True):
         st.cache_data.clear()
@@ -664,7 +847,6 @@ main_tab, search_tab, diag_tab = st.tabs(["📊 Analyse", "🔍 Søg ticker", "�
 
 with search_tab:
     st.subheader("🔍 Find ticker for et firma")
-    st.caption("Skriv firmanavn (fx 'novo nordisk', 'apple', 'maersk')")
     query = st.text_input("Firmanavn", value="", key="search_query", placeholder="novo nordisk")
     if query and len(query) >= 2:
         with st.spinner(f"Søger..."):
@@ -672,7 +854,6 @@ with search_tab:
         if results:
             st.success(f"Fandt {len(results)} resultater")
             st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
-            st.markdown("### 🎯 Vælg en ticker:")
             cols = st.columns(min(4, len(results)))
             for i, r in enumerate(results[:8]):
                 if cols[i % 4].button(f"📌 {r['symbol']}\n{r['name'][:25]}", key=f"sr_{i}", use_container_width=True):
@@ -728,33 +909,26 @@ with main_tab:
         else:
             st.success(f"✅ Data hentet fra: **{data['source']}**")
 
-        # Info banner om perioder
         st.markdown(
             "<div style='background:#0099ff15;padding:0.6rem 1rem;border-radius:8px;border-left:4px solid #0099ff;margin:0.5rem 0'>"
-            f"📅 <b>Chart visningsperiode:</b> {period} · "
-            "ℹ️ <b>Beregninger bruger faste tidsrammer:</b> "
-            "Tekniske=12mdr · Kursmål=6mdr · Risk=3år · Monte Carlo=2år"
+            f"📅 <b>Chart:</b> {period} · "
+            "ℹ️ <b>Beregninger:</b> Tekniske=12mdr · Kursmål=6mdr · Risk=3år · Monte Carlo=2år"
             "</div>", unsafe_allow_html=True)
 
         info = data["info"]
         hist_full = data["hist"]
-
-        # ===== OPTION A: Faste perioder for hver beregningstype =====
-        hist_chart = filter_chart_period(hist_full, period)        # Brugerens valg
-        hist_technical = filter_by_days(hist_full, ANALYSIS_PERIODS["technical"])  # 12 mdr
-        hist_targets = filter_by_days(hist_full, ANALYSIS_PERIODS["targets"])      # 6 mdr
-        hist_risk = filter_by_days(hist_full, ANALYSIS_PERIODS["risk"])            # 3 år
-        hist_mc = filter_by_days(hist_full, ANALYSIS_PERIODS["monte_carlo"])       # 2 år
+        hist_chart = filter_chart_period(hist_full, period)
+        hist_technical = filter_by_days(hist_full, ANALYSIS_PERIODS["technical"])
+        hist_targets = filter_by_days(hist_full, ANALYSIS_PERIODS["targets"])
+        hist_risk = filter_by_days(hist_full, ANALYSIS_PERIODS["risk"])
+        hist_mc = filter_by_days(hist_full, ANALYSIS_PERIODS["monte_carlo"])
 
         if len(hist_full) < 200:
-            st.warning(f"⚠️ Kun {len(hist_full)} dage total data - SMA200 og andre indikatorer kan være unøjagtige")
+            st.warning(f"⚠️ Kun {len(hist_full)} dage data - SMA200 unøjagtig")
 
-        # Indikatorer beregnes på FULD data (så SMA200 er korrekt) og bruges i chart
         df_chart = add_indicators(hist_full)
         df_chart_filtered = df_chart.loc[df_chart.index.isin(hist_chart.index)]
-        # Tekniske signaler bruger 12-mdr periode
         df_technical = add_indicators(hist_full).tail(len(hist_technical))
-        # Targets bruger 6-mdr data men med SMA200 fra fuld data
         df_targets = add_indicators(hist_full).tail(len(hist_targets))
 
         if ticker not in st.session_state.watchlist:
@@ -770,7 +944,7 @@ with main_tab:
         last_date = hist_full.index[-1].strftime("%Y-%m-%d")
 
         st.markdown(f"## {navn} ({ticker})")
-        st.caption(f"🏢 {info.get('sector','?')} · 🌍 {info.get('country','?')} · 💱 {valuta} · 📅 Total data: {first_date} → {last_date} ({len(hist_full)} dage)")
+        st.caption(f"🏢 {info.get('sector','?')} · 🌍 {info.get('country','?')} · 💱 {valuta} · 📅 {first_date} → {last_date} ({len(hist_full)} dage)")
 
         k = st.columns(6)
         k[0].metric("Pris", f"{pris:,.2f} {valuta}", f"{change_pct:+.2f}%")
@@ -787,7 +961,6 @@ with main_tab:
         k[5].metric("Beta", f"{info.get('beta'):.2f}" if info.get("beta") else "-")
 
         f_score, f_det = fundamental_score(info)
-        # Brug 12-måneders data til tekniske signaler
         t_score, t_det = technical_score(df_technical)
         overall = f_score * 0.6 + t_score * 0.4
         f_a, f_c = recommendation(f_score)
@@ -795,7 +968,6 @@ with main_tab:
         o_a, o_c = recommendation(overall)
 
         fair_default = dcf_valuation(info, 0.10, 0.10, 0.025)
-        # Brug 6-måneders data til kursmål
         targets = calculate_price_targets(df_targets, pris, fair_default)
 
         st.markdown("---")
@@ -810,7 +982,7 @@ with main_tab:
         r2.markdown(
             f"<div style='padding:1.2rem;border-radius:12px;background:{t_c}22;border:2px solid {t_c}'>"
             f"<div style='font-size:0.85rem;opacity:0.8'>⚡ KORTSIGTET</div>"
-            f"<div style='font-size:0.75rem;opacity:0.6;margin-bottom:0.5rem'>📅 1-3 måneder · 12mdr tekniske signaler</div>"
+            f"<div style='font-size:0.75rem;opacity:0.6;margin-bottom:0.5rem'>📅 1-3 måneder · Tekniske signaler</div>"
             f"<div style='font-size:1.6rem;font-weight:800;color:{t_c}'>{t_a}</div>"
             f"<div style='font-size:1.3rem;font-weight:700;margin-top:0.3rem'>{t_score:.0f}/100</div>"
             f"</div>", unsafe_allow_html=True)
@@ -822,17 +994,14 @@ with main_tab:
             f"<div style='font-size:1.3rem;font-weight:700;margin-top:0.3rem'>{overall:.0f}/100</div>"
             f"</div>", unsafe_allow_html=True)
 
-        # ===== KURSNIVEAUER =====
         st.markdown("### 💰 Anbefalede kursniveauer")
-        st.caption(f"Baseret på 6-måneders volatilitet (ATR + Bollinger Bands) + DCF fair value · {valuta}{' + DKK' if show_secondary and valuta != 'DKK' else ''}")
-
+        st.caption(f"Baseret på 6-måneders volatilitet · {valuta}{' + DKK' if show_secondary and valuta != 'DKK' else ''}")
         pt = st.columns(5)
         buy_low_pct = (targets["buy_low"]/pris-1)*100
         buy_high_pct = (targets["buy_high"]/pris-1)*100
         stop_pct = (targets["stop_loss"]/pris-1)*100
         target_short_pct = (targets["target_short"]/pris-1)*100
         target_long_pct = (targets["target_long"]/pris-1)*100
-
         pt[0].markdown(make_range_box("🟢 KØB ZONE", targets["buy_low"], targets["buy_high"], valuta, "#16a34a", f"{buy_low_pct:+.1f}% til {buy_high_pct:+.1f}%", show_secondary), unsafe_allow_html=True)
         pt[1].markdown(make_price_box("📍 AKTUEL", pris, valuta, "#0099ff", f"{change_pct:+.2f}% i dag", show_secondary), unsafe_allow_html=True)
         pt[2].markdown(make_price_box("🛑 STOP LOSS", targets["stop_loss"], valuta, "#ef4444", f"{stop_pct:+.1f}% (2x ATR)", show_secondary), unsafe_allow_html=True)
@@ -841,11 +1010,11 @@ with main_tab:
 
         if show_secondary and valuta != "DKK":
             rate = get_fx_rate(valuta, "DKK")
-            st.caption(f"📊 52-uger: Low {targets['week52_low']:.2f} {valuta} (≈{targets['week52_low']*rate:.2f} DKK) · High {targets['week52_high']:.2f} {valuta} (≈{targets['week52_high']*rate:.2f} DKK) · Daglig ATR: {targets['atr']:.2f}")
+            st.caption(f"📊 52-uger: Low {targets['week52_low']:.2f} {valuta} (≈{targets['week52_low']*rate:.2f} DKK) · High {targets['week52_high']:.2f} {valuta} (≈{targets['week52_high']*rate:.2f} DKK) · ATR: {targets['atr']:.2f}")
         else:
             st.caption(f"📊 52-uger: Low {targets['week52_low']:.2f} · High {targets['week52_high']:.2f} {valuta} · Daglig ATR: {targets['atr']:.2f}")
 
-        sub_tabs = st.tabs(["📊 Charts", "📋 Fundamentals", "🔧 Teknisk", "💎 DCF", "📉 Risiko", "🎲 Monte Carlo"])
+        sub_tabs = st.tabs(["📊 Charts", "📋 Fundamentals", "🔧 Teknisk", "💎 DCF", "📉 Risiko", "🎲 Monte Carlo", "🎯 Backtest"])
 
         with sub_tabs[0]:
             df_plot = df_chart_filtered
@@ -861,12 +1030,11 @@ with main_tab:
             fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
             fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["MACD"], name="MACD", line=dict(color="#0099ff")), 3, 1)
             fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["MACD_signal"], name="Signal", line=dict(color="orange")), 3, 1)
-            fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_dark",
-                            title=f"{navn} - Visning: {period}")
+            fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_dark", title=f"{navn} - Visning: {period}")
             st.plotly_chart(fig, use_container_width=True)
 
         with sub_tabs[1]:
-            st.caption("🏛️ Fundamentale data er TTM (Trailing Twelve Months) - opdateres hvert kvartal fra API")
+            st.caption("🏛️ Fundamentale data (TTM)")
             df_f = pd.DataFrame(f_det)
             if not df_f.empty:
                 fig_f = px.bar(df_f, x="impact", y="label", orientation="h", color="impact", color_continuous_scale="RdYlGn")
@@ -877,7 +1045,7 @@ with main_tab:
                 st.info(f"Ingen fundamentale data fra **{data['source']}**")
 
         with sub_tabs[2]:
-            st.caption("⚡ Tekniske signaler beregnet på sidste 12 måneder")
+            st.caption("⚡ Tekniske signaler (12 måneder)")
             df_t = pd.DataFrame(t_det)
             if not df_t.empty:
                 fig_t = px.bar(df_t, x="impact", y="label", orientation="h", color="impact", color_continuous_scale="RdYlGn")
@@ -891,7 +1059,6 @@ with main_tab:
             cc[3].metric("ATR", f"{last['ATR']:.2f}" if not np.isnan(last['ATR']) else "-")
 
         with sub_tabs[3]:
-            st.caption("💎 DCF baseret på seneste FCF + dine input-antagelser")
             c = st.columns(3)
             cg = c[0].slider("Vækstrate", 0.0, 0.30, 0.10, 0.01)
             cdr = c[1].slider("Diskontering", 0.05, 0.20, 0.10, 0.01)
@@ -907,10 +1074,10 @@ with main_tab:
                     rate = get_fx_rate(valuta, "DKK")
                     st.caption(f"💱 I DKK: Pris {pris*rate:.2f} → Fair value {fair*rate:.2f}")
             else:
-                st.warning("Ikke nok FCF-data til DCF (kræver Yahoo eller Finnhub)")
+                st.warning("Ikke nok FCF-data til DCF")
 
         with sub_tabs[4]:
-            st.caption("📉 Risk metrics baseret på sidste 3 års data (statistisk signifikant)")
+            st.caption("📉 Risk metrics (3 år)")
             risk = risk_metrics(hist_risk)
             c = st.columns(4)
             c[0].metric("Ann. afkast", f"{risk['ann_r']*100:.2f}%")
@@ -925,7 +1092,7 @@ with main_tab:
             st.plotly_chart(fig_dd, use_container_width=True)
 
         with sub_tabs[5]:
-            st.caption("🎲 Monte Carlo: 300 simulationer baseret på sidste 2 års volatilitet")
+            st.caption("🎲 Monte Carlo: 300 simulationer (2 års volatilitet)")
             sims, lp = monte_carlo(hist_mc)
             final = sims[:, -1]
             p5, p50, p95 = np.percentile(final, [5, 50, 95])
@@ -934,14 +1101,217 @@ with main_tab:
             c[1].metric("5% (worst)", f"{p5:.2f}", f"{(p5/lp-1)*100:+.1f}%")
             c[2].metric("Median (12m)", f"{p50:.2f}", f"{(p50/lp-1)*100:+.1f}%")
             c[3].metric("95% (best)", f"{p95:.2f}", f"{(p95/lp-1)*100:+.1f}%")
-            if show_secondary and valuta != "DKK":
-                rate = get_fx_rate(valuta, "DKK")
-                st.caption(f"💱 Median i DKK: {p50*rate:.2f} (Start: {lp*rate:.2f})")
             fig_m = go.Figure()
             for i in range(min(100, len(sims))):
                 fig_m.add_trace(go.Scatter(y=sims[i], line=dict(width=0.5, color="rgba(0,212,170,0.15)"), showlegend=False))
             fig_m.add_trace(go.Scatter(y=np.percentile(sims, 50, axis=0), name="Median", line=dict(color="#00d4aa", width=3)))
             fig_m.update_layout(template="plotly_dark", height=500, title="Monte Carlo - 252 dage frem")
             st.plotly_chart(fig_m, use_container_width=True)
+
+        # ===== BACKTEST FANEN =====
+        with sub_tabs[6]:
+            st.markdown("## 🎯 Backtest - Validerer modellens anbefalinger historisk")
+            st.caption("Walk-forward analyse: For hvert tidspunkt i fortiden beregnes scoren BASERET PÅ DATA OP TIL DET PUNKT, og vi sammenligner med hvad der faktisk skete bagefter.")
+
+            bt_col1, bt_col2, bt_col3 = st.columns(3)
+            holding_days = bt_col1.selectbox("⏱️ Holding periode", [30, 60, 90, 180, 252], index=2,
+                help="Hvor mange dage frem i tiden tjekker vi afkastet")
+            sample_freq = bt_col2.selectbox("📊 Sample frekvens", [1, 5, 10, 20], index=1,
+                help="Hver N. dag samples et data punkt (1=daglig, 5=ugentligt)")
+            buy_threshold = bt_col3.slider("🟢 KØB tærskel (score)", 50, 80, 60,
+                help="Minimum score for et KØB-signal i strategy simulationen")
+
+            if st.button("🚀 Kør backtest", type="primary"):
+                with st.spinner("Kører walk-forward backtest..."):
+                    bt = run_backtest(hist_full, holding_days=holding_days, sample_freq=sample_freq)
+                    sim = simulate_strategy(hist_full, buy_threshold=buy_threshold, sell_threshold=30, sample_freq=sample_freq)
+
+                if bt is None:
+                    st.error(f"❌ Ikke nok historisk data ({len(hist_full)} dage). Backtest kræver mindst {250 + holding_days} dage.")
+                else:
+                    # ===== Sektion 1: Anbefaling-statistik =====
+                    st.markdown("### 📊 Hit-rate per anbefaling")
+                    st.caption(f"Baseret på {bt['n_trades']} samples fra {bt['start_date'].strftime('%Y-%m-%d')} til {bt['end_date'].strftime('%Y-%m-%d')} · Holding: {bt['holding_days']} dage")
+
+                    # Stats tabel
+                    rows = []
+                    for rec_label, color_cat in [("STÆRKT KØB", "#16a34a"), ("KØB", "#22c55e"), ("HOLD", "#eab308"), ("SÆLG", "#ef4444"), ("STÆRKT SÆLG", "#b91c1c")]:
+                        s = bt["stats"].get(rec_label)
+                        if s:
+                            rows.append({
+                                "Anbefaling": rec_label,
+                                "Antal signaler": s["count"],
+                                "Hit rate": f"{s['win_rate']:.1f}%",
+                                "Gns. afkast": f"{s['avg_return']:+.2f}%",
+                                "Median": f"{s['median_return']:+.2f}%",
+                                "Bedst": f"{s['best']:+.2f}%",
+                                "Værst": f"{s['worst']:+.2f}%",
+                            })
+                        else:
+                            rows.append({
+                                "Anbefaling": rec_label,
+                                "Antal signaler": 0,
+                                "Hit rate": "-", "Gns. afkast": "-",
+                                "Median": "-", "Bedst": "-", "Værst": "-",
+                            })
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                    # Buy & hold benchmark
+                    st.markdown(f"📈 **Buy & Hold over samme periode:** {bt['buy_hold_return']:+.2f}%")
+
+                    # Bar chart over hit rates
+                    valid_stats = {k: v for k, v in bt["stats"].items() if v is not None}
+                    if valid_stats:
+                        fig_hr = go.Figure()
+                        fig_hr.add_trace(go.Bar(
+                            x=list(valid_stats.keys()),
+                            y=[v["avg_return"] for v in valid_stats.values()],
+                            text=[f"n={v['count']}<br>Hit={v['win_rate']:.0f}%" for v in valid_stats.values()],
+                            textposition="auto",
+                            marker_color=["#16a34a" if v["avg_return"] > 0 else "#ef4444" for v in valid_stats.values()],
+                        ))
+                        fig_hr.add_hline(y=bt["buy_hold_return"], line_dash="dash", line_color="#0099ff",
+                                       annotation_text=f"Buy & Hold: {bt['buy_hold_return']:+.1f}%")
+                        fig_hr.update_layout(
+                            title=f"Gennemsnit afkast {bt['holding_days']} dage frem",
+                            yaxis_title="Afkast %",
+                            template="plotly_dark", height=400
+                        )
+                        st.plotly_chart(fig_hr, use_container_width=True)
+
+                    # ===== Sektion 2: Strategi simulation =====
+                    st.markdown("---")
+                    st.markdown("### 💰 Strategi simulation (10.000 startkapital)")
+
+                    if sim and len(sim["equity_curve"]) > 0:
+                        sc1, sc2, sc3, sc4 = st.columns(4)
+                        strat_color = "#22c55e" if sim["strategy_return"] > sim["buy_hold_return"] else "#ef4444"
+                        sc1.metric("📊 Strategi afkast", f"{sim['strategy_return']:+.2f}%",
+                                  f"{sim['outperformance']:+.2f}% vs B&H")
+                        sc2.metric("📈 Buy & Hold", f"{sim['buy_hold_return']:+.2f}%")
+                        sc3.metric("💼 Slut værdi", f"{sim['final_value']:,.0f}")
+                        sc4.metric("🔁 Antal trades", sim["n_trades"])
+
+                        # Equity curve
+                        eq = sim["equity_curve"]
+                        fig_eq = go.Figure()
+                        fig_eq.add_trace(go.Scatter(x=eq["date"], y=eq["strategy"], name="Strategi", line=dict(color="#00d4aa", width=2)))
+                        fig_eq.add_trace(go.Scatter(x=eq["date"], y=eq["buy_hold"], name="Buy & Hold", line=dict(color="#0099ff", width=2, dash="dash")))
+
+                        # Markér trades
+                        if len(sim["trades"]) > 0:
+                            buys = sim["trades"][sim["trades"]["action"] == "KØB"]
+                            sells = sim["trades"][sim["trades"]["action"] == "SÆLG"]
+                            for _, trade in buys.iterrows():
+                                fig_eq.add_vline(x=trade["date"], line_color="#16a34a", line_width=1, opacity=0.3)
+                            for _, trade in sells.iterrows():
+                                fig_eq.add_vline(x=trade["date"], line_color="#ef4444", line_width=1, opacity=0.3)
+
+                        fig_eq.update_layout(
+                            title=f"Strategi vs Buy & Hold (Køb ved score≥{buy_threshold}, Sælg ved score≤30)",
+                            yaxis_title=f"Værdi ({valuta})",
+                            template="plotly_dark", height=500
+                        )
+                        st.plotly_chart(fig_eq, use_container_width=True)
+
+                        # Trade log
+                        if len(sim["trades"]) > 0:
+                            with st.expander(f"📋 Se alle {sim['n_trades']} trades"):
+                                trade_log = sim["trades"].copy()
+                                trade_log["date"] = trade_log["date"].dt.strftime("%Y-%m-%d")
+                                trade_log["price"] = trade_log["price"].round(2)
+                                st.dataframe(trade_log, use_container_width=True, hide_index=True)
+
+                    # ===== Sektion 3: Score vs return scatter =====
+                    st.markdown("---")
+                    st.markdown("### 🔍 Score vs faktisk afkast")
+                    st.caption("Hvert punkt = et historisk signal. Linje viser ideel: høj score → højt afkast")
+
+                    fig_sc = px.scatter(
+                        bt["results"], x="score", y="return_pct",
+                        color="recommendation",
+                        color_discrete_map={
+                            "STÆRKT KØB": "#16a34a", "KØB": "#22c55e",
+                            "HOLD": "#eab308", "SÆLG": "#ef4444", "STÆRKT SÆLG": "#b91c1c"
+                        },
+                        hover_data=["date", "entry_price", "exit_price"],
+                        title=f"Score vs {bt['holding_days']}-dages afkast",
+                        labels={"score": "Score (0-100)", "return_pct": "Afkast %"}
+                    )
+                    fig_sc.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
+                    fig_sc.add_vline(x=50, line_dash="dash", line_color="white", opacity=0.3)
+                    fig_sc.update_layout(template="plotly_dark", height=500)
+                    st.plotly_chart(fig_sc, use_container_width=True)
+
+                    # Korrelation
+                    corr = bt["results"]["score"].corr(bt["results"]["return_pct"])
+                    if corr > 0.3:
+                        st.success(f"✅ **Stærk positiv korrelation: {corr:.3f}** - Modellen virker! Højere score → højere afkast.")
+                    elif corr > 0.1:
+                        st.info(f"➖ **Svag positiv korrelation: {corr:.3f}** - Modellen har lidt prediktiv værdi.")
+                    elif corr > -0.1:
+                        st.warning(f"⚠️ **Ingen korrelation: {corr:.3f}** - Modellens score forudsiger ikke fremtiden bedre end tilfældigt.")
+                    else:
+                        st.error(f"❌ **Negativ korrelation: {corr:.3f}** - Modellen virker omvendt for denne aktie!")
+
+                    # ===== Sektion 4: Konklusion =====
+                    st.markdown("---")
+                    st.markdown("### 🎯 Konklusion")
+
+                    strong_buy_stats = bt["stats"].get("STÆRKT KØB")
+                    buy_stats = bt["stats"].get("KØB")
+                    sell_stats = bt["stats"].get("SÆLG")
+
+                    conclusions = []
+                    if strong_buy_stats and strong_buy_stats["count"] >= 3:
+                        if strong_buy_stats["avg_return"] > bt["buy_hold_return"]:
+                            conclusions.append(f"✅ STÆRKT KØB virker: gns. {strong_buy_stats['avg_return']:+.1f}% vs B&H {bt['buy_hold_return']:+.1f}%")
+                        else:
+                            conclusions.append(f"⚠️ STÆRKT KØB underperformer B&H: {strong_buy_stats['avg_return']:+.1f}% vs {bt['buy_hold_return']:+.1f}%")
+                    if buy_stats and buy_stats["count"] >= 3:
+                        if buy_stats["win_rate"] > 60:
+                            conclusions.append(f"✅ KØB hit rate {buy_stats['win_rate']:.0f}% (bedre end coin flip)")
+                    if sell_stats and sell_stats["count"] >= 3:
+                        if sell_stats["avg_return"] < 0:
+                            conclusions.append(f"✅ SÆLG forudsiger korrekt nedgang: {sell_stats['avg_return']:+.1f}%")
+                        else:
+                            conclusions.append(f"⚠️ SÆLG signaler er ikke pålidelige: {sell_stats['avg_return']:+.1f}%")
+                    if sim and sim["outperformance"] > 0:
+                        conclusions.append(f"✅ Strategi slår Buy & Hold med {sim['outperformance']:+.1f}%")
+                    elif sim:
+                        conclusions.append(f"⚠️ Strategi underperformer B&H med {sim['outperformance']:+.1f}%")
+
+                    if conclusions:
+                        for c in conclusions:
+                            st.markdown(f"- {c}")
+                    else:
+                        st.info("Ikke nok data til konklusion - prøv en anden aktie eller længere historik")
+
+                    st.warning("⚠️ **DISCLAIMER**: Historisk performance garanterer ikke fremtidige resultater. Backtests har 'survivorship bias' og kan overestimere reelle resultater pga. hindsight.")
+
+            else:
+                st.info("👆 Tryk **🚀 Kør backtest** for at se hvor godt anbefalingerne har virket historisk")
+                st.markdown("""
+                ### 📚 Hvad er en backtest?
+
+                **Walk-forward analyse**: For hvert tidspunkt i fortiden:
+                1. Beregn score **kun baseret på data op til det punkt** (ingen "snyd")
+                2. Notér anbefalingen (KØB/SÆLG/HOLD)
+                3. Spol frem **N dage** og tjek hvad der faktisk skete
+
+                ### 🎯 Hvad ser du efter?
+
+                | Metric | Hvad det betyder |
+                |--------|-----------------|
+                | **Hit rate > 55%** | KØB-signaler virker bedre end coin flip |
+                | **Stærkt køb > Køb > Hold** | Modellen rangerer korrekt |
+                | **Strategi > Buy & Hold** | Det er værd at trade aktivt |
+                | **Korrelation > 0.2** | Score har prediktiv værdi |
+
+                ### ⚠️ Begrænsninger
+                - Bruger kun **tekniske signaler** (fundamentale ændrer sig sjældent)
+                - Ignorerer **transaktionsomkostninger og skat**
+                - Forskellige aktier opfører sig forskelligt - test flere
+                """)
     else:
         st.info("👆 Indtast en ticker, eller brug **🔍 Søg ticker** fanen")
