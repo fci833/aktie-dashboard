@@ -11,7 +11,7 @@ from ta.volatility import BollingerBands, AverageTrueRange
 from datetime import datetime, timedelta
 from io import StringIO
 import time
-import traceback
+import requests as plain_requests
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -20,9 +20,8 @@ try:
     def make_session():
         return curl_requests.Session(impersonate="chrome")
 except ImportError:
-    import requests
     def make_session():
-        s = requests.Session()
+        s = plain_requests.Session()
         s.headers.update({"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0"})
         return s
 
@@ -32,11 +31,12 @@ try:
 except ImportError:
     FINNHUB_AVAILABLE = False
 
-import requests as plain_requests
-
+# Hent API keys
 FINNHUB_KEY = None
+TWELVE_KEY = None
 try:
     FINNHUB_KEY = st.secrets.get("FINNHUB_API_KEY")
+    TWELVE_KEY = st.secrets.get("TWELVE_DATA_KEY")
 except Exception:
     pass
 
@@ -50,16 +50,123 @@ if "last_source" not in st.session_state:
 
 # ============ TICKER MAPPING ============
 
+def to_twelve_ticker(ticker):
+    """Twelve Data bruger 'NOVO-B:CSE' format for nogle markeder"""
+    t = ticker.upper().strip()
+    # Twelve Data understøtter standard Yahoo-format direkte for de fleste
+    return t
+
 def to_stooq_ticker(ticker):
     t = ticker.upper().strip()
-    if ".CO" in t:
-        return t.replace("-", "").lower()
+    if ".CO" in t: return t.replace("-", "").lower()
     if ".DE" in t: return t.lower()
     if ".AS" in t: return t.replace(".AS", ".NL").lower()
     if ".SW" in t: return t.replace(".SW", ".CH").lower()
     if ".PA" in t: return t.replace(".PA", ".FR").lower()
     if "." not in t: return f"{t.lower()}.us"
     return t.lower()
+
+# ============ TWELVE DATA (HOVEDKILDE) ============
+
+def fetch_twelve(ticker, period="5y"):
+    """Twelve Data API - understøtter international + fundamentals"""
+    if not TWELVE_KEY:
+        return None
+    try:
+        base = "https://api.twelvedata.com"
+
+        # 1. Hent quote
+        q = plain_requests.get(f"{base}/quote", params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=15)
+        quote = q.json()
+        if quote.get("status") == "error" or "code" in quote:
+            return None
+
+        # 2. Hent profile
+        try:
+            p = plain_requests.get(f"{base}/profile", params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=15)
+            profile = p.json() if p.status_code == 200 else {}
+        except:
+            profile = {}
+
+        # 3. Hent statistics (fundamentals)
+        try:
+            s = plain_requests.get(f"{base}/statistics", params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=15)
+            stats = s.json().get("statistics", {}) if s.status_code == 200 else {}
+        except:
+            stats = {}
+
+        # 4. Hent historiske priser
+        period_days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650, "max": 7300}.get(period, 1825)
+        # Twelve Data gratis tier: max 5000 datapunkter
+        outputsize = min(period_days, 5000)
+        ts = plain_requests.get(f"{base}/time_series", params={
+            "symbol": ticker, "interval": "1day",
+            "outputsize": outputsize, "apikey": TWELVE_KEY
+        }, timeout=20)
+        ts_data = ts.json()
+        if ts_data.get("status") == "error" or "values" not in ts_data:
+            return None
+
+        # Byg DataFrame
+        rows = ts_data["values"]
+        hist = pd.DataFrame(rows)
+        hist["datetime"] = pd.to_datetime(hist["datetime"])
+        hist.set_index("datetime", inplace=True)
+        hist = hist.sort_index()
+        hist = hist.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"})
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            hist[col] = pd.to_numeric(hist[col], errors="coerce")
+
+        # Hent valuation stats
+        valuations = stats.get("valuations_metrics", {}) or {}
+        financials = stats.get("financials", {}) or {}
+        income = financials.get("income_statement", {}) or {}
+        balance = financials.get("balance_sheet", {}) or {}
+        cashflow = financials.get("cash_flow", {}) or {}
+        margins = financials.get("operating_margin", {}) or {}
+        ratios = financials.get("ratios_and_metrics", {}) or {}
+
+        info = {
+            "longName": profile.get("name") or quote.get("name") or ticker,
+            "sector": profile.get("sector", "?"),
+            "industry": profile.get("industry", "?"),
+            "country": profile.get("country", "?"),
+            "currency": quote.get("currency", "USD"),
+            "currentPrice": float(quote.get("close", 0)) if quote.get("close") else None,
+            "previousClose": float(quote.get("previous_close", 0)) if quote.get("previous_close") else None,
+            "marketCap": stats.get("statistics", {}).get("market_capitalization") or quote.get("market_cap"),
+            "trailingPE": valuations.get("trailing_pe"),
+            "forwardPE": valuations.get("forward_pe"),
+            "pegRatio": valuations.get("peg_ratio"),
+            "priceToBook": valuations.get("price_to_book_mrq"),
+            "priceToSalesTrailing12Months": valuations.get("price_to_sales_ttm"),
+            "returnOnEquity": (financials.get("return_on_equity_ttm") or 0) / 100 if financials.get("return_on_equity_ttm") else None,
+            "returnOnAssets": (financials.get("return_on_assets_ttm") or 0) / 100 if financials.get("return_on_assets_ttm") else None,
+            "profitMargins": (margins.get("profit_margin") or 0) / 100 if margins.get("profit_margin") else None,
+            "operatingMargins": (margins.get("operating_margin") or 0) / 100 if margins.get("operating_margin") else None,
+            "debtToEquity": balance.get("total_debt_to_equity_mrq"),
+            "currentRatio": balance.get("current_ratio_mrq"),
+            "quickRatio": balance.get("quick_ratio_mrq"),
+            "revenueGrowth": (income.get("quarterly_revenue_growth") or 0) / 100 if income.get("quarterly_revenue_growth") else None,
+            "earningsGrowth": (income.get("quarterly_earnings_growth_yoy") or 0) / 100 if income.get("quarterly_earnings_growth_yoy") else None,
+            "freeCashflow": cashflow.get("levered_free_cash_flow_ttm") or cashflow.get("operating_cash_flow_ttm"),
+            "totalDebt": balance.get("total_debt_mrq"),
+            "totalCash": balance.get("total_cash_mrq"),
+            "sharesOutstanding": stats.get("statistics", {}).get("shares_outstanding"),
+            "dividendYield": (stats.get("dividends_and_splits", {}).get("forward_annual_dividend_yield") or 0) / 100 if stats.get("dividends_and_splits", {}).get("forward_annual_dividend_yield") else None,
+            "beta": stats.get("stock_price_summary", {}).get("beta"),
+        }
+        # Konverter alle numeric strings til floats
+        for k, v in info.items():
+            if isinstance(v, str):
+                try:
+                    info[k] = float(v)
+                except:
+                    pass
+
+        return {"info": info, "hist": hist, "news": [], "source": "Twelve Data"}
+    except Exception as e:
+        return None
 
 # ============ DATA FETCHERS ============
 
@@ -85,9 +192,7 @@ def fetch_yahoo(ticker, period="5y"):
         return None
 
 def fetch_finnhub(ticker, period="5y"):
-    if not FINNHUB_AVAILABLE or not FINNHUB_KEY:
-        return None
-    if "." in ticker:
+    if not FINNHUB_AVAILABLE or not FINNHUB_KEY or "." in ticker:
         return None
     try:
         client = finnhub.Client(api_key=FINNHUB_KEY)
@@ -101,7 +206,6 @@ def fetch_finnhub(ticker, period="5y"):
         info = {
             "longName": profile.get("name", ticker),
             "sector": profile.get("finnhubIndustry", "?"),
-            "industry": profile.get("finnhubIndustry", "?"),
             "country": profile.get("country", "?"),
             "currency": profile.get("currency", "USD"),
             "currentPrice": quote.get("c"),
@@ -113,110 +217,87 @@ def fetch_finnhub(ticker, period="5y"):
             "returnOnEquity": (metrics.get("roeRfy") or 0) / 100 if metrics.get("roeRfy") else None,
             "profitMargins": (metrics.get("netProfitMarginAnnual") or 0) / 100 if metrics.get("netProfitMarginAnnual") else None,
             "debtToEquity": metrics.get("totalDebt/totalEquityAnnual"),
-            "currentRatio": metrics.get("currentRatioAnnual"),
             "revenueGrowth": (metrics.get("revenueGrowthTTMYoy") or 0) / 100 if metrics.get("revenueGrowthTTMYoy") else None,
             "freeCashflow": metrics.get("freeCashFlowAnnual"),
             "beta": metrics.get("beta"),
         }
-        # Brug Stooq for historik (Finnhub candles kræver betalt plan)
-        hist = fetch_stooq_only(ticker, period)
-        if hist is None or hist.empty:
-            return None
-        return {"info": info, "hist": hist, "news": [], "source": "Finnhub + Stooq"}
-    except Exception as e:
+        # Brug Twelve Data for historik hvis tilgængelig
+        if TWELVE_KEY:
+            tw = fetch_twelve(ticker, period)
+            if tw:
+                return {"info": info, "hist": tw["hist"], "news": [], "source": "Finnhub + Twelve Data"}
         return None
-
-def fetch_stooq_only(ticker, period="5y"):
-    """Returnerer pandas DataFrame eller None"""
-    stooq_t = to_stooq_ticker(ticker)
-    period_years = {"1y": 1, "2y": 2, "5y": 5, "10y": 10, "max": 30}.get(period, 5)
-    start = (datetime.now() - timedelta(days=period_years*365)).strftime("%Y%m%d")
-    end = datetime.now().strftime("%Y%m%d")
-    url = f"https://stooq.com/q/d/l/?s={stooq_t}&d1={start}&d2={end}&i=d"
-    try:
-        r = plain_requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code != 200:
-            return None
-        text = r.text.strip()
-        # Stooq returnerer "No data" hvis ticker ikke findes
-        if len(text) < 50 or "no data" in text.lower():
-            return None
-        df = pd.read_csv(StringIO(text))
-        if df.empty or "Date" not in df.columns:
-            return None
-        df["Date"] = pd.to_datetime(df["Date"])
-        df.set_index("Date", inplace=True)
-        df = df.sort_index()
-        # Tjek alle nødvendige kolonner findes
-        required = ["Open", "High", "Low", "Close"]
-        for col in required:
-            if col not in df.columns:
-                return None
-        if "Volume" not in df.columns:
-            df["Volume"] = 0
-        return df
-    except Exception as e:
+    except Exception:
         return None
-
-def fetch_stooq(ticker, period="5y"):
-    hist = fetch_stooq_only(ticker, period)
-    if hist is None or hist.empty:
-        return None
-    info = {
-        "longName": ticker,
-        "sector": "?", "industry": "?", "country": "?",
-        "currency": "DKK" if ".CO" in ticker else "USD",
-        "currentPrice": float(hist["Close"].iloc[-1]),
-        "previousClose": float(hist["Close"].iloc[-2]) if len(hist) > 1 else float(hist["Close"].iloc[-1]),
-    }
-    return {"info": info, "hist": hist, "news": [], "source": "Stooq (kun pris-data)"}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_data(ticker, period="5y"):
+    # 1. Yahoo (bedst dækning)
     result = fetch_yahoo(ticker, period)
     if result and result != "RATE_LIMIT":
         return result
     rate_limited = result == "RATE_LIMIT"
 
+    # 2. Twelve Data (international + fundamentals)
+    if TWELVE_KEY:
+        result = fetch_twelve(ticker, period)
+        if result:
+            if rate_limited:
+                result["warning"] = "Yahoo rate limited - bruger Twelve Data"
+            return result
+
+    # 3. Finnhub (kun US, fundamentals)
     if FINNHUB_KEY and "." not in ticker:
         result = fetch_finnhub(ticker, period)
         if result:
-            if rate_limited:
-                result["warning"] = "Yahoo rate limited - bruger Finnhub"
             return result
 
-    result = fetch_stooq(ticker, period)
-    if result:
-        if rate_limited:
-            result["warning"] = "Yahoo rate limited - bruger Stooq (kun pris-data)"
-        else:
-            result["warning"] = "Begrænset data - kun pris-historik"
-        return result
     return None
 
 # ============ DIAGNOSE ============
 
 def run_diagnostics(ticker):
-    """Tester hver kilde og returnerer detaljeret rapport"""
     results = []
 
-    # Test 1: Yahoo
+    # Yahoo
     try:
         t0 = time.time()
         r = fetch_yahoo(ticker, "1y")
         dt = time.time() - t0
         if r == "RATE_LIMIT":
-            results.append(("Yahoo Finance", "❌ Rate limited", f"{dt:.1f}s", "Yahoo har blokeret IP'en. Vent 5-15 min."))
+            results.append(("Yahoo Finance", "❌ Rate limited", f"{dt:.1f}s", "IP blokeret af Yahoo"))
         elif r is None:
             results.append(("Yahoo Finance", "❌ Ingen data", f"{dt:.1f}s", "Ticker findes ikke eller fejl"))
         else:
             results.append(("Yahoo Finance", "✅ Virker", f"{dt:.1f}s", f"{len(r['hist'])} dage data"))
     except Exception as e:
-        results.append(("Yahoo Finance", "❌ Crash", "-", str(e)[:100]))
+        results.append(("Yahoo Finance", "❌ Crash", "-", str(e)[:200]))
 
-    # Test 2: Finnhub
+    # Twelve Data
+    if not TWELVE_KEY:
+        results.append(("Twelve Data", "⚠️ Ingen API key", "-", "Tilføj TWELVE_DATA_KEY i secrets"))
+    else:
+        try:
+            t0 = time.time()
+            r = fetch_twelve(ticker, "1y")
+            dt = time.time() - t0
+            if r is None:
+                # Prøv at hente raw response for debug
+                try:
+                    raw = plain_requests.get("https://api.twelvedata.com/quote",
+                        params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=10).json()
+                    msg = str(raw)[:300]
+                except Exception as e:
+                    msg = str(e)[:200]
+                results.append(("Twelve Data", "❌ Ingen data", f"{dt:.1f}s", msg))
+            else:
+                results.append(("Twelve Data", "✅ Virker", f"{dt:.1f}s", f"{len(r['hist'])} dage, kilde: {r['info'].get('country','?')}"))
+        except Exception as e:
+            results.append(("Twelve Data", "❌ Crash", "-", str(e)[:200]))
+
+    # Finnhub
     if not FINNHUB_KEY:
-        results.append(("Finnhub", "⚠️ Ingen API key", "-", "Tilføj FINNHUB_API_KEY i secrets"))
+        results.append(("Finnhub", "⚠️ Ingen API key", "-", "Tilføj FINNHUB_API_KEY"))
     elif "." in ticker:
         results.append(("Finnhub", "⚠️ Springet over", "-", "Gratis tier kun US aktier"))
     else:
@@ -225,37 +306,15 @@ def run_diagnostics(ticker):
             r = fetch_finnhub(ticker, "1y")
             dt = time.time() - t0
             if r is None:
-                results.append(("Finnhub", "❌ Ingen data", f"{dt:.1f}s", "API fejl eller ingen data"))
+                results.append(("Finnhub", "❌ Ingen data", f"{dt:.1f}s", "API fejl"))
             else:
-                results.append(("Finnhub", "✅ Virker", f"{dt:.1f}s", f"{len(r['hist'])} dage data"))
+                results.append(("Finnhub", "✅ Virker", f"{dt:.1f}s", f"{len(r['hist'])} dage"))
         except Exception as e:
-            results.append(("Finnhub", "❌ Crash", "-", str(e)[:100]))
-
-    # Test 3: Stooq
-    try:
-        t0 = time.time()
-        stooq_t = to_stooq_ticker(ticker)
-        url = f"https://stooq.com/q/d/l/?s={stooq_t}&d1=20240101&d2={datetime.now().strftime('%Y%m%d')}&i=d"
-        r = plain_requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        dt = time.time() - t0
-
-        status = f"HTTP {r.status_code}, {len(r.text)} chars"
-        if r.status_code != 200:
-            results.append(("Stooq", "❌ HTTP fejl", f"{dt:.1f}s", status))
-        elif "no data" in r.text.lower() or len(r.text) < 50:
-            results.append(("Stooq", "❌ Ingen data", f"{dt:.1f}s", f"Stooq ticker '{stooq_t}' findes ikke. Response: {r.text[:100]}"))
-        else:
-            try:
-                df = pd.read_csv(StringIO(r.text))
-                results.append(("Stooq", "✅ Virker", f"{dt:.1f}s", f"Ticker '{stooq_t}', {len(df)} dage"))
-            except Exception as e:
-                results.append(("Stooq", "❌ Parse fejl", f"{dt:.1f}s", f"CSV: {r.text[:200]}"))
-    except Exception as e:
-        results.append(("Stooq", "❌ Crash", "-", str(e)[:200]))
+            results.append(("Finnhub", "❌ Crash", "-", str(e)[:200]))
 
     return results
 
-# ============ HJÆLPEFUNKTIONER ============
+# ============ ANALYSE FUNKTIONER ============
 
 def safe(d, key, default=None):
     if d is None: return default
@@ -319,7 +378,6 @@ def add_indicators(hist):
     macd = MACD(df["Close"])
     df["MACD"] = macd.macd()
     df["MACD_signal"] = macd.macd_signal()
-    df["MACD_hist"] = macd.macd_diff()
     bb = BollingerBands(df["Close"])
     df["BB_high"] = bb.bollinger_hband()
     df["BB_low"] = bb.bollinger_lband()
@@ -416,8 +474,8 @@ def recommendation(s):
 with st.sidebar:
     st.markdown("### 📡 Datakilder")
     st.caption("✅ Yahoo Finance")
+    st.caption("✅ Twelve Data" if TWELVE_KEY else "⚠️ Twelve Data (no key)")
     st.caption("✅ Finnhub" if FINNHUB_KEY else "⚠️ Finnhub (no key)")
-    st.caption("✅ Stooq")
 
     if st.session_state.last_source != "?":
         st.success(f"Sidst: **{st.session_state.last_source}**")
@@ -445,8 +503,6 @@ main_tab, diag_tab = st.tabs(["📊 Analyse", "🔧 Diagnose"])
 
 with diag_tab:
     st.subheader("🔧 Diagnose - Test datakilder")
-    st.caption("Test hver datakilde individuelt for at se HVAD der fejler")
-
     diag_ticker = st.text_input("Test ticker", value="AAPL", key="diag_ticker").strip().upper()
     if st.button("🔍 Kør diagnose", type="primary"):
         with st.spinner(f"Tester alle kilder for {diag_ticker}..."):
@@ -454,15 +510,7 @@ with diag_tab:
         st.markdown("### Resultater")
         for source, status, time_taken, details in results:
             with st.expander(f"{status} **{source}** ({time_taken})", expanded=True):
-                st.code(details, language=None)
-
-        st.markdown("---")
-        st.markdown("### 🔍 Stooq URL test")
-        stooq_t = to_stooq_ticker(diag_ticker)
-        test_url = f"https://stooq.com/q/d/l/?s={stooq_t}&d1=20240101&d2={datetime.now().strftime('%Y%m%d')}&i=d"
-        st.code(test_url)
-        st.caption("Klik linket for at se rådata fra Stooq direkte")
-        st.markdown(f"[Åbn i browser →]({test_url})")
+                st.code(details)
 
 with main_tab:
     c1, c2 = st.columns([4, 1])
@@ -480,7 +528,7 @@ with main_tab:
 
         if data is None:
             st.error(f"❌ Kunne ikke hente data for '{ticker}' fra nogen kilde.")
-            st.info("👉 Gå til **🔧 Diagnose** fanen øverst og test for at se hvad der præcist fejler!")
+            st.info("👉 Gå til **🔧 Diagnose** fanen for at se HVAD der fejler!")
             st.stop()
 
         st.session_state.last_source = data["source"]
@@ -508,7 +556,7 @@ with main_tab:
         k = st.columns(6)
         k[0].metric("Pris", f"{pris:,.2f}", f"{change_pct:+.2f}%")
         mc = info.get("marketCap")
-        k[1].metric("Market cap", f"{mc/1e9:,.1f}B" if mc else "-")
+        k[1].metric("Market cap", f"{float(mc)/1e9:,.1f}B" if mc else "-")
         k[2].metric("P/E", f"{info.get('trailingPE'):.1f}" if info.get("trailingPE") else "-")
         k[3].metric("Fwd P/E", f"{info.get('forwardPE'):.1f}" if info.get("forwardPE") else "-")
         k[4].metric("Yield", f"{info.get('dividendYield')*100:.2f}%" if info.get("dividendYield") else "-")
@@ -575,7 +623,6 @@ with main_tab:
             fair = dcf_valuation(info, cg, cdr, ct)
             if fair:
                 up = (fair/pris-1)*100
-                color = "#16a34a" if up > 0 else "#ef4444"
                 d = st.columns(3)
                 d[0].metric("Aktuel pris", f"{pris:.2f}")
                 d[1].metric("DCF fair value", f"{fair:.2f}")
@@ -614,9 +661,3 @@ with main_tab:
             st.plotly_chart(fig_m, use_container_width=True)
     else:
         st.info("👆 Indtast en ticker og tryk **Analysér**")
-        st.markdown("""
-        ### 💡 Hvis det fejler:
-        1. Gå til **🔧 Diagnose** fanen
-        2. Test ticker'en der
-        3. Se HVILKEN kilde der fejler og hvorfor
-        """)
