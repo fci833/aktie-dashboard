@@ -50,12 +50,6 @@ if "last_source" not in st.session_state:
 
 # ============ TICKER MAPPING ============
 
-def to_twelve_ticker(ticker):
-    """Twelve Data bruger 'NOVO-B:CSE' format for nogle markeder"""
-    t = ticker.upper().strip()
-    # Twelve Data understøtter standard Yahoo-format direkte for de fleste
-    return t
-
 def to_stooq_ticker(ticker):
     t = ticker.upper().strip()
     if ".CO" in t: return t.replace("-", "").lower()
@@ -65,108 +59,6 @@ def to_stooq_ticker(ticker):
     if ".PA" in t: return t.replace(".PA", ".FR").lower()
     if "." not in t: return f"{t.lower()}.us"
     return t.lower()
-
-# ============ TWELVE DATA (HOVEDKILDE) ============
-
-def fetch_twelve(ticker, period="5y"):
-    """Twelve Data API - understøtter international + fundamentals"""
-    if not TWELVE_KEY:
-        return None
-    try:
-        base = "https://api.twelvedata.com"
-
-        # 1. Hent quote
-        q = plain_requests.get(f"{base}/quote", params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=15)
-        quote = q.json()
-        if quote.get("status") == "error" or "code" in quote:
-            return None
-
-        # 2. Hent profile
-        try:
-            p = plain_requests.get(f"{base}/profile", params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=15)
-            profile = p.json() if p.status_code == 200 else {}
-        except:
-            profile = {}
-
-        # 3. Hent statistics (fundamentals)
-        try:
-            s = plain_requests.get(f"{base}/statistics", params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=15)
-            stats = s.json().get("statistics", {}) if s.status_code == 200 else {}
-        except:
-            stats = {}
-
-        # 4. Hent historiske priser
-        period_days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650, "max": 7300}.get(period, 1825)
-        # Twelve Data gratis tier: max 5000 datapunkter
-        outputsize = min(period_days, 5000)
-        ts = plain_requests.get(f"{base}/time_series", params={
-            "symbol": ticker, "interval": "1day",
-            "outputsize": outputsize, "apikey": TWELVE_KEY
-        }, timeout=20)
-        ts_data = ts.json()
-        if ts_data.get("status") == "error" or "values" not in ts_data:
-            return None
-
-        # Byg DataFrame
-        rows = ts_data["values"]
-        hist = pd.DataFrame(rows)
-        hist["datetime"] = pd.to_datetime(hist["datetime"])
-        hist.set_index("datetime", inplace=True)
-        hist = hist.sort_index()
-        hist = hist.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"})
-        for col in ["Open", "High", "Low", "Close", "Volume"]:
-            hist[col] = pd.to_numeric(hist[col], errors="coerce")
-
-        # Hent valuation stats
-        valuations = stats.get("valuations_metrics", {}) or {}
-        financials = stats.get("financials", {}) or {}
-        income = financials.get("income_statement", {}) or {}
-        balance = financials.get("balance_sheet", {}) or {}
-        cashflow = financials.get("cash_flow", {}) or {}
-        margins = financials.get("operating_margin", {}) or {}
-        ratios = financials.get("ratios_and_metrics", {}) or {}
-
-        info = {
-            "longName": profile.get("name") or quote.get("name") or ticker,
-            "sector": profile.get("sector", "?"),
-            "industry": profile.get("industry", "?"),
-            "country": profile.get("country", "?"),
-            "currency": quote.get("currency", "USD"),
-            "currentPrice": float(quote.get("close", 0)) if quote.get("close") else None,
-            "previousClose": float(quote.get("previous_close", 0)) if quote.get("previous_close") else None,
-            "marketCap": stats.get("statistics", {}).get("market_capitalization") or quote.get("market_cap"),
-            "trailingPE": valuations.get("trailing_pe"),
-            "forwardPE": valuations.get("forward_pe"),
-            "pegRatio": valuations.get("peg_ratio"),
-            "priceToBook": valuations.get("price_to_book_mrq"),
-            "priceToSalesTrailing12Months": valuations.get("price_to_sales_ttm"),
-            "returnOnEquity": (financials.get("return_on_equity_ttm") or 0) / 100 if financials.get("return_on_equity_ttm") else None,
-            "returnOnAssets": (financials.get("return_on_assets_ttm") or 0) / 100 if financials.get("return_on_assets_ttm") else None,
-            "profitMargins": (margins.get("profit_margin") or 0) / 100 if margins.get("profit_margin") else None,
-            "operatingMargins": (margins.get("operating_margin") or 0) / 100 if margins.get("operating_margin") else None,
-            "debtToEquity": balance.get("total_debt_to_equity_mrq"),
-            "currentRatio": balance.get("current_ratio_mrq"),
-            "quickRatio": balance.get("quick_ratio_mrq"),
-            "revenueGrowth": (income.get("quarterly_revenue_growth") or 0) / 100 if income.get("quarterly_revenue_growth") else None,
-            "earningsGrowth": (income.get("quarterly_earnings_growth_yoy") or 0) / 100 if income.get("quarterly_earnings_growth_yoy") else None,
-            "freeCashflow": cashflow.get("levered_free_cash_flow_ttm") or cashflow.get("operating_cash_flow_ttm"),
-            "totalDebt": balance.get("total_debt_mrq"),
-            "totalCash": balance.get("total_cash_mrq"),
-            "sharesOutstanding": stats.get("statistics", {}).get("shares_outstanding"),
-            "dividendYield": (stats.get("dividends_and_splits", {}).get("forward_annual_dividend_yield") or 0) / 100 if stats.get("dividends_and_splits", {}).get("forward_annual_dividend_yield") else None,
-            "beta": stats.get("stock_price_summary", {}).get("beta"),
-        }
-        # Konverter alle numeric strings til floats
-        for k, v in info.items():
-            if isinstance(v, str):
-                try:
-                    info[k] = float(v)
-                except:
-                    pass
-
-        return {"info": info, "hist": hist, "news": [], "source": "Twelve Data"}
-    except Exception as e:
-        return None
 
 # ============ DATA FETCHERS ============
 
@@ -191,7 +83,68 @@ def fetch_yahoo(ticker, period="5y"):
             return "RATE_LIMIT"
         return None
 
+def fetch_twelve(ticker, period="5y"):
+    """Twelve Data - minimal calls (2 credits) for at undgå rate limit"""
+    if not TWELVE_KEY:
+        return None
+    try:
+        base = "https://api.twelvedata.com"
+
+        # Call 1: quote (1 credit)
+        q = plain_requests.get(f"{base}/quote", params={
+            "symbol": ticker, "apikey": TWELVE_KEY
+        }, timeout=15)
+        quote = q.json()
+        if quote.get("status") == "error" or "code" in quote:
+            return None
+
+        # Call 2: time_series (1 credit)
+        period_days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650, "max": 5000}.get(period, 1825)
+        outputsize = min(period_days, 5000)
+        ts = plain_requests.get(f"{base}/time_series", params={
+            "symbol": ticker, "interval": "1day",
+            "outputsize": outputsize, "apikey": TWELVE_KEY
+        }, timeout=20)
+        ts_data = ts.json()
+        if ts_data.get("status") == "error" or "values" not in ts_data:
+            return None
+
+        # Byg DataFrame
+        rows = ts_data["values"]
+        hist = pd.DataFrame(rows)
+        hist["datetime"] = pd.to_datetime(hist["datetime"])
+        hist.set_index("datetime", inplace=True)
+        hist = hist.sort_index()
+        hist = hist.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"})
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            if col in hist.columns:
+                hist[col] = pd.to_numeric(hist[col], errors="coerce")
+            else:
+                hist[col] = 0
+
+        # Minimal info fra quote
+        info = {
+            "longName": quote.get("name") or ticker,
+            "sector": "?",
+            "industry": "?",
+            "country": "?",
+            "currency": quote.get("currency", "USD"),
+            "currentPrice": float(quote.get("close", 0)) if quote.get("close") else float(hist["Close"].iloc[-1]),
+            "previousClose": float(quote.get("previous_close", 0)) if quote.get("previous_close") else None,
+        }
+        try:
+            fw = quote.get("fifty_two_week", {})
+            if fw:
+                info["fiftyTwoWeekHigh"] = float(fw.get("high", 0)) if fw.get("high") else None
+                info["fiftyTwoWeekLow"] = float(fw.get("low", 0)) if fw.get("low") else None
+        except: pass
+
+        return {"info": info, "hist": hist, "news": [], "source": "Twelve Data"}
+    except Exception as e:
+        return None
+
 def fetch_finnhub(ticker, period="5y"):
+    """Finnhub for fundamentals + Twelve Data for historik (kombi)"""
     if not FINNHUB_AVAILABLE or not FINNHUB_KEY or "." in ticker:
         return None
     try:
@@ -202,54 +155,79 @@ def fetch_finnhub(ticker, period="5y"):
         quote = client.quote(ticker)
         if not quote.get("c"):
             return None
-        metrics = client.company_basic_financials(ticker, 'all').get('metric', {})
+
+        # Hent metrics (kan fejle)
+        metrics = {}
+        try:
+            res = client.company_basic_financials(ticker, 'all')
+            metrics = res.get('metric', {}) if res else {}
+        except:
+            metrics = {}
+
         info = {
             "longName": profile.get("name", ticker),
             "sector": profile.get("finnhubIndustry", "?"),
+            "industry": profile.get("finnhubIndustry", "?"),
             "country": profile.get("country", "?"),
             "currency": profile.get("currency", "USD"),
             "currentPrice": quote.get("c"),
             "previousClose": quote.get("pc"),
             "marketCap": (profile.get("marketCapitalization") or 0) * 1e6,
             "sharesOutstanding": (profile.get("shareOutstanding") or 0) * 1e6,
-            "trailingPE": metrics.get("peTTM"),
+            "trailingPE": metrics.get("peTTM") or metrics.get("peNormalizedAnnual"),
             "priceToBook": metrics.get("pbAnnual"),
+            "priceToSalesTrailing12Months": metrics.get("psAnnual"),
             "returnOnEquity": (metrics.get("roeRfy") or 0) / 100 if metrics.get("roeRfy") else None,
+            "returnOnAssets": (metrics.get("roaRfy") or 0) / 100 if metrics.get("roaRfy") else None,
             "profitMargins": (metrics.get("netProfitMarginAnnual") or 0) / 100 if metrics.get("netProfitMarginAnnual") else None,
+            "operatingMargins": (metrics.get("operatingMarginAnnual") or 0) / 100 if metrics.get("operatingMarginAnnual") else None,
             "debtToEquity": metrics.get("totalDebt/totalEquityAnnual"),
+            "currentRatio": metrics.get("currentRatioAnnual"),
+            "quickRatio": metrics.get("quickRatioAnnual"),
             "revenueGrowth": (metrics.get("revenueGrowthTTMYoy") or 0) / 100 if metrics.get("revenueGrowthTTMYoy") else None,
+            "earningsGrowth": (metrics.get("epsGrowthTTMYoy") or 0) / 100 if metrics.get("epsGrowthTTMYoy") else None,
             "freeCashflow": metrics.get("freeCashFlowAnnual"),
+            "totalDebt": metrics.get("totalDebt"),
+            "totalCash": metrics.get("cashAndCashEquivalentsQuarterly"),
+            "dividendYield": (metrics.get("dividendYieldIndicatedAnnual") or 0) / 100 if metrics.get("dividendYieldIndicatedAnnual") else None,
             "beta": metrics.get("beta"),
         }
-        # Brug Twelve Data for historik hvis tilgængelig
+
+        # Brug Twelve Data for historik
         if TWELVE_KEY:
             tw = fetch_twelve(ticker, period)
             if tw:
                 return {"info": info, "hist": tw["hist"], "news": [], "source": "Finnhub + Twelve Data"}
+
+        # Hvis ingen Twelve Data: prøv en simpel ts via Finnhub (kræver betalt for de fleste)
         return None
     except Exception:
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_data(ticker, period="5y"):
-    # 1. Yahoo (bedst dækning)
+    # 1. Yahoo (bedst)
     result = fetch_yahoo(ticker, period)
     if result and result != "RATE_LIMIT":
         return result
     rate_limited = result == "RATE_LIMIT"
 
-    # 2. Twelve Data (international + fundamentals)
+    # 2. Finnhub + Twelve Data (US: fundamentals fra Finnhub, priser fra Twelve)
+    if FINNHUB_KEY and "." not in ticker:
+        result = fetch_finnhub(ticker, period)
+        if result:
+            if rate_limited:
+                result["warning"] = "Yahoo rate limited - bruger Finnhub + Twelve Data"
+            return result
+
+    # 3. Kun Twelve Data (international, kun pris)
     if TWELVE_KEY:
         result = fetch_twelve(ticker, period)
         if result:
             if rate_limited:
-                result["warning"] = "Yahoo rate limited - bruger Twelve Data"
-            return result
-
-    # 3. Finnhub (kun US, fundamentals)
-    if FINNHUB_KEY and "." not in ticker:
-        result = fetch_finnhub(ticker, period)
-        if result:
+                result["warning"] = "Yahoo rate limited - bruger Twelve Data (kun pris-data)"
+            else:
+                result["warning"] = "Begrænset data - kun pris-historik"
             return result
 
     return None
@@ -279,19 +257,24 @@ def run_diagnostics(ticker):
     else:
         try:
             t0 = time.time()
-            r = fetch_twelve(ticker, "1y")
+            raw = plain_requests.get("https://api.twelvedata.com/quote",
+                params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=10).json()
             dt = time.time() - t0
-            if r is None:
-                # Prøv at hente raw response for debug
-                try:
-                    raw = plain_requests.get("https://api.twelvedata.com/quote",
-                        params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=10).json()
-                    msg = str(raw)[:300]
-                except Exception as e:
-                    msg = str(e)[:200]
-                results.append(("Twelve Data", "❌ Ingen data", f"{dt:.1f}s", msg))
+
+            if raw.get("code") == 429:
+                results.append(("Twelve Data", "❌ Rate limit", f"{dt:.1f}s",
+                    f"Vent 60 sekunder. Besked: {raw.get('message', '')[:200]}"))
+            elif raw.get("status") == "error" or "code" in raw:
+                results.append(("Twelve Data", "❌ API fejl", f"{dt:.1f}s",
+                    f"Code: {raw.get('code')}, Msg: {raw.get('message', '')[:200]}"))
             else:
-                results.append(("Twelve Data", "✅ Virker", f"{dt:.1f}s", f"{len(r['hist'])} dage, kilde: {r['info'].get('country','?')}"))
+                r = fetch_twelve(ticker, "1y")
+                if r:
+                    results.append(("Twelve Data", "✅ Virker", f"{dt:.1f}s",
+                        f"{len(r['hist'])} dage, {r['info'].get('longName')}"))
+                else:
+                    results.append(("Twelve Data", "⚠️ Quote OK, time_series fejl", f"{dt:.1f}s",
+                        f"Quote response: {str(raw)[:200]}"))
         except Exception as e:
             results.append(("Twelve Data", "❌ Crash", "-", str(e)[:200]))
 
@@ -303,14 +286,21 @@ def run_diagnostics(ticker):
     else:
         try:
             t0 = time.time()
-            r = fetch_finnhub(ticker, "1y")
+            client = finnhub.Client(api_key=FINNHUB_KEY)
+            profile = client.company_profile2(symbol=ticker)
+            quote = client.quote(ticker)
             dt = time.time() - t0
-            if r is None:
-                results.append(("Finnhub", "❌ Ingen data", f"{dt:.1f}s", "API fejl"))
+            if not profile or not profile.get("name"):
+                results.append(("Finnhub", "❌ Ingen profile", f"{dt:.1f}s",
+                    f"Profile response: {str(profile)[:200]}"))
+            elif not quote.get("c"):
+                results.append(("Finnhub", "❌ Ingen quote", f"{dt:.1f}s",
+                    f"Quote response: {str(quote)[:200]}"))
             else:
-                results.append(("Finnhub", "✅ Virker", f"{dt:.1f}s", f"{len(r['hist'])} dage"))
+                results.append(("Finnhub", "✅ Virker", f"{dt:.1f}s",
+                    f"{profile.get('name')}, pris: {quote.get('c')}"))
         except Exception as e:
-            results.append(("Finnhub", "❌ Crash", "-", str(e)[:200]))
+            results.append(("Finnhub", "❌ Crash", "-", str(e)[:300]))
 
     return results
 
@@ -503,6 +493,7 @@ main_tab, diag_tab = st.tabs(["📊 Analyse", "🔧 Diagnose"])
 
 with diag_tab:
     st.subheader("🔧 Diagnose - Test datakilder")
+    st.caption("⏱️ Hvis Twelve Data er rate-limited: vent 60 sekunder før du prøver igen")
     diag_ticker = st.text_input("Test ticker", value="AAPL", key="diag_ticker").strip().upper()
     if st.button("🔍 Kør diagnose", type="primary"):
         with st.spinner(f"Tester alle kilder for {diag_ticker}..."):
@@ -556,7 +547,10 @@ with main_tab:
         k = st.columns(6)
         k[0].metric("Pris", f"{pris:,.2f}", f"{change_pct:+.2f}%")
         mc = info.get("marketCap")
-        k[1].metric("Market cap", f"{float(mc)/1e9:,.1f}B" if mc else "-")
+        try:
+            k[1].metric("Market cap", f"{float(mc)/1e9:,.1f}B" if mc else "-")
+        except:
+            k[1].metric("Market cap", "-")
         k[2].metric("P/E", f"{info.get('trailingPE'):.1f}" if info.get("trailingPE") else "-")
         k[3].metric("Fwd P/E", f"{info.get('forwardPE'):.1f}" if info.get("forwardPE") else "-")
         k[4].metric("Yield", f"{info.get('dividendYield')*100:.2f}%" if info.get("dividendYield") else "-")
@@ -661,3 +655,9 @@ with main_tab:
             st.plotly_chart(fig_m, use_container_width=True)
     else:
         st.info("👆 Indtast en ticker og tryk **Analysér**")
+        st.markdown("""
+        ### 🔥 Funktioner
+        - **Hybrid datakilde**: Yahoo → Finnhub+Twelve → Twelve Data
+        - **Multi-faktor scoring**: Fundamental + teknisk
+        - **DCF værdiansættelse**, Monte Carlo, Risiko-metrics
+        """)
