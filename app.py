@@ -8,12 +8,12 @@ from plotly.subplots import make_subplots
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.trend import MACD, SMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import warnings
 warnings.filterwarnings("ignore")
 
-# curl_cffi efterligner Chrome browser → bypasser Yahoo rate limits
+# ============ DATAKILDER ============
 try:
     from curl_cffi import requests as curl_requests
     def make_session():
@@ -22,54 +22,196 @@ except ImportError:
     import requests
     def make_session():
         s = requests.Session()
-        s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
+        s.headers.update({"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0"})
         return s
+
+try:
+    import finnhub
+    FINNHUB_AVAILABLE = True
+except ImportError:
+    FINNHUB_AVAILABLE = False
+
+try:
+    from pandas_datareader import data as pdr
+    STOOQ_AVAILABLE = True
+except ImportError:
+    STOOQ_AVAILABLE = False
+
+# Hent Finnhub API key fra Streamlit secrets
+FINNHUB_KEY = None
+try:
+    FINNHUB_KEY = st.secrets.get("FINNHUB_API_KEY")
+except Exception:
+    pass
 
 st.set_page_config(page_title="Aktie Dashboard", layout="wide", page_icon="📈")
 
 st.markdown("<h1 style='background:linear-gradient(90deg,#00d4aa,#0099ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;'>📈 Pro Aktie Analyse Dashboard</h1>", unsafe_allow_html=True)
-st.caption("Valideret data · Multi-faktor scoring · Langsigtet & Kortsigtet")
+st.caption("Hybrid datakilde · Yahoo → Finnhub → Stooq · Multi-faktor scoring")
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = []
+if "last_source" not in st.session_state:
+    st.session_state.last_source = "?"
+
+# ============ DATA-HENTNING (HYBRID) ============
+
+def fetch_yahoo(ticker, period="5y"):
+    """Forsøger Yahoo Finance først"""
+    try:
+        session = make_session()
+        tk = yf.Ticker(ticker, session=session)
+        info = tk.info
+        if not info or len(info) < 5:
+            return None
+        hist = tk.history(period=period, auto_adjust=True)
+        if hist.empty:
+            return None
+        news = []
+        try:
+            news = tk.news if hasattr(tk, "news") else []
+        except:
+            pass
+        return {"info": info, "hist": hist, "news": news, "source": "Yahoo Finance"}
+    except Exception as e:
+        msg = str(e).lower()
+        if "rate" in msg or "429" in msg or "too many" in msg:
+            return "RATE_LIMIT"
+        return None
+
+def fetch_finnhub(ticker, period="5y"):
+    """Backup: Finnhub API (kræver API-key)"""
+    if not FINNHUB_AVAILABLE or not FINNHUB_KEY:
+        return None
+    try:
+        client = finnhub.Client(api_key=FINNHUB_KEY)
+        # Profile + quote
+        profile = client.company_profile2(symbol=ticker)
+        if not profile:
+            return None
+        quote = client.quote(ticker)
+        metrics = client.company_basic_financials(ticker, 'all').get('metric', {})
+
+        # Byg info-dict der ligner yfinance format
+        info = {
+            "longName": profile.get("name", ticker),
+            "shortName": profile.get("name", ticker),
+            "sector": profile.get("finnhubIndustry", "?"),
+            "industry": profile.get("finnhubIndustry", "?"),
+            "country": profile.get("country", "?"),
+            "currency": profile.get("currency", "USD"),
+            "currentPrice": quote.get("c"),
+            "previousClose": quote.get("pc"),
+            "marketCap": (profile.get("marketCapitalization") or 0) * 1e6,
+            "sharesOutstanding": (profile.get("shareOutstanding") or 0) * 1e6,
+            "trailingPE": metrics.get("peNormalizedAnnual") or metrics.get("peTTM"),
+            "forwardPE": metrics.get("peTTM"),
+            "pegRatio": metrics.get("pegRatio"),
+            "priceToBook": metrics.get("pbAnnual"),
+            "priceToSalesTrailing12Months": metrics.get("psAnnual"),
+            "returnOnEquity": (metrics.get("roeRfy") or 0) / 100 if metrics.get("roeRfy") else None,
+            "returnOnAssets": (metrics.get("roaRfy") or 0) / 100 if metrics.get("roaRfy") else None,
+            "profitMargins": (metrics.get("netProfitMarginAnnual") or 0) / 100 if metrics.get("netProfitMarginAnnual") else None,
+            "operatingMargins": (metrics.get("operatingMarginAnnual") or 0) / 100 if metrics.get("operatingMarginAnnual") else None,
+            "grossMargins": (metrics.get("grossMarginAnnual") or 0) / 100 if metrics.get("grossMarginAnnual") else None,
+            "debtToEquity": metrics.get("totalDebt/totalEquityAnnual"),
+            "currentRatio": metrics.get("currentRatioAnnual"),
+            "quickRatio": metrics.get("quickRatioAnnual"),
+            "revenueGrowth": (metrics.get("revenueGrowthTTMYoy") or 0) / 100 if metrics.get("revenueGrowthTTMYoy") else None,
+            "earningsGrowth": (metrics.get("epsGrowthTTMYoy") or 0) / 100 if metrics.get("epsGrowthTTMYoy") else None,
+            "freeCashflow": metrics.get("freeCashFlowAnnual"),
+            "totalDebt": metrics.get("totalDebt"),
+            "totalCash": metrics.get("cashAndCashEquivalentsQuarterly"),
+            "dividendYield": (metrics.get("dividendYieldIndicatedAnnual") or 0) / 100 if metrics.get("dividendYieldIndicatedAnnual") else None,
+            "beta": metrics.get("beta"),
+        }
+
+        # Historiske data fra Finnhub
+        period_days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650, "max": 7300}.get(period, 1825)
+        end = int(time.time())
+        start = end - (period_days * 86400)
+        candles = client.stock_candles(ticker, "D", start, end)
+        if candles.get("s") != "ok":
+            return None
+        hist = pd.DataFrame({
+            "Open": candles["o"],
+            "High": candles["h"],
+            "Low": candles["l"],
+            "Close": candles["c"],
+            "Volume": candles["v"],
+        }, index=pd.to_datetime(candles["t"], unit="s"))
+
+        # News
+        news = []
+        try:
+            news_data = client.company_news(ticker, _from=(datetime.now()-timedelta(days=14)).strftime("%Y-%m-%d"), to=datetime.now().strftime("%Y-%m-%d"))
+            news = [{"content": {"title": n.get("headline"), "provider": {"displayName": n.get("source", "")}, "clickThroughUrl": {"url": n.get("url")}, "pubDate": datetime.fromtimestamp(n.get("datetime", 0)).strftime("%Y-%m-%d")}} for n in news_data[:15]]
+        except:
+            pass
+
+        return {"info": info, "hist": hist, "news": news, "source": "Finnhub"}
+    except Exception as e:
+        return None
+
+def fetch_stooq(ticker, period="5y"):
+    """Sidste backup: Stooq (kun historiske priser)"""
+    if not STOOQ_AVAILABLE:
+        return None
+    try:
+        # Stooq bruger andre symboler - .US for amerikanske
+        stooq_ticker = ticker.replace(".CO", ".CO").replace(".AS", ".AS").replace(".DE", ".DE")
+        if "." not in stooq_ticker:
+            stooq_ticker = f"{stooq_ticker}.US"
+
+        period_years = {"1y": 1, "2y": 2, "5y": 5, "10y": 10, "max": 20}.get(period, 5)
+        start = datetime.now() - timedelta(days=period_years*365)
+        hist = pdr.DataReader(stooq_ticker, "stooq", start=start, end=datetime.now())
+        if hist.empty:
+            return None
+        hist = hist.sort_index()  # Stooq returner desc, vi skal asc
+
+        # Minimal info
+        info = {
+            "longName": ticker,
+            "shortName": ticker,
+            "sector": "?",
+            "industry": "?",
+            "country": "?",
+            "currency": "USD",
+            "currentPrice": hist["Close"].iloc[-1],
+            "previousClose": hist["Close"].iloc[-2] if len(hist) > 1 else hist["Close"].iloc[-1],
+        }
+        return {"info": info, "hist": hist, "news": [], "source": "Stooq (kun pris)"}
+    except Exception as e:
+        return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_data(ticker, period="5y", max_retries=3):
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            session = make_session()
-            tk = yf.Ticker(ticker, session=session)
-            info = tk.info
-            if not info or len(info) < 5:
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                return None
-            hist = tk.history(period=period, auto_adjust=True)
-            if hist.empty:
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                return None
-            news = []
-            try:
-                news = tk.news if hasattr(tk, "news") else []
-            except:
-                pass
-            return {"info": info, "hist": hist, "news": news}
-        except Exception as e:
-            last_error = str(e)
-            if "rate" in last_error.lower() or "429" in last_error or "too many" in last_error.lower():
-                if attempt < max_retries - 1:
-                    time.sleep((2 ** attempt) * 2)
-                    continue
-                return {"error": "rate_limit", "msg": last_error}
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                continue
-            return {"error": "other", "msg": last_error}
+def fetch_data(ticker, period="5y"):
+    """Hybrid: Yahoo → Finnhub → Stooq"""
+    # Forsøg Yahoo
+    result = fetch_yahoo(ticker, period)
+    if result and result != "RATE_LIMIT":
+        return result
+
+    rate_limited = result == "RATE_LIMIT"
+
+    # Forsøg Finnhub
+    if FINNHUB_KEY:
+        result = fetch_finnhub(ticker, period)
+        if result:
+            if rate_limited:
+                result["warning"] = "Yahoo rate limited - bruger Finnhub"
+            return result
+
+    # Forsøg Stooq
+    result = fetch_stooq(ticker, period)
+    if result:
+        result["warning"] = "Begrænsede data - kun pris-historik tilgængelig"
+        return result
+
     return None
+
+# ============ HJÆLPEFUNKTIONER ============
 
 def safe(d, key, default=None):
     if d is None: return default
@@ -90,7 +232,7 @@ def fundamental_score(info):
         elif pe < 40: add(-3, "⚠️ P/E høj", f"{pe:.2f}")
         else: add(-8, "❌ P/E meget høj", f"{pe:.2f}")
     peg = safe(info, "pegRatio")
-    if peg and 0 < peg < 1: add(8, "✅ PEG < 1 (undervurderet)", f"{peg:.2f}")
+    if peg and 0 < peg < 1: add(8, "✅ PEG < 1", f"{peg:.2f}")
     elif peg and peg > 3: add(-5, "⚠️ PEG høj", f"{peg:.2f}")
     pb = safe(info, "priceToBook")
     if pb:
@@ -228,10 +370,24 @@ def recommendation(s):
     if s >= 30: return "🔴 SÆLG", "#ef4444"
     return "🔴 STÆRKT SÆLG", "#b91c1c"
 
+# ============ SIDEBAR ============
+
 with st.sidebar:
+    st.markdown("### 📡 Datakilder")
+    sources_status = []
+    sources_status.append("✅ Yahoo Finance")
+    sources_status.append("✅ Finnhub" if FINNHUB_KEY else "⚠️ Finnhub (no key)")
+    sources_status.append("✅ Stooq" if STOOQ_AVAILABLE else "❌ Stooq")
+    for s in sources_status:
+        st.caption(s)
+
+    if st.session_state.last_source != "?":
+        st.success(f"Sidst brugt: **{st.session_state.last_source}**")
+
+    st.markdown("---")
     st.markdown("### ⚙️ Indstillinger")
     period = st.selectbox("Periode", ["1y", "2y", "5y", "10y", "max"], index=2)
-    if st.button("🔄 Ryd cache (hvis rate limited)", use_container_width=True):
+    if st.button("🔄 Ryd cache", use_container_width=True):
         st.cache_data.clear()
         st.success("Cache ryddet!")
         time.sleep(1)
@@ -254,6 +410,8 @@ with st.sidebar:
                 if st.button(tk, key=f"q_{tk}", use_container_width=True):
                     st.session_state.selected_ticker = tk
 
+# ============ HOVED-UI ============
+
 c1, c2 = st.columns([4, 1])
 default_t = st.session_state.get("selected_ticker", "AAPL")
 ticker = c1.text_input("Ticker (fx AAPL, NOVO-B.CO)", value=default_t).strip().upper()
@@ -268,18 +426,16 @@ if go_btn or "selected_ticker" in st.session_state:
         data = fetch_data(ticker, period=period)
 
     if data is None:
-        st.error(f"❌ Kunne ikke finde ticker '{ticker}'.")
+        st.error(f"❌ Kunne ikke hente data for '{ticker}' fra nogen kilde.")
+        st.info("💡 Prøv en anden ticker eller vent et par minutter")
         st.stop()
 
-    if isinstance(data, dict) and "error" in data:
-        if data["error"] == "rate_limit":
-            st.warning("⏳ Yahoo Finance er midlertidigt overbelastet. Prøv en anden ticker eller vent et par minutter.")
-            if st.button("🔄 Prøv igen"):
-                st.cache_data.clear()
-                st.rerun()
-        else:
-            st.error(f"❌ Fejl: {data.get('msg', 'ukendt')}")
-        st.stop()
+    # Vis hvilken kilde der blev brugt
+    st.session_state.last_source = data["source"]
+    if data.get("warning"):
+        st.warning(f"⚠️ {data['warning']} — Kilde: **{data['source']}**")
+    else:
+        st.success(f"✅ Data hentet fra: **{data['source']}**")
 
     info = data["info"]
     hist = data["hist"]
@@ -346,6 +502,8 @@ if go_btn or "selected_ticker" in st.session_state:
             fig_f.update_layout(height=500, template="plotly_dark", showlegend=False)
             st.plotly_chart(fig_f, use_container_width=True)
             st.dataframe(df_f, use_container_width=True, hide_index=True)
+        else:
+            st.info("Ingen fundamentale data fra denne kilde")
 
     with tabs[2]:
         df_t = pd.DataFrame(t_det)
@@ -378,7 +536,7 @@ if go_btn or "selected_ticker" in st.session_state:
             fig_d.update_layout(template="plotly_dark", height=400)
             st.plotly_chart(fig_d, use_container_width=True)
         else:
-            st.warning("Ikke nok FCF-data til DCF")
+            st.warning("Ikke nok FCF-data til DCF (kræver Yahoo eller Finnhub som kilde)")
 
     with tabs[4]:
         risk = risk_metrics(hist)
@@ -426,6 +584,15 @@ if go_btn or "selected_ticker" in st.session_state:
                     st.caption(pub)
                     st.markdown("---")
         else:
-            st.info("Ingen nyheder")
+            st.info("Ingen nyheder tilgængelige")
 else:
     st.info("👆 Indtast en ticker og tryk **Analysér**, eller vælg fra sidebaren")
+    st.markdown("""
+    ### 🔥 Funktioner
+    - **Hybrid datakilde**: Yahoo → Finnhub → Stooq automatisk fallback
+    - **Multi-faktor scoring**: Fundamental + teknisk analyse
+    - **DCF værdiansættelse** med justerbare parametre
+    - **Risiko-metrics**: Sharpe, Sortino, VaR, drawdown
+    - **Monte Carlo simulering** (300 baner, 1 år frem)
+    - **Tekniske indikatorer**: RSI, MACD, Bollinger, ADX, ATR
+    """)
