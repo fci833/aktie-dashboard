@@ -11,22 +11,20 @@ from ta.volatility import BollingerBands, AverageTrueRange
 from datetime import datetime, timedelta
 from io import StringIO
 import time
+import traceback
 import warnings
 warnings.filterwarnings("ignore")
 
-# ============ DATAKILDER SETUP ============
 try:
     from curl_cffi import requests as curl_requests
     def make_session():
         return curl_requests.Session(impersonate="chrome")
-    CURL_AVAILABLE = True
 except ImportError:
     import requests
     def make_session():
         s = requests.Session()
         s.headers.update({"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0"})
         return s
-    CURL_AVAILABLE = False
 
 try:
     import finnhub
@@ -44,7 +42,6 @@ except Exception:
 
 st.set_page_config(page_title="Aktie Dashboard", layout="wide", page_icon="📈")
 st.markdown("<h1 style='background:linear-gradient(90deg,#00d4aa,#0099ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;'>📈 Pro Aktie Analyse Dashboard</h1>", unsafe_allow_html=True)
-st.caption("Hybrid datakilde · Yahoo → Finnhub → Stooq · Multi-faktor scoring")
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = []
@@ -54,26 +51,14 @@ if "last_source" not in st.session_state:
 # ============ TICKER MAPPING ============
 
 def to_stooq_ticker(ticker):
-    """Konverterer Yahoo ticker til Stooq format"""
     t = ticker.upper().strip()
-    # Danske: NOVO-B.CO -> NOVOB.CO
     if ".CO" in t:
         return t.replace("-", "").lower()
-    # Tyske: SAP.DE -> SAP.DE (samme format, men lowercase)
-    if ".DE" in t:
-        return t.lower()
-    # Hollandske: ASML.AS -> ASML.NL
-    if ".AS" in t:
-        return t.replace(".AS", ".NL").lower()
-    # Schweiziske: NESN.SW -> NESN.CH
-    if ".SW" in t:
-        return t.replace(".SW", ".CH").lower()
-    # Franske: MC.PA -> MC.FR
-    if ".PA" in t:
-        return t.replace(".PA", ".FR").lower()
-    # US (intet suffix): AAPL -> aapl.us
-    if "." not in t:
-        return f"{t.lower()}.us"
+    if ".DE" in t: return t.lower()
+    if ".AS" in t: return t.replace(".AS", ".NL").lower()
+    if ".SW" in t: return t.replace(".SW", ".CH").lower()
+    if ".PA" in t: return t.replace(".PA", ".FR").lower()
+    if "." not in t: return f"{t.lower()}.us"
     return t.lower()
 
 # ============ DATA FETCHERS ============
@@ -91,8 +76,7 @@ def fetch_yahoo(ticker, period="5y"):
         news = []
         try:
             news = tk.news if hasattr(tk, "news") else []
-        except:
-            pass
+        except: pass
         return {"info": info, "hist": hist, "news": news, "source": "Yahoo Finance"}
     except Exception as e:
         msg = str(e).lower()
@@ -101,10 +85,8 @@ def fetch_yahoo(ticker, period="5y"):
         return None
 
 def fetch_finnhub(ticker, period="5y"):
-    """Finnhub - bemærk: gratis tier dækker primært US aktier"""
     if not FINNHUB_AVAILABLE or not FINNHUB_KEY:
         return None
-    # Finnhub gratis tier understøtter kun US aktier
     if "." in ticker:
         return None
     try:
@@ -116,10 +98,8 @@ def fetch_finnhub(ticker, period="5y"):
         if not quote.get("c"):
             return None
         metrics = client.company_basic_financials(ticker, 'all').get('metric', {})
-
         info = {
             "longName": profile.get("name", ticker),
-            "shortName": profile.get("name", ticker),
             "sector": profile.get("finnhubIndustry", "?"),
             "industry": profile.get("finnhubIndustry", "?"),
             "country": profile.get("country", "?"),
@@ -128,92 +108,63 @@ def fetch_finnhub(ticker, period="5y"):
             "previousClose": quote.get("pc"),
             "marketCap": (profile.get("marketCapitalization") or 0) * 1e6,
             "sharesOutstanding": (profile.get("shareOutstanding") or 0) * 1e6,
-            "trailingPE": metrics.get("peNormalizedAnnual") or metrics.get("peTTM"),
-            "forwardPE": metrics.get("peTTM"),
+            "trailingPE": metrics.get("peTTM"),
             "priceToBook": metrics.get("pbAnnual"),
-            "priceToSalesTrailing12Months": metrics.get("psAnnual"),
             "returnOnEquity": (metrics.get("roeRfy") or 0) / 100 if metrics.get("roeRfy") else None,
-            "returnOnAssets": (metrics.get("roaRfy") or 0) / 100 if metrics.get("roaRfy") else None,
             "profitMargins": (metrics.get("netProfitMarginAnnual") or 0) / 100 if metrics.get("netProfitMarginAnnual") else None,
-            "operatingMargins": (metrics.get("operatingMarginAnnual") or 0) / 100 if metrics.get("operatingMarginAnnual") else None,
-            "grossMargins": (metrics.get("grossMarginAnnual") or 0) / 100 if metrics.get("grossMarginAnnual") else None,
             "debtToEquity": metrics.get("totalDebt/totalEquityAnnual"),
             "currentRatio": metrics.get("currentRatioAnnual"),
-            "quickRatio": metrics.get("quickRatioAnnual"),
             "revenueGrowth": (metrics.get("revenueGrowthTTMYoy") or 0) / 100 if metrics.get("revenueGrowthTTMYoy") else None,
-            "earningsGrowth": (metrics.get("epsGrowthTTMYoy") or 0) / 100 if metrics.get("epsGrowthTTMYoy") else None,
             "freeCashflow": metrics.get("freeCashFlowAnnual"),
-            "totalDebt": metrics.get("totalDebt"),
-            "totalCash": metrics.get("cashAndCashEquivalentsQuarterly"),
-            "dividendYield": (metrics.get("dividendYieldIndicatedAnnual") or 0) / 100 if metrics.get("dividendYieldIndicatedAnnual") else None,
             "beta": metrics.get("beta"),
         }
-
-        # Historiske priser fra Finnhub (NB: kan kræve betalt plan)
-        try:
-            period_days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650, "max": 7300}.get(period, 1825)
-            end = int(time.time())
-            start = end - (period_days * 86400)
-            candles = client.stock_candles(ticker, "D", start, end)
-            if candles.get("s") == "ok":
-                hist = pd.DataFrame({
-                    "Open": candles["o"], "High": candles["h"], "Low": candles["l"],
-                    "Close": candles["c"], "Volume": candles["v"],
-                }, index=pd.to_datetime(candles["t"], unit="s"))
-            else:
-                # Fallback: brug Stooq for historik når Finnhub ikke giver candles
-                hist = fetch_stooq_only(ticker, period)
-                if hist is None or hist.empty:
-                    return None
-        except:
-            hist = fetch_stooq_only(ticker, period)
-            if hist is None or hist.empty:
-                return None
-
-        news = []
-        try:
-            nd = client.company_news(ticker, _from=(datetime.now()-timedelta(days=14)).strftime("%Y-%m-%d"), to=datetime.now().strftime("%Y-%m-%d"))
-            news = [{"content": {"title": n.get("headline"), "provider": {"displayName": n.get("source", "")}, "clickThroughUrl": {"url": n.get("url")}}} for n in nd[:15]]
-        except:
-            pass
-
-        return {"info": info, "hist": hist, "news": news, "source": "Finnhub"}
+        # Brug Stooq for historik (Finnhub candles kræver betalt plan)
+        hist = fetch_stooq_only(ticker, period)
+        if hist is None or hist.empty:
+            return None
+        return {"info": info, "hist": hist, "news": [], "source": "Finnhub + Stooq"}
     except Exception as e:
         return None
 
 def fetch_stooq_only(ticker, period="5y"):
-    """Henter KUN historik fra Stooq (intern hjælper)"""
+    """Returnerer pandas DataFrame eller None"""
     stooq_t = to_stooq_ticker(ticker)
     period_years = {"1y": 1, "2y": 2, "5y": 5, "10y": 10, "max": 30}.get(period, 5)
     start = (datetime.now() - timedelta(days=period_years*365)).strftime("%Y%m%d")
     end = datetime.now().strftime("%Y%m%d")
     url = f"https://stooq.com/q/d/l/?s={stooq_t}&d1={start}&d2={end}&i=d"
     try:
-        r = plain_requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code != 200 or len(r.text) < 100:
+        r = plain_requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
             return None
-        df = pd.read_csv(StringIO(r.text))
+        text = r.text.strip()
+        # Stooq returnerer "No data" hvis ticker ikke findes
+        if len(text) < 50 or "no data" in text.lower():
+            return None
+        df = pd.read_csv(StringIO(text))
         if df.empty or "Date" not in df.columns:
             return None
         df["Date"] = pd.to_datetime(df["Date"])
         df.set_index("Date", inplace=True)
         df = df.sort_index()
-        # Stooq kolonner: Date,Open,High,Low,Close,Volume
+        # Tjek alle nødvendige kolonner findes
+        required = ["Open", "High", "Low", "Close"]
+        for col in required:
+            if col not in df.columns:
+                return None
+        if "Volume" not in df.columns:
+            df["Volume"] = 0
         return df
-    except Exception:
+    except Exception as e:
         return None
 
 def fetch_stooq(ticker, period="5y"):
-    """Komplet Stooq fetcher"""
     hist = fetch_stooq_only(ticker, period)
     if hist is None or hist.empty:
         return None
     info = {
         "longName": ticker,
-        "shortName": ticker,
-        "sector": "?",
-        "industry": "?",
-        "country": "?",
+        "sector": "?", "industry": "?", "country": "?",
         "currency": "DKK" if ".CO" in ticker else "USD",
         "currentPrice": float(hist["Close"].iloc[-1]),
         "previousClose": float(hist["Close"].iloc[-2]) if len(hist) > 1 else float(hist["Close"].iloc[-1]),
@@ -222,7 +173,6 @@ def fetch_stooq(ticker, period="5y"):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_data(ticker, period="5y"):
-    """Hybrid: Yahoo → Finnhub → Stooq"""
     result = fetch_yahoo(ticker, period)
     if result and result != "RATE_LIMIT":
         return result
@@ -238,12 +188,72 @@ def fetch_data(ticker, period="5y"):
     result = fetch_stooq(ticker, period)
     if result:
         if rate_limited:
-            result["warning"] = "Yahoo rate limited - bruger Stooq (kun pris-data, ingen fundamentals)"
+            result["warning"] = "Yahoo rate limited - bruger Stooq (kun pris-data)"
         else:
-            result["warning"] = "Begrænset data - kun pris-historik (ingen fundamentals/scoring)"
+            result["warning"] = "Begrænset data - kun pris-historik"
         return result
-
     return None
+
+# ============ DIAGNOSE ============
+
+def run_diagnostics(ticker):
+    """Tester hver kilde og returnerer detaljeret rapport"""
+    results = []
+
+    # Test 1: Yahoo
+    try:
+        t0 = time.time()
+        r = fetch_yahoo(ticker, "1y")
+        dt = time.time() - t0
+        if r == "RATE_LIMIT":
+            results.append(("Yahoo Finance", "❌ Rate limited", f"{dt:.1f}s", "Yahoo har blokeret IP'en. Vent 5-15 min."))
+        elif r is None:
+            results.append(("Yahoo Finance", "❌ Ingen data", f"{dt:.1f}s", "Ticker findes ikke eller fejl"))
+        else:
+            results.append(("Yahoo Finance", "✅ Virker", f"{dt:.1f}s", f"{len(r['hist'])} dage data"))
+    except Exception as e:
+        results.append(("Yahoo Finance", "❌ Crash", "-", str(e)[:100]))
+
+    # Test 2: Finnhub
+    if not FINNHUB_KEY:
+        results.append(("Finnhub", "⚠️ Ingen API key", "-", "Tilføj FINNHUB_API_KEY i secrets"))
+    elif "." in ticker:
+        results.append(("Finnhub", "⚠️ Springet over", "-", "Gratis tier kun US aktier"))
+    else:
+        try:
+            t0 = time.time()
+            r = fetch_finnhub(ticker, "1y")
+            dt = time.time() - t0
+            if r is None:
+                results.append(("Finnhub", "❌ Ingen data", f"{dt:.1f}s", "API fejl eller ingen data"))
+            else:
+                results.append(("Finnhub", "✅ Virker", f"{dt:.1f}s", f"{len(r['hist'])} dage data"))
+        except Exception as e:
+            results.append(("Finnhub", "❌ Crash", "-", str(e)[:100]))
+
+    # Test 3: Stooq
+    try:
+        t0 = time.time()
+        stooq_t = to_stooq_ticker(ticker)
+        url = f"https://stooq.com/q/d/l/?s={stooq_t}&d1=20240101&d2={datetime.now().strftime('%Y%m%d')}&i=d"
+        r = plain_requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        dt = time.time() - t0
+
+        status = f"HTTP {r.status_code}, {len(r.text)} chars"
+        if r.status_code != 200:
+            results.append(("Stooq", "❌ HTTP fejl", f"{dt:.1f}s", status))
+        elif "no data" in r.text.lower() or len(r.text) < 50:
+            results.append(("Stooq", "❌ Ingen data", f"{dt:.1f}s", f"Stooq ticker '{stooq_t}' findes ikke. Response: {r.text[:100]}"))
+        else:
+            try:
+                df = pd.read_csv(StringIO(r.text))
+                results.append(("Stooq", "✅ Virker", f"{dt:.1f}s", f"Ticker '{stooq_t}', {len(df)} dage"))
+            except Exception as e:
+                results.append(("Stooq", "❌ Parse fejl", f"{dt:.1f}s", f"CSV: {r.text[:200]}"))
+    except Exception as e:
+        results.append(("Stooq", "❌ Crash", "-", str(e)[:200]))
+
+    return results
 
 # ============ HJÆLPEFUNKTIONER ============
 
@@ -265,9 +275,6 @@ def fundamental_score(info):
         elif pe < 25: add(3, "➖ P/E moderat", f"{pe:.2f}")
         elif pe < 40: add(-3, "⚠️ P/E høj", f"{pe:.2f}")
         else: add(-8, "❌ P/E meget høj", f"{pe:.2f}")
-    peg = safe(info, "pegRatio")
-    if peg and 0 < peg < 1: add(8, "✅ PEG < 1", f"{peg:.2f}")
-    elif peg and peg > 3: add(-5, "⚠️ PEG høj", f"{peg:.2f}")
     pb = safe(info, "priceToBook")
     if pb:
         if pb < 1: add(6, "✅ P/B < 1", f"{pb:.2f}")
@@ -411,14 +418,11 @@ with st.sidebar:
     st.caption("✅ Yahoo Finance")
     st.caption("✅ Finnhub" if FINNHUB_KEY else "⚠️ Finnhub (no key)")
     st.caption("✅ Stooq")
-    if FINNHUB_KEY:
-        st.caption("ℹ️ Finnhub gratis tier dækker kun US aktier")
 
     if st.session_state.last_source != "?":
-        st.success(f"Sidst brugt: **{st.session_state.last_source}**")
+        st.success(f"Sidst: **{st.session_state.last_source}**")
 
     st.markdown("---")
-    st.markdown("### ⚙️ Indstillinger")
     period = st.selectbox("Periode", ["1y", "2y", "5y", "10y", "max"], index=2)
     if st.button("🔄 Ryd cache", use_container_width=True):
         st.cache_data.clear()
@@ -426,16 +430,8 @@ with st.sidebar:
         time.sleep(1)
         st.rerun()
     st.markdown("---")
-    st.markdown("### ⭐ Watchlist")
-    for w in st.session_state.watchlist:
-        ca, cb = st.columns([3, 1])
-        ca.write(f"📌 {w}")
-        if cb.button("✕", key=f"rm_{w}"):
-            st.session_state.watchlist.remove(w)
-            st.rerun()
-    st.markdown("---")
     st.markdown("### 📋 Hurtige tickers")
-    for region, ts in {"🇺🇸 US": ["AAPL","MSFT","GOOGL","NVDA","TSLA","AMZN","META"],
+    for region, ts in {"🇺🇸 US": ["AAPL","MSFT","GOOGL","NVDA","TSLA"],
                        "🇩🇰 DK": ["NOVO-B.CO","MAERSK-B.CO","DSV.CO","ORSTED.CO"],
                        "🇪🇺 EU": ["ASML.AS","SAP.DE","NESN.SW"]}.items():
         with st.expander(region):
@@ -445,191 +441,182 @@ with st.sidebar:
 
 # ============ HOVED-UI ============
 
-c1, c2 = st.columns([4, 1])
-default_t = st.session_state.get("selected_ticker", "AAPL")
-ticker = c1.text_input("Ticker (fx AAPL, NOVO-B.CO)", value=default_t).strip().upper()
-go_btn = c2.button("🔍 Analysér", type="primary", use_container_width=True)
+main_tab, diag_tab = st.tabs(["📊 Analyse", "🔧 Diagnose"])
 
-if go_btn or "selected_ticker" in st.session_state:
-    if "selected_ticker" in st.session_state:
-        ticker = st.session_state.selected_ticker
-        del st.session_state.selected_ticker
+with diag_tab:
+    st.subheader("🔧 Diagnose - Test datakilder")
+    st.caption("Test hver datakilde individuelt for at se HVAD der fejler")
 
-    with st.spinner(f"Henter data for {ticker}..."):
-        data = fetch_data(ticker, period=period)
+    diag_ticker = st.text_input("Test ticker", value="AAPL", key="diag_ticker").strip().upper()
+    if st.button("🔍 Kør diagnose", type="primary"):
+        with st.spinner(f"Tester alle kilder for {diag_ticker}..."):
+            results = run_diagnostics(diag_ticker)
+        st.markdown("### Resultater")
+        for source, status, time_taken, details in results:
+            with st.expander(f"{status} **{source}** ({time_taken})", expanded=True):
+                st.code(details, language=None)
 
-    if data is None:
-        st.error(f"❌ Kunne ikke hente data for '{ticker}' fra nogen kilde.")
-        st.info("💡 Prøv:\n- AAPL, MSFT (US)\n- NOVO-B.CO, MAERSK-B.CO (DK)\n- ASML.AS, SAP.DE (EU)\n\nEller vent et par minutter.")
-        st.stop()
+        st.markdown("---")
+        st.markdown("### 🔍 Stooq URL test")
+        stooq_t = to_stooq_ticker(diag_ticker)
+        test_url = f"https://stooq.com/q/d/l/?s={stooq_t}&d1=20240101&d2={datetime.now().strftime('%Y%m%d')}&i=d"
+        st.code(test_url)
+        st.caption("Klik linket for at se rådata fra Stooq direkte")
+        st.markdown(f"[Åbn i browser →]({test_url})")
 
-    st.session_state.last_source = data["source"]
-    if data.get("warning"):
-        st.warning(f"⚠️ {data['warning']}")
+with main_tab:
+    c1, c2 = st.columns([4, 1])
+    default_t = st.session_state.get("selected_ticker", "AAPL")
+    ticker = c1.text_input("Ticker (fx AAPL, NOVO-B.CO)", value=default_t).strip().upper()
+    go_btn = c2.button("🔍 Analysér", type="primary", use_container_width=True)
+
+    if go_btn or "selected_ticker" in st.session_state:
+        if "selected_ticker" in st.session_state:
+            ticker = st.session_state.selected_ticker
+            del st.session_state.selected_ticker
+
+        with st.spinner(f"Henter data for {ticker}..."):
+            data = fetch_data(ticker, period=period)
+
+        if data is None:
+            st.error(f"❌ Kunne ikke hente data for '{ticker}' fra nogen kilde.")
+            st.info("👉 Gå til **🔧 Diagnose** fanen øverst og test for at se hvad der præcist fejler!")
+            st.stop()
+
+        st.session_state.last_source = data["source"]
+        if data.get("warning"):
+            st.warning(f"⚠️ {data['warning']}")
+        else:
+            st.success(f"✅ Data hentet fra: **{data['source']}**")
+
+        info = data["info"]
+        hist = data["hist"]
+        df = add_indicators(hist)
+
+        if ticker not in st.session_state.watchlist:
+            st.session_state.watchlist.append(ticker)
+
+        navn = info.get("longName") or ticker
+        pris = info.get("currentPrice") or hist["Close"].iloc[-1]
+        valuta = info.get("currency", "USD")
+        prev = info.get("previousClose", hist["Close"].iloc[-2] if len(hist) > 1 else pris)
+        change_pct = (pris/prev-1)*100 if prev else 0
+
+        st.markdown(f"## {navn} ({ticker})")
+        st.caption(f"🏢 {info.get('sector','?')} · 🌍 {info.get('country','?')} · 💱 {valuta}")
+
+        k = st.columns(6)
+        k[0].metric("Pris", f"{pris:,.2f}", f"{change_pct:+.2f}%")
+        mc = info.get("marketCap")
+        k[1].metric("Market cap", f"{mc/1e9:,.1f}B" if mc else "-")
+        k[2].metric("P/E", f"{info.get('trailingPE'):.1f}" if info.get("trailingPE") else "-")
+        k[3].metric("Fwd P/E", f"{info.get('forwardPE'):.1f}" if info.get("forwardPE") else "-")
+        k[4].metric("Yield", f"{info.get('dividendYield')*100:.2f}%" if info.get("dividendYield") else "-")
+        k[5].metric("Beta", f"{info.get('beta'):.2f}" if info.get("beta") else "-")
+
+        f_score, f_det = fundamental_score(info)
+        t_score, t_det = technical_score(df)
+        overall = f_score * 0.6 + t_score * 0.4
+        f_a, f_c = recommendation(f_score)
+        t_a, t_c = recommendation(t_score)
+        o_a, o_c = recommendation(overall)
+
+        st.markdown("---")
+        r1, r2, r3 = st.columns(3)
+        for col, label, anb, color, sc in [
+            (r1, "🏛️ Langsigtet", f_a, f_c, f_score),
+            (r2, "⚡ Kortsigtet", t_a, t_c, t_score),
+            (r3, "🎯 Samlet", o_a, o_c, overall)]:
+            col.markdown(f"<div style='padding:1.5rem;border-radius:12px;text-align:center;background:{color}22;border:2px solid {color}'><div style='font-size:0.9rem'>{label}</div><div style='font-size:1.8rem;font-weight:800;color:{color};margin:0.5rem 0'>{anb}</div><div style='font-size:1.5rem;font-weight:700'>{sc:.0f}/100</div></div>", unsafe_allow_html=True)
+
+        sub_tabs = st.tabs(["📊 Charts", "📋 Fundamentals", "🔧 Teknisk", "💎 DCF", "📉 Risiko", "🎲 Monte Carlo"])
+
+        with sub_tabs[0]:
+            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.05)
+            fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Pris"), 1, 1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA50", line=dict(color="orange")), 1, 1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["SMA200"], name="SMA200", line=dict(color="purple")), 1, 1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI", line=dict(color="#00d4aa")), 2, 1)
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["MACD"], name="MACD", line=dict(color="#0099ff")), 3, 1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["MACD_signal"], name="Signal", line=dict(color="orange")), 3, 1)
+            fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_dark")
+            st.plotly_chart(fig, use_container_width=True)
+
+        with sub_tabs[1]:
+            df_f = pd.DataFrame(f_det)
+            if not df_f.empty:
+                fig_f = px.bar(df_f, x="impact", y="label", orientation="h", color="impact", color_continuous_scale="RdYlGn")
+                fig_f.update_layout(height=500, template="plotly_dark", showlegend=False)
+                st.plotly_chart(fig_f, use_container_width=True)
+                st.dataframe(df_f, use_container_width=True, hide_index=True)
+            else:
+                st.info(f"Ingen fundamentale data fra **{data['source']}**")
+
+        with sub_tabs[2]:
+            df_t = pd.DataFrame(t_det)
+            if not df_t.empty:
+                fig_t = px.bar(df_t, x="impact", y="label", orientation="h", color="impact", color_continuous_scale="RdYlGn")
+                fig_t.update_layout(height=400, template="plotly_dark", showlegend=False)
+                st.plotly_chart(fig_t, use_container_width=True)
+            last = df.iloc[-1]
+            cc = st.columns(4)
+            cc[0].metric("RSI", f"{last['RSI']:.1f}" if not np.isnan(last['RSI']) else "-")
+            cc[1].metric("MACD", f"{last['MACD']:.3f}" if not np.isnan(last['MACD']) else "-")
+            cc[2].metric("ADX", f"{last['ADX']:.1f}" if not np.isnan(last['ADX']) else "-")
+            cc[3].metric("ATR", f"{last['ATR']:.2f}" if not np.isnan(last['ATR']) else "-")
+
+        with sub_tabs[3]:
+            c = st.columns(3)
+            cg = c[0].slider("Vækstrate", 0.0, 0.30, 0.10, 0.01)
+            cdr = c[1].slider("Diskontering", 0.05, 0.20, 0.10, 0.01)
+            ct = c[2].slider("Terminal vækst", 0.01, 0.05, 0.025, 0.005)
+            fair = dcf_valuation(info, cg, cdr, ct)
+            if fair:
+                up = (fair/pris-1)*100
+                color = "#16a34a" if up > 0 else "#ef4444"
+                d = st.columns(3)
+                d[0].metric("Aktuel pris", f"{pris:.2f}")
+                d[1].metric("DCF fair value", f"{fair:.2f}")
+                d[2].metric("Upside", f"{up:+.1f}%")
+            else:
+                st.warning("Ikke nok FCF-data til DCF")
+
+        with sub_tabs[4]:
+            risk = risk_metrics(hist)
+            c = st.columns(4)
+            c[0].metric("Ann. afkast", f"{risk['ann_r']*100:.2f}%")
+            c[1].metric("Ann. volatilitet", f"{risk['ann_v']*100:.2f}%")
+            c[2].metric("Sharpe", f"{risk['sharpe']:.2f}")
+            c[3].metric("Sortino", f"{risk['sortino']:.2f}")
+            c2 = st.columns(2)
+            c2[0].metric("Max drawdown", f"{risk['max_dd']*100:.2f}%")
+            c2[1].metric("VaR 95%", f"{risk['var95']*100:.2f}%")
+            fig_dd = go.Figure(go.Scatter(x=risk['dd_series'].index, y=risk['dd_series']*100, fill="tozeroy", line=dict(color="#ef4444")))
+            fig_dd.update_layout(template="plotly_dark", height=350, title="Drawdown %")
+            st.plotly_chart(fig_dd, use_container_width=True)
+
+        with sub_tabs[5]:
+            sims, lp = monte_carlo(hist)
+            final = sims[:, -1]
+            p5, p50, p95 = np.percentile(final, [5, 50, 95])
+            c = st.columns(4)
+            c[0].metric("Start", f"{lp:.2f}")
+            c[1].metric("5%", f"{p5:.2f}", f"{(p5/lp-1)*100:+.1f}%")
+            c[2].metric("Median", f"{p50:.2f}", f"{(p50/lp-1)*100:+.1f}%")
+            c[3].metric("95%", f"{p95:.2f}", f"{(p95/lp-1)*100:+.1f}%")
+            fig_m = go.Figure()
+            for i in range(min(100, len(sims))):
+                fig_m.add_trace(go.Scatter(y=sims[i], line=dict(width=0.5, color="rgba(0,212,170,0.15)"), showlegend=False))
+            fig_m.add_trace(go.Scatter(y=np.percentile(sims, 50, axis=0), name="Median", line=dict(color="#00d4aa", width=3)))
+            fig_m.update_layout(template="plotly_dark", height=500)
+            st.plotly_chart(fig_m, use_container_width=True)
     else:
-        st.success(f"✅ Data hentet fra: **{data['source']}**")
-
-    info = data["info"]
-    hist = data["hist"]
-    df = add_indicators(hist)
-
-    if ticker not in st.session_state.watchlist:
-        st.session_state.watchlist.append(ticker)
-
-    navn = info.get("longName") or ticker
-    pris = info.get("currentPrice") or hist["Close"].iloc[-1]
-    valuta = info.get("currency", "USD")
-    prev = info.get("previousClose", hist["Close"].iloc[-2] if len(hist) > 1 else pris)
-    change_pct = (pris/prev-1)*100 if prev else 0
-
-    st.markdown(f"## {navn} ({ticker})")
-    st.caption(f"🏢 {info.get('sector','?')} · {info.get('industry','?')} · 🌍 {info.get('country','?')} · 💱 {valuta}")
-
-    k = st.columns(6)
-    k[0].metric("Pris", f"{pris:,.2f}", f"{change_pct:+.2f}%")
-    mc = info.get("marketCap")
-    k[1].metric("Market cap", f"{mc/1e9:,.1f}B" if mc else "-")
-    k[2].metric("P/E", f"{info.get('trailingPE'):.1f}" if info.get("trailingPE") else "-")
-    k[3].metric("Fwd P/E", f"{info.get('forwardPE'):.1f}" if info.get("forwardPE") else "-")
-    k[4].metric("Yield", f"{info.get('dividendYield')*100:.2f}%" if info.get("dividendYield") else "-")
-    k[5].metric("Beta", f"{info.get('beta'):.2f}" if info.get("beta") else "-")
-
-    f_score, f_det = fundamental_score(info)
-    t_score, t_det = technical_score(df)
-    overall = f_score * 0.6 + t_score * 0.4
-    f_a, f_c = recommendation(f_score)
-    t_a, t_c = recommendation(t_score)
-    o_a, o_c = recommendation(overall)
-
-    st.markdown("---")
-    r1, r2, r3 = st.columns(3)
-    for col, label, anb, color, sc in [
-        (r1, "🏛️ Langsigtet (12+ mdr)", f_a, f_c, f_score),
-        (r2, "⚡ Kortsigtet (1-3 mdr)", t_a, t_c, t_score),
-        (r3, "🎯 Samlet vurdering", o_a, o_c, overall)]:
-        col.markdown(f"<div style='padding:1.5rem;border-radius:12px;text-align:center;background:{color}22;border:2px solid {color}'><div style='font-size:0.9rem'>{label}</div><div style='font-size:1.8rem;font-weight:800;color:{color};margin:0.5rem 0'>{anb}</div><div style='font-size:1.5rem;font-weight:700'>{sc:.0f}/100</div></div>", unsafe_allow_html=True)
-
-    tabs = st.tabs(["📊 Charts", "📋 Fundamentals", "🔧 Teknisk", "💎 DCF", "📉 Risiko", "🎲 Monte Carlo", "📰 Nyheder"])
-
-    with tabs[0]:
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2],
-                           vertical_spacing=0.05, subplot_titles=("Pris + indikatorer", "RSI", "MACD"))
-        fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Pris"), 1, 1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA50", line=dict(color="orange")), 1, 1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["SMA200"], name="SMA200", line=dict(color="purple")), 1, 1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["BB_high"], name="BB up", line=dict(color="rgba(150,150,150,0.4)", dash="dot")), 1, 1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["BB_low"], name="BB low", line=dict(color="rgba(150,150,150,0.4)", dash="dot"), fill="tonexty", fillcolor="rgba(150,150,150,0.05)"), 1, 1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI", line=dict(color="#00d4aa")), 2, 1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["MACD"], name="MACD", line=dict(color="#0099ff")), 3, 1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["MACD_signal"], name="Signal", line=dict(color="orange")), 3, 1)
-        fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_dark")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with tabs[1]:
-        df_f = pd.DataFrame(f_det)
-        if not df_f.empty:
-            fig_f = px.bar(df_f, x="impact", y="label", orientation="h", color="impact", color_continuous_scale="RdYlGn")
-            fig_f.update_layout(height=500, template="plotly_dark", showlegend=False)
-            st.plotly_chart(fig_f, use_container_width=True)
-            st.dataframe(df_f, use_container_width=True, hide_index=True)
-        else:
-            st.info(f"Ingen fundamentale data fra **{data['source']}**. Prøv en US-ticker for fuld analyse.")
-
-    with tabs[2]:
-        df_t = pd.DataFrame(t_det)
-        if not df_t.empty:
-            fig_t = px.bar(df_t, x="impact", y="label", orientation="h", color="impact", color_continuous_scale="RdYlGn")
-            fig_t.update_layout(height=400, template="plotly_dark", showlegend=False)
-            st.plotly_chart(fig_t, use_container_width=True)
-        last = df.iloc[-1]
-        cc = st.columns(4)
-        cc[0].metric("RSI", f"{last['RSI']:.1f}" if not np.isnan(last['RSI']) else "-")
-        cc[1].metric("MACD", f"{last['MACD']:.3f}" if not np.isnan(last['MACD']) else "-")
-        cc[2].metric("ADX", f"{last['ADX']:.1f}" if not np.isnan(last['ADX']) else "-")
-        cc[3].metric("ATR", f"{last['ATR']:.2f}" if not np.isnan(last['ATR']) else "-")
-
-    with tabs[3]:
-        st.subheader("💎 DCF Værdiansættelse")
-        c = st.columns(3)
-        cg = c[0].slider("Vækstrate", 0.0, 0.30, 0.10, 0.01)
-        cdr = c[1].slider("Diskontering", 0.05, 0.20, 0.10, 0.01)
-        ct = c[2].slider("Terminal vækst", 0.01, 0.05, 0.025, 0.005)
-        fair = dcf_valuation(info, cg, cdr, ct)
-        if fair:
-            up = (fair/pris-1)*100
-            color = "#16a34a" if up > 0 else "#ef4444"
-            d = st.columns(3)
-            d[0].metric("Aktuel pris", f"{pris:.2f}")
-            d[1].metric("DCF fair value", f"{fair:.2f}")
-            d[2].metric("Upside", f"{up:+.1f}%")
-            fig_d = go.Figure(go.Bar(x=["Aktuel", "Fair value"], y=[pris, fair], marker_color=["#0099ff", color], text=[f"{pris:.2f}", f"{fair:.2f}"], textposition="outside"))
-            fig_d.update_layout(template="plotly_dark", height=400)
-            st.plotly_chart(fig_d, use_container_width=True)
-        else:
-            st.warning("Ikke nok FCF-data til DCF (kræver Yahoo eller Finnhub)")
-
-    with tabs[4]:
-        risk = risk_metrics(hist)
-        c = st.columns(4)
-        c[0].metric("Ann. afkast", f"{risk['ann_r']*100:.2f}%")
-        c[1].metric("Ann. volatilitet", f"{risk['ann_v']*100:.2f}%")
-        c[2].metric("Sharpe", f"{risk['sharpe']:.2f}")
-        c[3].metric("Sortino", f"{risk['sortino']:.2f}")
-        c2 = st.columns(2)
-        c2[0].metric("Max drawdown", f"{risk['max_dd']*100:.2f}%")
-        c2[1].metric("VaR 95%", f"{risk['var95']*100:.2f}%")
-        fig_dd = go.Figure(go.Scatter(x=risk['dd_series'].index, y=risk['dd_series']*100, fill="tozeroy", line=dict(color="#ef4444")))
-        fig_dd.update_layout(template="plotly_dark", height=350, title="Drawdown %")
-        st.plotly_chart(fig_dd, use_container_width=True)
-
-    with tabs[5]:
-        st.subheader("🎲 Monte Carlo (1 år frem)")
-        sims, lp = monte_carlo(hist)
-        final = sims[:, -1]
-        p5, p50, p95 = np.percentile(final, [5, 50, 95])
-        c = st.columns(4)
-        c[0].metric("Start", f"{lp:.2f}")
-        c[1].metric("5% (worst)", f"{p5:.2f}", f"{(p5/lp-1)*100:+.1f}%")
-        c[2].metric("Median", f"{p50:.2f}", f"{(p50/lp-1)*100:+.1f}%")
-        c[3].metric("95% (best)", f"{p95:.2f}", f"{(p95/lp-1)*100:+.1f}%")
-        fig_m = go.Figure()
-        for i in range(min(100, len(sims))):
-            fig_m.add_trace(go.Scatter(y=sims[i], line=dict(width=0.5, color="rgba(0,212,170,0.15)"), showlegend=False))
-        fig_m.add_trace(go.Scatter(y=np.percentile(sims, 50, axis=0), name="Median", line=dict(color="#00d4aa", width=3)))
-        fig_m.add_trace(go.Scatter(y=np.percentile(sims, 95, axis=0), name="95%", line=dict(color="#0099ff", dash="dash")))
-        fig_m.add_trace(go.Scatter(y=np.percentile(sims, 5, axis=0), name="5%", line=dict(color="#ef4444", dash="dash")))
-        fig_m.update_layout(template="plotly_dark", height=500)
-        st.plotly_chart(fig_m, use_container_width=True)
-
-    with tabs[6]:
-        news = data.get("news", [])
-        if news:
-            for n in news[:10]:
-                content = n.get("content", n)
-                title = content.get("title") if isinstance(content, dict) else n.get("title", "")
-                pub = content.get("provider", {}).get("displayName", "") if isinstance(content, dict) else n.get("publisher", "")
-                link = (content.get("clickThroughUrl", {}) or {}).get("url") if isinstance(content, dict) else n.get("link", "")
-                if title:
-                    st.markdown(f"**[{title}]({link})**" if link else f"**{title}**")
-                    st.caption(pub)
-                    st.markdown("---")
-        else:
-            st.info("Ingen nyheder tilgængelige fra denne kilde")
-else:
-    st.info("👆 Indtast en ticker og tryk **Analysér**, eller vælg fra sidebaren")
-    st.markdown("""
-    ### 🔥 Funktioner
-    - **Hybrid datakilde**: Yahoo → Finnhub → Stooq automatisk fallback
-    - **Multi-faktor scoring**: Fundamental + teknisk analyse
-    - **DCF værdiansættelse** med justerbare parametre
-    - **Risiko-metrics**: Sharpe, Sortino, VaR, drawdown
-    - **Monte Carlo simulering** (300 baner, 1 år frem)
-    - **Tekniske indikatorer**: RSI, MACD, Bollinger, ADX, ATR
-
-    ### 📡 Datakilder
-    - **Yahoo Finance**: Bedst dækning, alle aktier (kan rate limite)
-    - **Finnhub**: Backup for US aktier (gratis API)
-    - **Stooq**: Backup for alle (kun pris-historik)
-    """)
+        st.info("👆 Indtast en ticker og tryk **Analysér**")
+        st.markdown("""
+        ### 💡 Hvis det fejler:
+        1. Gå til **🔧 Diagnose** fanen
+        2. Test ticker'en der
+        3. Se HVILKEN kilde der fejler og hvorfor
+        """)
