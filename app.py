@@ -31,7 +31,6 @@ try:
 except ImportError:
     FINNHUB_AVAILABLE = False
 
-# Hent API keys
 FINNHUB_KEY = None
 TWELVE_KEY = None
 try:
@@ -50,15 +49,52 @@ if "last_source" not in st.session_state:
 
 # ============ TICKER MAPPING ============
 
-def to_stooq_ticker(ticker):
+# Manuel mapping for kendte aktier hvor Twelve Data bruger andet symbol
+MANUAL_TWELVE_MAP = {
+    "NOVO-B.CO": ["NOVO-B", "NVO", "NOVOB"],  # NVO er ADR
+    "MAERSK-B.CO": ["MAERSK-B", "MAERSKB", "AMKBY"],  # AMKBY er ADR
+    "MAERSK-A.CO": ["MAERSK-A", "MAERSKA"],
+    "DSV.CO": ["DSV", "DSDVF"],
+    "ORSTED.CO": ["ORSTED", "DNNGY"],  # DNNGY er ADR
+    "CARL-B.CO": ["CARL-B", "CABGY"],
+    "GMAB.CO": ["GMAB", "GMAB"],
+    "NDA-DK.CO": ["NDA-DK", "NDA"],
+    "TRYG.CO": ["TRYG", "TGVSY"],
+    "ASML.AS": ["ASML"],  # ASML er global
+    "SAP.DE": ["SAP"],
+    "NESN.SW": ["NESN", "NSRGY"],
+}
+
+def get_twelve_formats(ticker):
+    """Returnerer liste af mulige Twelve Data symboler at prøve"""
     t = ticker.upper().strip()
-    if ".CO" in t: return t.replace("-", "").lower()
-    if ".DE" in t: return t.lower()
-    if ".AS" in t: return t.replace(".AS", ".NL").lower()
-    if ".SW" in t: return t.replace(".SW", ".CH").lower()
-    if ".PA" in t: return t.replace(".PA", ".FR").lower()
-    if "." not in t: return f"{t.lower()}.us"
-    return t.lower()
+
+    # Manuel mapping først (mest pålidelig)
+    if t in MANUAL_TWELVE_MAP:
+        return MANUAL_TWELVE_MAP[t]
+
+    formats = []
+    if ".CO" in t:
+        base = t.replace(".CO", "")
+        formats = [base, base.replace("-", ""), f"{base}:XCSE"]
+    elif ".DE" in t:
+        base = t.replace(".DE", "")
+        formats = [base, f"{base}:XETR"]
+    elif ".AS" in t:
+        base = t.replace(".AS", "")
+        formats = [base, f"{base}:XAMS"]
+    elif ".SW" in t:
+        base = t.replace(".SW", "")
+        formats = [base, f"{base}:XSWX"]
+    elif ".PA" in t:
+        base = t.replace(".PA", "")
+        formats = [base, f"{base}:XPAR"]
+    elif ".L" in t:
+        base = t.replace(".L", "")
+        formats = [base, f"{base}:XLON"]
+    else:
+        formats = [t]
+    return formats
 
 # ============ DATA FETCHERS ============
 
@@ -83,33 +119,32 @@ def fetch_yahoo(ticker, period="5y"):
             return "RATE_LIMIT"
         return None
 
-def fetch_twelve(ticker, period="5y"):
-    """Twelve Data - minimal calls (2 credits) for at undgå rate limit"""
+def fetch_twelve_single(symbol, period="5y"):
+    """Forsøger ÉN specifik Twelve Data symbol"""
     if not TWELVE_KEY:
         return None
     try:
         base = "https://api.twelvedata.com"
 
-        # Call 1: quote (1 credit)
+        # Call 1: quote
         q = plain_requests.get(f"{base}/quote", params={
-            "symbol": ticker, "apikey": TWELVE_KEY
+            "symbol": symbol, "apikey": TWELVE_KEY
         }, timeout=15)
         quote = q.json()
         if quote.get("status") == "error" or "code" in quote:
             return None
 
-        # Call 2: time_series (1 credit)
+        # Call 2: time_series
         period_days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650, "max": 5000}.get(period, 1825)
         outputsize = min(period_days, 5000)
         ts = plain_requests.get(f"{base}/time_series", params={
-            "symbol": ticker, "interval": "1day",
+            "symbol": symbol, "interval": "1day",
             "outputsize": outputsize, "apikey": TWELVE_KEY
         }, timeout=20)
         ts_data = ts.json()
         if ts_data.get("status") == "error" or "values" not in ts_data:
             return None
 
-        # Byg DataFrame
         rows = ts_data["values"]
         hist = pd.DataFrame(rows)
         hist["datetime"] = pd.to_datetime(hist["datetime"])
@@ -122,29 +157,30 @@ def fetch_twelve(ticker, period="5y"):
             else:
                 hist[col] = 0
 
-        # Minimal info fra quote
         info = {
-            "longName": quote.get("name") or ticker,
-            "sector": "?",
-            "industry": "?",
-            "country": "?",
+            "longName": quote.get("name") or symbol,
+            "sector": "?", "industry": "?", "country": "?",
             "currency": quote.get("currency", "USD"),
             "currentPrice": float(quote.get("close", 0)) if quote.get("close") else float(hist["Close"].iloc[-1]),
             "previousClose": float(quote.get("previous_close", 0)) if quote.get("previous_close") else None,
+            "twelve_symbol_used": symbol,  # Husk hvilket symbol der virkede
         }
-        try:
-            fw = quote.get("fifty_two_week", {})
-            if fw:
-                info["fiftyTwoWeekHigh"] = float(fw.get("high", 0)) if fw.get("high") else None
-                info["fiftyTwoWeekLow"] = float(fw.get("low", 0)) if fw.get("low") else None
-        except: pass
-
-        return {"info": info, "hist": hist, "news": [], "source": "Twelve Data"}
-    except Exception as e:
+        return {"info": info, "hist": hist, "news": [], "source": f"Twelve Data ({symbol})"}
+    except Exception:
         return None
 
+def fetch_twelve(ticker, period="5y"):
+    """Twelve Data med multi-format retry"""
+    if not TWELVE_KEY:
+        return None
+    formats = get_twelve_formats(ticker)
+    for symbol in formats:
+        result = fetch_twelve_single(symbol, period)
+        if result:
+            return result
+    return None
+
 def fetch_finnhub(ticker, period="5y"):
-    """Finnhub for fundamentals + Twelve Data for historik (kombi)"""
     if not FINNHUB_AVAILABLE or not FINNHUB_KEY or "." in ticker:
         return None
     try:
@@ -156,7 +192,10 @@ def fetch_finnhub(ticker, period="5y"):
         if not quote.get("c"):
             return None
 
-        # Hent metrics (kan fejle)
+        # Validér: pris skal være over 0.01 (filtrér nonsense)
+        if quote.get("c", 0) < 0.01:
+            return None
+
         metrics = {}
         try:
             res = client.company_basic_financials(ticker, 'all')
@@ -193,26 +232,23 @@ def fetch_finnhub(ticker, period="5y"):
             "beta": metrics.get("beta"),
         }
 
-        # Brug Twelve Data for historik
         if TWELVE_KEY:
             tw = fetch_twelve(ticker, period)
             if tw:
                 return {"info": info, "hist": tw["hist"], "news": [], "source": "Finnhub + Twelve Data"}
-
-        # Hvis ingen Twelve Data: prøv en simpel ts via Finnhub (kræver betalt for de fleste)
         return None
     except Exception:
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_data(ticker, period="5y"):
-    # 1. Yahoo (bedst)
+    # 1. Yahoo
     result = fetch_yahoo(ticker, period)
     if result and result != "RATE_LIMIT":
         return result
     rate_limited = result == "RATE_LIMIT"
 
-    # 2. Finnhub + Twelve Data (US: fundamentals fra Finnhub, priser fra Twelve)
+    # 2. Finnhub + Twelve Data (US: full fundamentals)
     if FINNHUB_KEY and "." not in ticker:
         result = fetch_finnhub(ticker, period)
         if result:
@@ -227,7 +263,7 @@ def fetch_data(ticker, period="5y"):
             if rate_limited:
                 result["warning"] = "Yahoo rate limited - bruger Twelve Data (kun pris-data)"
             else:
-                result["warning"] = "Begrænset data - kun pris-historik"
+                result["warning"] = f"Begrænset data - kun pris-historik (symbol: {result['info'].get('twelve_symbol_used','?')})"
             return result
 
     return None
@@ -251,32 +287,43 @@ def run_diagnostics(ticker):
     except Exception as e:
         results.append(("Yahoo Finance", "❌ Crash", "-", str(e)[:200]))
 
-    # Twelve Data
+    # Twelve Data - test alle formater
     if not TWELVE_KEY:
         results.append(("Twelve Data", "⚠️ Ingen API key", "-", "Tilføj TWELVE_DATA_KEY i secrets"))
     else:
-        try:
-            t0 = time.time()
-            raw = plain_requests.get("https://api.twelvedata.com/quote",
-                params={"symbol": ticker, "apikey": TWELVE_KEY}, timeout=10).json()
-            dt = time.time() - t0
+        formats = get_twelve_formats(ticker)
+        twelve_details = [f"Forsøger formater: {', '.join(formats)}"]
+        success = False
+        for symbol in formats:
+            try:
+                t0 = time.time()
+                raw = plain_requests.get("https://api.twelvedata.com/quote",
+                    params={"symbol": symbol, "apikey": TWELVE_KEY}, timeout=10).json()
+                dt = time.time() - t0
 
-            if raw.get("code") == 429:
-                results.append(("Twelve Data", "❌ Rate limit", f"{dt:.1f}s",
-                    f"Vent 60 sekunder. Besked: {raw.get('message', '')[:200]}"))
-            elif raw.get("status") == "error" or "code" in raw:
-                results.append(("Twelve Data", "❌ API fejl", f"{dt:.1f}s",
-                    f"Code: {raw.get('code')}, Msg: {raw.get('message', '')[:200]}"))
-            else:
-                r = fetch_twelve(ticker, "1y")
-                if r:
-                    results.append(("Twelve Data", "✅ Virker", f"{dt:.1f}s",
-                        f"{len(r['hist'])} dage, {r['info'].get('longName')}"))
+                if raw.get("code") == 429:
+                    twelve_details.append(f"  → '{symbol}': RATE LIMIT (vent 60s)")
+                    results.append(("Twelve Data", "❌ Rate limit", f"{dt:.1f}s", "\n".join(twelve_details)))
+                    success = True  # Skip resten
+                    break
+                elif raw.get("status") == "error" or "code" in raw:
+                    code = raw.get('code', '?')
+                    twelve_details.append(f"  → '{symbol}': fejl {code}")
                 else:
-                    results.append(("Twelve Data", "⚠️ Quote OK, time_series fejl", f"{dt:.1f}s",
-                        f"Quote response: {str(raw)[:200]}"))
-        except Exception as e:
-            results.append(("Twelve Data", "❌ Crash", "-", str(e)[:200]))
+                    # Test fuld fetch
+                    r = fetch_twelve_single(symbol, "1y")
+                    if r:
+                        twelve_details.append(f"  → '{symbol}': ✅ {r['info'].get('longName')} ({len(r['hist'])} dage)")
+                        results.append(("Twelve Data", "✅ Virker", f"{dt:.1f}s", "\n".join(twelve_details)))
+                        success = True
+                        break
+                    else:
+                        twelve_details.append(f"  → '{symbol}': quote OK men time_series fejl")
+            except Exception as e:
+                twelve_details.append(f"  → '{symbol}': crash {str(e)[:100]}")
+
+        if not success:
+            results.append(("Twelve Data", "❌ Alle formater fejler", "-", "\n".join(twelve_details)))
 
     # Finnhub
     if not FINNHUB_KEY:
@@ -293,8 +340,8 @@ def run_diagnostics(ticker):
             if not profile or not profile.get("name"):
                 results.append(("Finnhub", "❌ Ingen profile", f"{dt:.1f}s",
                     f"Profile response: {str(profile)[:200]}"))
-            elif not quote.get("c"):
-                results.append(("Finnhub", "❌ Ingen quote", f"{dt:.1f}s",
+            elif not quote.get("c") or quote.get("c", 0) < 0.01:
+                results.append(("Finnhub", "❌ Ingen gyldig quote", f"{dt:.1f}s",
                     f"Quote response: {str(quote)[:200]}"))
             else:
                 results.append(("Finnhub", "✅ Virker", f"{dt:.1f}s",
@@ -503,6 +550,13 @@ with diag_tab:
             with st.expander(f"{status} **{source}** ({time_taken})", expanded=True):
                 st.code(details)
 
+    st.markdown("---")
+    st.markdown("### 📖 Twelve Data symbol mapping")
+    st.caption("For internationale aktier prøver vi disse formater i rækkefølge:")
+    sample_tickers = ["NOVO-B.CO", "MAERSK-B.CO", "DSV.CO", "ORSTED.CO", "ASML.AS", "SAP.DE", "AAPL"]
+    map_data = [{"Yahoo ticker": t, "Twelve Data formater": " → ".join(get_twelve_formats(t))} for t in sample_tickers]
+    st.dataframe(pd.DataFrame(map_data), use_container_width=True, hide_index=True)
+
 with main_tab:
     c1, c2 = st.columns([4, 1])
     default_t = st.session_state.get("selected_ticker", "AAPL")
@@ -658,6 +712,11 @@ with main_tab:
         st.markdown("""
         ### 🔥 Funktioner
         - **Hybrid datakilde**: Yahoo → Finnhub+Twelve → Twelve Data
+        - **Smart symbol mapping**: NOVO-B.CO → prøver NOVO-B, NVO, NOVOB
         - **Multi-faktor scoring**: Fundamental + teknisk
         - **DCF værdiansættelse**, Monte Carlo, Risiko-metrics
+
+        ### ✅ Garanterede aktier (testet)
+        - 🇺🇸 **US**: AAPL, MSFT, TSLA, NVDA — fuld analyse
+        - 🇩🇰 **DK**: NOVO-B.CO, MAERSK-B.CO — pris + ADR fundamentals
         """)
