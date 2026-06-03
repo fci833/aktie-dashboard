@@ -49,30 +49,25 @@ if "last_source" not in st.session_state:
 
 # ============ TICKER MAPPING ============
 
-# Manuel mapping for kendte aktier hvor Twelve Data bruger andet symbol
 MANUAL_TWELVE_MAP = {
-    "NOVO-B.CO": ["NOVO-B", "NVO", "NOVOB"],  # NVO er ADR
-    "MAERSK-B.CO": ["MAERSK-B", "MAERSKB", "AMKBY"],  # AMKBY er ADR
+    "NOVO-B.CO": ["NOVO-B", "NVO", "NOVOB"],
+    "MAERSK-B.CO": ["MAERSK-B", "MAERSKB", "AMKBY"],
     "MAERSK-A.CO": ["MAERSK-A", "MAERSKA"],
     "DSV.CO": ["DSV", "DSDVF"],
-    "ORSTED.CO": ["ORSTED", "DNNGY"],  # DNNGY er ADR
+    "ORSTED.CO": ["ORSTED", "DNNGY"],
     "CARL-B.CO": ["CARL-B", "CABGY"],
-    "GMAB.CO": ["GMAB", "GMAB"],
+    "GMAB.CO": ["GMAB"],
     "NDA-DK.CO": ["NDA-DK", "NDA"],
     "TRYG.CO": ["TRYG", "TGVSY"],
-    "ASML.AS": ["ASML"],  # ASML er global
+    "ASML.AS": ["ASML"],
     "SAP.DE": ["SAP"],
     "NESN.SW": ["NESN", "NSRGY"],
 }
 
 def get_twelve_formats(ticker):
-    """Returnerer liste af mulige Twelve Data symboler at prøve"""
     t = ticker.upper().strip()
-
-    # Manuel mapping først (mest pålidelig)
     if t in MANUAL_TWELVE_MAP:
         return MANUAL_TWELVE_MAP[t]
-
     formats = []
     if ".CO" in t:
         base = t.replace(".CO", "")
@@ -95,6 +90,55 @@ def get_twelve_formats(ticker):
     else:
         formats = [t]
     return formats
+
+# ============ TICKER SEARCH ============
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_tickers(query):
+    """Søg efter tickers via Twelve Data symbol_search"""
+    if not query or len(query) < 2:
+        return []
+    results = []
+
+    # 1. Twelve Data search
+    if TWELVE_KEY:
+        try:
+            r = plain_requests.get("https://api.twelvedata.com/symbol_search",
+                params={"symbol": query, "outputsize": 20},
+                timeout=10)
+            data = r.json()
+            for item in data.get("data", []):
+                results.append({
+                    "symbol": item.get("symbol"),
+                    "name": item.get("instrument_name"),
+                    "exchange": item.get("exchange"),
+                    "country": item.get("country"),
+                    "type": item.get("instrument_type"),
+                    "source": "Twelve Data"
+                })
+        except Exception:
+            pass
+
+    # 2. Finnhub search (mest US)
+    if FINNHUB_AVAILABLE and FINNHUB_KEY and len(results) < 10:
+        try:
+            client = finnhub.Client(api_key=FINNHUB_KEY)
+            res = client.symbol_lookup(query)
+            for item in res.get("result", [])[:10]:
+                # Undgå dubletter
+                if not any(r["symbol"] == item.get("symbol") for r in results):
+                    results.append({
+                        "symbol": item.get("symbol"),
+                        "name": item.get("description"),
+                        "exchange": item.get("type"),
+                        "country": "?",
+                        "type": item.get("type"),
+                        "source": "Finnhub"
+                    })
+        except Exception:
+            pass
+
+    return results
 
 # ============ DATA FETCHERS ============
 
@@ -120,21 +164,15 @@ def fetch_yahoo(ticker, period="5y"):
         return None
 
 def fetch_twelve_single(symbol, period="5y"):
-    """Forsøger ÉN specifik Twelve Data symbol"""
     if not TWELVE_KEY:
         return None
     try:
         base = "https://api.twelvedata.com"
-
-        # Call 1: quote
-        q = plain_requests.get(f"{base}/quote", params={
-            "symbol": symbol, "apikey": TWELVE_KEY
-        }, timeout=15)
+        q = plain_requests.get(f"{base}/quote", params={"symbol": symbol, "apikey": TWELVE_KEY}, timeout=15)
         quote = q.json()
         if quote.get("status") == "error" or "code" in quote:
             return None
 
-        # Call 2: time_series
         period_days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650, "max": 5000}.get(period, 1825)
         outputsize = min(period_days, 5000)
         ts = plain_requests.get(f"{base}/time_series", params={
@@ -163,14 +201,13 @@ def fetch_twelve_single(symbol, period="5y"):
             "currency": quote.get("currency", "USD"),
             "currentPrice": float(quote.get("close", 0)) if quote.get("close") else float(hist["Close"].iloc[-1]),
             "previousClose": float(quote.get("previous_close", 0)) if quote.get("previous_close") else None,
-            "twelve_symbol_used": symbol,  # Husk hvilket symbol der virkede
+            "twelve_symbol_used": symbol,
         }
         return {"info": info, "hist": hist, "news": [], "source": f"Twelve Data ({symbol})"}
     except Exception:
         return None
 
 def fetch_twelve(ticker, period="5y"):
-    """Twelve Data med multi-format retry"""
     if not TWELVE_KEY:
         return None
     formats = get_twelve_formats(ticker)
@@ -189,11 +226,7 @@ def fetch_finnhub(ticker, period="5y"):
         if not profile or not profile.get("name"):
             return None
         quote = client.quote(ticker)
-        if not quote.get("c"):
-            return None
-
-        # Validér: pris skal være over 0.01 (filtrér nonsense)
-        if quote.get("c", 0) < 0.01:
+        if not quote.get("c") or quote.get("c", 0) < 0.01:
             return None
 
         metrics = {}
@@ -242,13 +275,11 @@ def fetch_finnhub(ticker, period="5y"):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_data(ticker, period="5y"):
-    # 1. Yahoo
     result = fetch_yahoo(ticker, period)
     if result and result != "RATE_LIMIT":
         return result
     rate_limited = result == "RATE_LIMIT"
 
-    # 2. Finnhub + Twelve Data (US: full fundamentals)
     if FINNHUB_KEY and "." not in ticker:
         result = fetch_finnhub(ticker, period)
         if result:
@@ -256,7 +287,6 @@ def fetch_data(ticker, period="5y"):
                 result["warning"] = "Yahoo rate limited - bruger Finnhub + Twelve Data"
             return result
 
-    # 3. Kun Twelve Data (international, kun pris)
     if TWELVE_KEY:
         result = fetch_twelve(ticker, period)
         if result:
@@ -268,12 +298,20 @@ def fetch_data(ticker, period="5y"):
 
     return None
 
+def filter_period(hist, period):
+    """Sikrer at hist faktisk er begrænset til den valgte periode"""
+    if hist is None or hist.empty:
+        return hist
+    if period == "max":
+        return hist
+    days = {"1y": 365, "2y": 730, "5y": 1825, "10y": 3650}.get(period, 1825)
+    cutoff = pd.Timestamp.now(tz=hist.index.tz) - pd.Timedelta(days=days)
+    return hist[hist.index >= cutoff]
+
 # ============ DIAGNOSE ============
 
 def run_diagnostics(ticker):
     results = []
-
-    # Yahoo
     try:
         t0 = time.time()
         r = fetch_yahoo(ticker, "1y")
@@ -287,7 +325,6 @@ def run_diagnostics(ticker):
     except Exception as e:
         results.append(("Yahoo Finance", "❌ Crash", "-", str(e)[:200]))
 
-    # Twelve Data - test alle formater
     if not TWELVE_KEY:
         results.append(("Twelve Data", "⚠️ Ingen API key", "-", "Tilføj TWELVE_DATA_KEY i secrets"))
     else:
@@ -300,32 +337,25 @@ def run_diagnostics(ticker):
                 raw = plain_requests.get("https://api.twelvedata.com/quote",
                     params={"symbol": symbol, "apikey": TWELVE_KEY}, timeout=10).json()
                 dt = time.time() - t0
-
                 if raw.get("code") == 429:
                     twelve_details.append(f"  → '{symbol}': RATE LIMIT (vent 60s)")
                     results.append(("Twelve Data", "❌ Rate limit", f"{dt:.1f}s", "\n".join(twelve_details)))
-                    success = True  # Skip resten
+                    success = True
                     break
                 elif raw.get("status") == "error" or "code" in raw:
-                    code = raw.get('code', '?')
-                    twelve_details.append(f"  → '{symbol}': fejl {code}")
+                    twelve_details.append(f"  → '{symbol}': fejl {raw.get('code', '?')}")
                 else:
-                    # Test fuld fetch
                     r = fetch_twelve_single(symbol, "1y")
                     if r:
                         twelve_details.append(f"  → '{symbol}': ✅ {r['info'].get('longName')} ({len(r['hist'])} dage)")
                         results.append(("Twelve Data", "✅ Virker", f"{dt:.1f}s", "\n".join(twelve_details)))
                         success = True
                         break
-                    else:
-                        twelve_details.append(f"  → '{symbol}': quote OK men time_series fejl")
             except Exception as e:
                 twelve_details.append(f"  → '{symbol}': crash {str(e)[:100]}")
-
         if not success:
             results.append(("Twelve Data", "❌ Alle formater fejler", "-", "\n".join(twelve_details)))
 
-    # Finnhub
     if not FINNHUB_KEY:
         results.append(("Finnhub", "⚠️ Ingen API key", "-", "Tilføj FINNHUB_API_KEY"))
     elif "." in ticker:
@@ -338,20 +368,16 @@ def run_diagnostics(ticker):
             quote = client.quote(ticker)
             dt = time.time() - t0
             if not profile or not profile.get("name"):
-                results.append(("Finnhub", "❌ Ingen profile", f"{dt:.1f}s",
-                    f"Profile response: {str(profile)[:200]}"))
+                results.append(("Finnhub", "❌ Ingen profile", f"{dt:.1f}s", f"{str(profile)[:200]}"))
             elif not quote.get("c") or quote.get("c", 0) < 0.01:
-                results.append(("Finnhub", "❌ Ingen gyldig quote", f"{dt:.1f}s",
-                    f"Quote response: {str(quote)[:200]}"))
+                results.append(("Finnhub", "❌ Ingen gyldig quote", f"{dt:.1f}s", f"{str(quote)[:200]}"))
             else:
-                results.append(("Finnhub", "✅ Virker", f"{dt:.1f}s",
-                    f"{profile.get('name')}, pris: {quote.get('c')}"))
+                results.append(("Finnhub", "✅ Virker", f"{dt:.1f}s", f"{profile.get('name')}, pris: {quote.get('c')}"))
         except Exception as e:
             results.append(("Finnhub", "❌ Crash", "-", str(e)[:300]))
-
     return results
 
-# ============ ANALYSE FUNKTIONER ============
+# ============ ANALYSE ============
 
 def safe(d, key, default=None):
     if d is None: return default
@@ -461,6 +487,49 @@ def technical_score(df):
         elif mom < -10: add(-6, "⚠️ Neg. momentum", f"{mom:.1f}%")
     return max(0, min(100, score)), det
 
+def calculate_price_targets(df, info, current_price, fair_value=None):
+    """Beregner køb/salg/stop priser baseret på teknisk analyse + DCF"""
+    last = df.iloc[-1]
+    atr = last["ATR"] if not np.isnan(last["ATR"]) else current_price * 0.02
+
+    # 52-uger high/low (sidste ~252 handelsdage)
+    recent = df.tail(252) if len(df) > 252 else df
+    week52_high = recent["High"].max()
+    week52_low = recent["Low"].min()
+
+    # SMA referencer
+    sma50 = last["SMA50"] if not np.isnan(last["SMA50"]) else current_price
+    sma200 = last["SMA200"] if not np.isnan(last["SMA200"]) else current_price
+    bb_low = last["BB_low"] if not np.isnan(last["BB_low"]) else current_price * 0.95
+    bb_high = last["BB_high"] if not np.isnan(last["BB_high"]) else current_price * 1.05
+
+    # Køb-zone: laveste af BB low eller SMA50 - 1 ATR
+    buy_zone_low = max(bb_low, sma200 - atr)
+    buy_zone_high = min(sma50, current_price * 0.97)
+
+    # Stop-loss: 2 ATR under aktuel pris (eller under SMA200)
+    stop_loss = max(current_price - 2*atr, sma200 - atr)
+
+    # Target: DCF fair value, eller +20% / 52w high
+    if fair_value and fair_value > current_price:
+        target = fair_value
+    else:
+        target = max(current_price * 1.20, week52_high)
+
+    # Konservativt target (kortsigtet)
+    short_target = bb_high
+
+    return {
+        "buy_low": buy_zone_low,
+        "buy_high": buy_zone_high,
+        "stop_loss": stop_loss,
+        "target_short": short_target,
+        "target_long": target,
+        "week52_high": week52_high,
+        "week52_low": week52_low,
+        "atr": atr,
+    }
+
 def dcf_valuation(info, g, dr, tg, years=10):
     fcf = safe(info, "freeCashflow")
     shares = safe(info, "sharesOutstanding")
@@ -536,27 +605,56 @@ with st.sidebar:
 
 # ============ HOVED-UI ============
 
-main_tab, diag_tab = st.tabs(["📊 Analyse", "🔧 Diagnose"])
+main_tab, search_tab, diag_tab = st.tabs(["📊 Analyse", "🔍 Søg ticker", "🔧 Diagnose"])
 
+# ---- SØG ----
+with search_tab:
+    st.subheader("🔍 Find ticker for et firma")
+    st.caption("Skriv firmanavn (fx 'novo nordisk', 'apple', 'maersk')")
+    query = st.text_input("Firmanavn", value="", key="search_query", placeholder="novo nordisk")
+    if query and len(query) >= 2:
+        with st.spinner(f"Søger efter '{query}'..."):
+            results = search_tickers(query)
+        if results:
+            st.success(f"Fandt {len(results)} resultater")
+            df_search = pd.DataFrame(results)
+            st.dataframe(df_search, use_container_width=True, hide_index=True)
+            st.markdown("### 🎯 Vælg en ticker:")
+            cols = st.columns(min(4, len(results)))
+            for i, r in enumerate(results[:8]):
+                if cols[i % 4].button(f"📌 {r['symbol']}\n{r['name'][:25]}", key=f"sr_{i}", use_container_width=True):
+                    st.session_state.selected_ticker = r['symbol']
+                    st.success(f"Valgt: {r['symbol']} - gå til Analyse fanen")
+        else:
+            st.warning("Ingen resultater fundet. Prøv et andet søgeord.")
+
+    st.markdown("---")
+    st.markdown("### 💡 Nyttige eksempler")
+    examples = pd.DataFrame([
+        {"Firma": "Novo Nordisk", "Yahoo ticker": "NOVO-B.CO", "ADR (US)": "NVO"},
+        {"Firma": "Mærsk B", "Yahoo ticker": "MAERSK-B.CO", "ADR (US)": "AMKBY"},
+        {"Firma": "Ørsted", "Yahoo ticker": "ORSTED.CO", "ADR (US)": "DNNGY"},
+        {"Firma": "DSV", "Yahoo ticker": "DSV.CO", "ADR (US)": "DSDVF"},
+        {"Firma": "Carlsberg B", "Yahoo ticker": "CARL-B.CO", "ADR (US)": "CABGY"},
+        {"Firma": "Apple", "Yahoo ticker": "AAPL", "ADR (US)": "AAPL"},
+        {"Firma": "Tesla", "Yahoo ticker": "TSLA", "ADR (US)": "TSLA"},
+        {"Firma": "ASML", "Yahoo ticker": "ASML.AS", "ADR (US)": "ASML"},
+    ])
+    st.dataframe(examples, use_container_width=True, hide_index=True)
+
+# ---- DIAGNOSE ----
 with diag_tab:
     st.subheader("🔧 Diagnose - Test datakilder")
-    st.caption("⏱️ Hvis Twelve Data er rate-limited: vent 60 sekunder før du prøver igen")
+    st.caption("⏱️ Hvis Twelve Data er rate-limited: vent 60 sekunder")
     diag_ticker = st.text_input("Test ticker", value="AAPL", key="diag_ticker").strip().upper()
     if st.button("🔍 Kør diagnose", type="primary"):
         with st.spinner(f"Tester alle kilder for {diag_ticker}..."):
             results = run_diagnostics(diag_ticker)
-        st.markdown("### Resultater")
         for source, status, time_taken, details in results:
             with st.expander(f"{status} **{source}** ({time_taken})", expanded=True):
                 st.code(details)
 
-    st.markdown("---")
-    st.markdown("### 📖 Twelve Data symbol mapping")
-    st.caption("For internationale aktier prøver vi disse formater i rækkefølge:")
-    sample_tickers = ["NOVO-B.CO", "MAERSK-B.CO", "DSV.CO", "ORSTED.CO", "ASML.AS", "SAP.DE", "AAPL"]
-    map_data = [{"Yahoo ticker": t, "Twelve Data formater": " → ".join(get_twelve_formats(t))} for t in sample_tickers]
-    st.dataframe(pd.DataFrame(map_data), use_container_width=True, hide_index=True)
-
+# ---- ANALYSE ----
 with main_tab:
     c1, c2 = st.columns([4, 1])
     default_t = st.session_state.get("selected_ticker", "AAPL")
@@ -568,12 +666,12 @@ with main_tab:
             ticker = st.session_state.selected_ticker
             del st.session_state.selected_ticker
 
-        with st.spinner(f"Henter data for {ticker}..."):
+        with st.spinner(f"Henter data for {ticker} ({period})..."):
             data = fetch_data(ticker, period=period)
 
         if data is None:
-            st.error(f"❌ Kunne ikke hente data for '{ticker}' fra nogen kilde.")
-            st.info("👉 Gå til **🔧 Diagnose** fanen for at se HVAD der fejler!")
+            st.error(f"❌ Kunne ikke hente data for '{ticker}'")
+            st.info("👉 Prøv **🔍 Søg ticker** fanen for at finde korrekt ticker")
             st.stop()
 
         st.session_state.last_source = data["source"]
@@ -583,7 +681,10 @@ with main_tab:
             st.success(f"✅ Data hentet fra: **{data['source']}**")
 
         info = data["info"]
-        hist = data["hist"]
+        # Filtrer hist til præcis periode
+        hist = filter_period(data["hist"], period)
+        if len(hist) < 50:
+            st.warning(f"⚠️ Kun {len(hist)} dage data - nogle indikatorer kan være unøjagtige")
         df = add_indicators(hist)
 
         if ticker not in st.session_state.watchlist:
@@ -595,8 +696,12 @@ with main_tab:
         prev = info.get("previousClose", hist["Close"].iloc[-2] if len(hist) > 1 else pris)
         change_pct = (pris/prev-1)*100 if prev else 0
 
+        # Vis dato-range
+        first_date = hist.index[0].strftime("%Y-%m-%d")
+        last_date = hist.index[-1].strftime("%Y-%m-%d")
+
         st.markdown(f"## {navn} ({ticker})")
-        st.caption(f"🏢 {info.get('sector','?')} · 🌍 {info.get('country','?')} · 💱 {valuta}")
+        st.caption(f"🏢 {info.get('sector','?')} · 🌍 {info.get('country','?')} · 💱 {valuta} · 📅 Data: {first_date} → {last_date} ({len(hist)} dage)")
 
         k = st.columns(6)
         k[0].metric("Pris", f"{pris:,.2f}", f"{change_pct:+.2f}%")
@@ -617,13 +722,96 @@ with main_tab:
         t_a, t_c = recommendation(t_score)
         o_a, o_c = recommendation(overall)
 
+        # Beregn DCF for fair value (bruges i price targets)
+        fair_default = dcf_valuation(info, 0.10, 0.10, 0.025)
+        targets = calculate_price_targets(df, info, pris, fair_default)
+
         st.markdown("---")
         r1, r2, r3 = st.columns(3)
-        for col, label, anb, color, sc in [
-            (r1, "🏛️ Langsigtet", f_a, f_c, f_score),
-            (r2, "⚡ Kortsigtet", t_a, t_c, t_score),
-            (r3, "🎯 Samlet", o_a, o_c, overall)]:
-            col.markdown(f"<div style='padding:1.5rem;border-radius:12px;text-align:center;background:{color}22;border:2px solid {color}'><div style='font-size:0.9rem'>{label}</div><div style='font-size:1.8rem;font-weight:800;color:{color};margin:0.5rem 0'>{anb}</div><div style='font-size:1.5rem;font-weight:700'>{sc:.0f}/100</div></div>", unsafe_allow_html=True)
+
+        # Langsigtet card
+        r1.markdown(f"""
+        <div style='padding:1.2rem;border-radius:12px;background:{f_c}22;border:2px solid {f_c}'>
+            <div style='font-size:0.85rem;opacity:0.8'>🏛️ LANGSIGTET</div>
+            <div style='font-size:0.75rem;opacity:0.6;margin-bottom:0.5rem'>📅 12+ måneder · Fundamentale + DCF</div>
+            <div style='font-size:1.6rem;font-weight:800;color:{f_c}'>{f_a}</div>
+            <div style='font-size:1.3rem;font-weight:700;margin-top:0.3rem'>{f_score:.0f}/100</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Kortsigtet card
+        r2.markdown(f"""
+        <div style='padding:1.2rem;border-radius:12px;background:{t_c}22;border:2px solid {t_c}'>
+            <div style='font-size:0.85rem;opacity:0.8'>⚡ KORTSIGTET</div>
+            <div style='font-size:0.75rem;opacity:0.6;margin-bottom:0.5rem'>📅 1-3 måneder · Tekniske signaler</div>
+            <div style='font-size:1.6rem;font-weight:800;color:{t_c}'>{t_a}</div>
+            <div style='font-size:1.3rem;font-weight:700;margin-top:0.3rem'>{t_score:.0f}/100</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Samlet card
+        r3.markdown(f"""
+        <div style='padding:1.2rem;border-radius:12px;background:{o_c}22;border:2px solid {o_c}'>
+            <div style='font-size:0.85rem;opacity:0.8'>🎯 SAMLET</div>
+            <div style='font-size:0.75rem;opacity:0.6;margin-bottom:0.5rem'>⚖️ Vægtet 60% lang / 40% kort</div>
+            <div style='font-size:1.6rem;font-weight:800;color:{o_c}'>{o_a}</div>
+            <div style='font-size:1.3rem;font-weight:700;margin-top:0.3rem'>{overall:.0f}/100</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ===== KØB / SALG NIVEAUER =====
+        st.markdown("### 💰 Anbefalede kursniveauer")
+        st.caption("Beregnet ud fra ATR (volatilitet), Bollinger Bands, SMA200 og DCF fair value")
+
+        pt = st.columns(5)
+
+        buy_low_pct = (targets["buy_low"]/pris-1)*100
+        buy_high_pct = (targets["buy_high"]/pris-1)*100
+        stop_pct = (targets["stop_loss"]/pris-1)*100
+        target_short_pct = (targets["target_short"]/pris-1)*100
+        target_long_pct = (targets["target_long"]/pris-1)*100
+
+        pt[0].markdown(f"""
+        <div style='padding:0.8rem;border-radius:8px;background:#16a34a22;border:1px solid #16a34a'>
+            <div style='font-size:0.75rem;opacity:0.7'>🟢 KØB ZONE</div>
+            <div style='font-size:1.1rem;font-weight:700'>{targets['buy_low']:.2f} - {targets['buy_high']:.2f}</div>
+            <div style='font-size:0.7rem;opacity:0.6'>{buy_low_pct:+.1f}% til {buy_high_pct:+.1f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        pt[1].markdown(f"""
+        <div style='padding:0.8rem;border-radius:8px;background:#0099ff22;border:1px solid #0099ff'>
+            <div style='font-size:0.75rem;opacity:0.7'>📍 AKTUEL</div>
+            <div style='font-size:1.1rem;font-weight:700'>{pris:.2f}</div>
+            <div style='font-size:0.7rem;opacity:0.6'>{change_pct:+.2f}% i dag</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        pt[2].markdown(f"""
+        <div style='padding:0.8rem;border-radius:8px;background:#ef444422;border:1px solid #ef4444'>
+            <div style='font-size:0.75rem;opacity:0.7'>🛑 STOP LOSS</div>
+            <div style='font-size:1.1rem;font-weight:700'>{targets['stop_loss']:.2f}</div>
+            <div style='font-size:0.7rem;opacity:0.6'>{stop_pct:+.1f}% (2x ATR)</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        pt[3].markdown(f"""
+        <div style='padding:0.8rem;border-radius:8px;background:#eab30822;border:1px solid #eab308'>
+            <div style='font-size:0.75rem;opacity:0.7'>🎯 KORT MÅL (1-3m)</div>
+            <div style='font-size:1.1rem;font-weight:700'>{targets['target_short']:.2f}</div>
+            <div style='font-size:0.7rem;opacity:0.6'>{target_short_pct:+.1f}% (BB upper)</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        pt[4].markdown(f"""
+        <div style='padding:0.8rem;border-radius:8px;background:#22c55e22;border:1px solid #22c55e'>
+            <div style='font-size:0.75rem;opacity:0.7'>🚀 LANG MÅL (12m+)</div>
+            <div style='font-size:1.1rem;font-weight:700'>{targets['target_long']:.2f}</div>
+            <div style='font-size:0.7rem;opacity:0.6'>{target_long_pct:+.1f}% {'(DCF)' if fair_default else '(+20%)'}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.caption(f"📊 52-uger: Low {targets['week52_low']:.2f} · High {targets['week52_high']:.2f} · Daglig ATR: {targets['atr']:.2f}")
 
         sub_tabs = st.tabs(["📊 Charts", "📋 Fundamentals", "🔧 Teknisk", "💎 DCF", "📉 Risiko", "🎲 Monte Carlo"])
 
@@ -632,12 +820,17 @@ with main_tab:
             fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Pris"), 1, 1)
             fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA50", line=dict(color="orange")), 1, 1)
             fig.add_trace(go.Scatter(x=df.index, y=df["SMA200"], name="SMA200", line=dict(color="purple")), 1, 1)
+            # Tilføj køb/salg linjer
+            fig.add_hline(y=targets["buy_high"], line_dash="dot", line_color="#16a34a", annotation_text="Køb zone", row=1, col=1)
+            fig.add_hline(y=targets["stop_loss"], line_dash="dot", line_color="#ef4444", annotation_text="Stop loss", row=1, col=1)
+            fig.add_hline(y=targets["target_long"], line_dash="dot", line_color="#22c55e", annotation_text="Mål (lang)", row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI", line=dict(color="#00d4aa")), 2, 1)
             fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
             fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df["MACD"], name="MACD", line=dict(color="#0099ff")), 3, 1)
             fig.add_trace(go.Scatter(x=df.index, y=df["MACD_signal"], name="Signal", line=dict(color="orange")), 3, 1)
-            fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_dark")
+            fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_dark",
+                            title=f"{navn} - {period} ({first_date} til {last_date})")
             st.plotly_chart(fig, use_container_width=True)
 
         with sub_tabs[1]:
@@ -699,24 +892,20 @@ with main_tab:
             c = st.columns(4)
             c[0].metric("Start", f"{lp:.2f}")
             c[1].metric("5%", f"{p5:.2f}", f"{(p5/lp-1)*100:+.1f}%")
-            c[2].metric("Median", f"{p50:.2f}", f"{(p50/lp-1)*100:+.1f}%")
+            c[2].metric("Median (12m)", f"{p50:.2f}", f"{(p50/lp-1)*100:+.1f}%")
             c[3].metric("95%", f"{p95:.2f}", f"{(p95/lp-1)*100:+.1f}%")
             fig_m = go.Figure()
             for i in range(min(100, len(sims))):
                 fig_m.add_trace(go.Scatter(y=sims[i], line=dict(width=0.5, color="rgba(0,212,170,0.15)"), showlegend=False))
             fig_m.add_trace(go.Scatter(y=np.percentile(sims, 50, axis=0), name="Median", line=dict(color="#00d4aa", width=3)))
-            fig_m.update_layout(template="plotly_dark", height=500)
+            fig_m.update_layout(template="plotly_dark", height=500, title="Monte Carlo - 252 dage frem")
             st.plotly_chart(fig_m, use_container_width=True)
     else:
-        st.info("👆 Indtast en ticker og tryk **Analysér**")
+        st.info("👆 Indtast en ticker og tryk **Analysér**, eller brug **🔍 Søg ticker** fanen")
         st.markdown("""
-        ### 🔥 Funktioner
-        - **Hybrid datakilde**: Yahoo → Finnhub+Twelve → Twelve Data
-        - **Smart symbol mapping**: NOVO-B.CO → prøver NOVO-B, NVO, NOVOB
-        - **Multi-faktor scoring**: Fundamental + teknisk
-        - **DCF værdiansættelse**, Monte Carlo, Risiko-metrics
-
-        ### ✅ Garanterede aktier (testet)
-        - 🇺🇸 **US**: AAPL, MSFT, TSLA, NVDA — fuld analyse
-        - 🇩🇰 **DK**: NOVO-B.CO, MAERSK-B.CO — pris + ADR fundamentals
+        ### 🔥 Nye funktioner
+        - **🔍 Ticker søgning** - find tickers ud fra firmanavn
+        - **💰 Køb/salg niveauer** - konkrete kurser baseret på ATR + DCF
+        - **⏱️ Korrekt periode** - data filtreres præcist
+        - **📅 Tidsbeskrivelser** - ved hvad lang/kortsigtet betyder
         """)
