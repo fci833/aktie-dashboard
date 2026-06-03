@@ -9,31 +9,62 @@ from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.trend import MACD, SMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 from datetime import datetime
+import time
+import requests
 import warnings
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Aktie Dashboard", layout="wide", page_icon="📈")
 
+# Custom session med User-Agent for at undgå rate limits
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
+
 st.markdown("<h1 style='background:linear-gradient(90deg,#00d4aa,#0099ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;'>📈 Pro Aktie Analyse Dashboard</h1>", unsafe_allow_html=True)
-st.caption("Valideret data fra Yahoo Finance · Multi-faktor scoring · Langsigtet & Kortsigtet")
+st.caption("Valideret data · Multi-faktor scoring · Langsigtet & Kortsigtet")
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = []
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_data(ticker, period="5y"):
-    try:
-        tk = yf.Ticker(ticker)
-        info = tk.info
-        if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None and "longName" not in info):
-            return None
-        hist = tk.history(period=period, auto_adjust=True)
-        if hist.empty:
-            return None
-        return {"info": info, "hist": hist, "news": tk.news if hasattr(tk, "news") else []}
-    except Exception as e:
-        st.error(f"Fejl: {e}")
-        return None
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_data(ticker, period="5y", max_retries=3):
+    """Henter data med retry-logik for at håndtere rate limits"""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            tk = yf.Ticker(ticker, session=session)
+            info = tk.info
+            if not info or len(info) < 5:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return None
+            hist = tk.history(period=period, auto_adjust=True)
+            if hist.empty:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return None
+            news = []
+            try:
+                news = tk.news if hasattr(tk, "news") else []
+            except:
+                pass
+            return {"info": info, "hist": hist, "news": news}
+        except Exception as e:
+            last_error = str(e)
+            if "rate" in last_error.lower() or "429" in last_error or "too many" in last_error.lower():
+                if attempt < max_retries - 1:
+                    time.sleep((2 ** attempt) * 2)
+                    continue
+                return {"error": "rate_limit", "msg": last_error}
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            return {"error": "other", "msg": last_error}
+    return None
 
 def safe(d, key, default=None):
     if d is None: return default
@@ -223,11 +254,23 @@ if go_btn or "selected_ticker" in st.session_state:
         ticker = st.session_state.selected_ticker
         del st.session_state.selected_ticker
 
-    with st.spinner(f"Analyserer {ticker}..."):
+    with st.spinner(f"Henter data for {ticker}... (kan tage et øjeblik)"):
         data = fetch_data(ticker, period=period)
 
     if data is None:
-        st.error(f"❌ Kunne ikke hente data for '{ticker}'")
+        st.error(f"❌ Kunne ikke finde ticker '{ticker}'. Tjek symbolet.")
+        st.info("💡 **Tips til ticker-symboler:**\n- US aktier: `AAPL`, `MSFT`, `TSLA`\n- Danske aktier: `NOVO-B.CO`, `MAERSK-B.CO`\n- Europæiske: `ASML.AS`, `SAP.DE`")
+        st.stop()
+
+    if isinstance(data, dict) and "error" in data:
+        if data["error"] == "rate_limit":
+            st.warning("⏳ **Yahoo Finance er midlertidigt overbelastet.**")
+            st.info("Dette sker ofte på Streamlit Cloud fordi mange brugere deler IP. Prøv:\n1. **Vent 1-2 minutter** og tryk Analysér igen\n2. **Genindlæs siden** (F5)\n3. Prøv en anden ticker først (data caches i 1 time)")
+            if st.button("🔄 Prøv igen nu"):
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            st.error(f"❌ Fejl: {data.get('msg', 'ukendt')}")
         st.stop()
 
     info = data["info"]
@@ -240,7 +283,7 @@ if go_btn or "selected_ticker" in st.session_state:
     navn = info.get("longName") or ticker
     pris = info.get("currentPrice") or hist["Close"].iloc[-1]
     valuta = info.get("currency", "USD")
-    prev = info.get("previousClose", hist["Close"].iloc[-2])
+    prev = info.get("previousClose", hist["Close"].iloc[-2] if len(hist) > 1 else pris)
     change_pct = (pris/prev-1)*100 if prev else 0
 
     st.markdown(f"## {navn} ({ticker})")
@@ -377,4 +420,4 @@ if go_btn or "selected_ticker" in st.session_state:
         else:
             st.info("Ingen nyheder")
 else:
-    st.info("👆 Indtast en ticker og tryk **Analysér**")
+    st.info("👆 Indtast en ticker og tryk **Analysér**, eller vælg fra sidebaren")
