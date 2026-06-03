@@ -6,5 +6,4 @@ plotly
 ta
 curl_cffi
 finnhub-python
-pandas-datareader
 pytest
