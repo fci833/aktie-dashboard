@@ -1895,7 +1895,7 @@ elif st.session_state.active_view == "📊 Analyse":
                             title="Monte Carlo - 252 dage frem")
         st.plotly_chart(fig_m, use_container_width=True)
 
-    # Backtest
+        # Backtest
     with sub_tabs[6]:
         st.markdown("## 🎯 Backtest - Validerer modellens anbefalinger historisk")
         st.caption(
@@ -1905,32 +1905,20 @@ elif st.session_state.active_view == "📊 Analyse":
         )
 
         bt_col1, bt_col2, bt_col3 = st.columns(3)
-        holding_days = bt_col1.selectbox(
-            "⏱️ Holding periode", [30, 60, 90, 180, 252], index=2
-        )
-        sample_freq = bt_col2.selectbox(
-            "📊 Sample frekvens", [1, 5, 10, 20], index=1
-        )
+        holding_days = bt_col1.selectbox("⏱️ Holding periode", [30, 60, 90, 180, 252], index=2)
+        sample_freq = bt_col2.selectbox("📊 Sample frekvens", [1, 5, 10, 20], index=1)
         buy_threshold = bt_col3.slider("🟢 KØB tærskel (score)", 50, 80, 60)
 
-                if st.button("🚀 Kør backtest", type="primary"):
+        if st.button("🚀 Kør backtest", type="primary"):
             with st.spinner("Kører walk-forward backtest..."):
-                bt = run_backtest(hist_full, holding_days=holding_days,
-                                  sample_freq=sample_freq)
-                sim = simulate_strategy(hist_full, buy_threshold=buy_threshold,
-                                        sell_threshold=30, sample_freq=sample_freq)
+                bt = run_backtest(hist_full, holding_days=holding_days, sample_freq=sample_freq)
+                sim = simulate_strategy(hist_full, buy_threshold=buy_threshold, sell_threshold=30, sample_freq=sample_freq)
 
             if bt is None:
-                st.error(f"❌ Ikke nok historisk data ({len(hist_full)} dage). "
-                         f"Backtest kræver mindst {250 + holding_days} dage.")
+                st.error(f"❌ Ikke nok historisk data ({len(hist_full)} dage). Backtest kræver mindst {250 + holding_days} dage.")
             else:
                 st.markdown("### 📊 Hit-rate per anbefaling")
-                st.caption(
-                    f"Baseret på {bt['n_trades']} samples fra "
-                    f"{bt['start_date'].strftime('%Y-%m-%d')} til "
-                    f"{bt['end_date'].strftime('%Y-%m-%d')} · "
-                    f"Holding: {bt['holding_days']} dage"
-                )
+                st.caption(f"Baseret på {bt['n_trades']} samples fra {bt['start_date'].strftime('%Y-%m-%d')} til {bt['end_date'].strftime('%Y-%m-%d')} · Holding: {bt['holding_days']} dage")
 
                 rows = []
                 for rec_label in ["STÆRKT KØB", "KØB", "HOLD", "SÆLG", "STÆRKT SÆLG"]:
@@ -2017,40 +2005,21 @@ elif st.session_state.active_view == "📊 Analyse":
                     sm = st.columns(4)
                     sm[0].metric("💰 Slutværdi (strategi)", f"${sim['strategy_final']:,.0f}", f"{sim['strategy_return']:+.1f}%")
                     sm[1].metric("📈 Buy & Hold", f"${sim['bh_final']:,.0f}", f"{sim['bh_return']:+.1f}%")
-                    sm[2].metric("🎯 Outperformance", f"{sim['outperformance']:+.1f}%",
-                                 delta_color="normal" if sim["outperformance"] > 0 else "inverse")
+                    sm[2].metric("🎯 Outperformance", f"{sim['outperformance']:+.1f}%", delta_color="normal" if sim["outperformance"] > 0 else "inverse")
                     sm[3].metric("📊 Antal trades", sim["n_trades"])
 
                     fig_sim = go.Figure()
-                    fig_sim.add_trace(go.Scatter(
-                        x=sim["dates"], y=sim["strategy_values"],
-                        name="Strategi (model)",
-                        line=dict(color="#00d4aa", width=3),
-                    ))
-                    fig_sim.add_trace(go.Scatter(
-                        x=sim["dates"], y=sim["bh_values"],
-                        name="Buy & Hold",
-                        line=dict(color="#0099ff", width=2, dash="dash"),
-                    ))
-                    fig_sim.update_layout(
-                        template="plotly_dark", height=450,
-                        title="Portefølje-værdi over tid (start $10.000)",
-                        yaxis_title="Værdi ($)",
-                    )
+                    fig_sim.add_trace(go.Scatter(x=sim["dates"], y=sim["strategy_values"], name="Strategi (model)", line=dict(color="#00d4aa", width=3)))
+                    fig_sim.add_trace(go.Scatter(x=sim["dates"], y=sim["bh_values"], name="Buy & Hold", line=dict(color="#0099ff", width=2, dash="dash")))
+                    fig_sim.update_layout(template="plotly_dark", height=450, title="Portefølje-værdi over tid (start $10.000)", yaxis_title="Værdi ($)")
                     st.plotly_chart(fig_sim, use_container_width=True)
 
                 with st.expander("📅 Vis alle backtest-samples"):
-                    display_df = bt["results"][[
-                        "date", "score", "recommendation",
-                        "entry_price", "exit_price", "return_pct"
-                    ]].copy()
+                    display_df = bt["results"][["date", "score", "recommendation", "entry_price", "exit_price", "return_pct"]].copy()
                     display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
                     display_df["score"] = display_df["score"].round(1)
                     display_df["entry_price"] = display_df["entry_price"].round(2)
                     display_df["exit_price"] = display_df["exit_price"].round(2)
                     display_df["return_pct"] = display_df["return_pct"].round(2)
-                    display_df.columns = [
-                        "Dato", "Score", "Anbefaling",
-                        "Entry pris", "Exit pris", "Afkast %"
-                    ]
+                    display_df.columns = ["Dato", "Score", "Anbefaling", "Entry pris", "Exit pris", "Afkast %"]
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
