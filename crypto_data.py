@@ -1,4 +1,4 @@
-"""Krypto-datakilder med fallback-kæde + custom ticker support"""
+"""Krypto-datakilder med fallback-kæde + custom ticker support + robust fejlhåndtering"""
 import time
 import requests
 import numpy as np
@@ -134,7 +134,7 @@ def fetch_coingecko(coin_id):
             df["ts"] = pd.to_datetime(df["ts"], unit="ms").dt.normalize()
             df = df.drop_duplicates(subset="ts").set_index("ts")
         else:
-            # Fallback: byg OHLC fra close prices (rolling high/low)
+            # Fallback: byg OHLC fra close prices
             print(f"CoinGecko: bruger close-prices fallback for {coin_id}")
             df = df_prices.copy()
             df["Open"] = df["Close"].shift(1).fillna(df["Close"])
@@ -156,29 +156,39 @@ def fetch_coingecko(coin_id):
         if df.empty:
             return None
 
-        md = data.get("market_data", {})
-        cd = data.get("community_data", {})
-        dd = data.get("developer_data", {})
+        md = data.get("market_data") or {}
+        cd = data.get("community_data") or {}
+        dd = data.get("developer_data") or {}
+
+        # Sikker .get med .get fallback for nested dicts
+        def safe_get(d, *keys):
+            for k in keys:
+                if not isinstance(d, dict):
+                    return None
+                d = d.get(k)
+                if d is None:
+                    return None
+            return d
 
         info = {
             "longName": data.get("name"),
-            "symbol": data.get("symbol", "").upper(),
+            "symbol": (data.get("symbol") or "").upper(),
             "currency": "USD",
-            "currentPrice": md.get("current_price", {}).get("usd") or float(df["Close"].iloc[-1]),
-            "marketCap": md.get("market_cap", {}).get("usd"),
+            "currentPrice": safe_get(md, "current_price", "usd") or float(df["Close"].iloc[-1]),
+            "marketCap": safe_get(md, "market_cap", "usd"),
             "marketCapRank": md.get("market_cap_rank"),
-            "totalVolume": md.get("total_volume", {}).get("usd"),
+            "totalVolume": safe_get(md, "total_volume", "usd"),
             "sector": "Cryptocurrency",
             "country": "Global",
             "circulating_supply": md.get("circulating_supply"),
             "total_supply": md.get("total_supply"),
             "max_supply": md.get("max_supply"),
-            "ath": md.get("ath", {}).get("usd"),
-            "ath_change_%": md.get("ath_change_percentage", {}).get("usd"),
-            "ath_date": md.get("ath_date", {}).get("usd"),
-            "atl": md.get("atl", {}).get("usd"),
-            "atl_change_%": md.get("atl_change_percentage", {}).get("usd"),
-            "change_1h": md.get("price_change_percentage_1h_in_currency", {}).get("usd"),
+            "ath": safe_get(md, "ath", "usd"),
+            "ath_change_%": safe_get(md, "ath_change_percentage", "usd"),
+            "ath_date": safe_get(md, "ath_date", "usd"),
+            "atl": safe_get(md, "atl", "usd"),
+            "atl_change_%": safe_get(md, "atl_change_percentage", "usd"),
+            "change_1h": safe_get(md, "price_change_percentage_1h_in_currency", "usd"),
             "change_24h": md.get("price_change_percentage_24h"),
             "change_7d": md.get("price_change_percentage_7d"),
             "change_30d": md.get("price_change_percentage_30d"),
@@ -197,8 +207,8 @@ def fetch_coingecko(coin_id):
             "github_subscribers": dd.get("subscribers"),
             "commit_count_4_weeks": dd.get("commit_count_4_weeks"),
             "github_pull_requests_merged": dd.get("pull_requests_merged"),
-            "description": (data.get("description", {}).get("en", "") or "")[:500],
-            "previousClose": float(df["Close"].iloc[-2]) if len(df) >= 2 else md.get("current_price", {}).get("usd"),
+            "description": ((data.get("description") or {}).get("en") or "")[:500],
+            "previousClose": float(df["Close"].iloc[-2]) if len(df) >= 2 else safe_get(md, "current_price", "usd"),
         }
 
         return {"info": info, "hist": df, "source": "CoinGecko"}
@@ -241,14 +251,18 @@ def fetch_binance(symbol, interval="1d", limit=500):
 def fetch_fear_greed():
     """Hent Crypto Fear & Greed Index"""
     try:
-        r = requests.get("https://api.alternative.me/fng/?limit=30", timeout=10).json()
-        if "data" in r:
-            df = pd.DataFrame(r["data"])
-            df["value"] = df["value"].astype(int)
-            df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="s")
-            return df.sort_values("timestamp")
-        return None
-    except Exception:
+        r = requests.get("https://api.alternative.me/fng/?limit=30", timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if "data" not in data:
+            return None
+        df = pd.DataFrame(data["data"])
+        df["value"] = df["value"].astype(int)
+        df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="s")
+        return df.sort_values("timestamp")
+    except Exception as e:
+        print(f"Fear & Greed error: {e}")
         return None
 
 
@@ -256,19 +270,24 @@ def fetch_fear_greed():
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_global_crypto_market():
-    """Total krypto-marked statistik"""
+    """Total krypto-marked statistik - robust mod manglende felter"""
     try:
-        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=10).json()
-        d = r.get("data", {})
+        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
+        if r.status_code != 200:
+            print(f"Global endpoint failed: {r.status_code}")
+            return None
+        d = r.json().get("data") or {}
+
         return {
-            "total_market_cap_usd": d.get("total_market_cap", {}).get("usd"),
-            "total_volume_usd": d.get("total_volume", {}).get("usd"),
-            "btc_dominance": d.get("market_cap_percentage", {}).get("btc"),
-            "eth_dominance": d.get("market_cap_percentage", {}).get("eth"),
-            "active_cryptos": d.get("active_cryptocurrencies"),
-            "market_cap_change_24h": d.get("market_cap_change_percentage_24h_usd"),
+            "total_market_cap_usd": (d.get("total_market_cap") or {}).get("usd") or 0,
+            "total_volume_usd": (d.get("total_volume") or {}).get("usd") or 0,
+            "btc_dominance": (d.get("market_cap_percentage") or {}).get("btc") or 0,
+            "eth_dominance": (d.get("market_cap_percentage") or {}).get("eth") or 0,
+            "active_cryptos": d.get("active_cryptocurrencies") or 0,
+            "market_cap_change_24h": d.get("market_cap_change_percentage_24h_usd") or 0,
         }
-    except Exception:
+    except Exception as e:
+        print(f"Global market error: {e}")
         return None
 
 
@@ -281,6 +300,7 @@ def fetch_crypto_data(ticker):
     1. CoinGecko via CRYPTO_UNIVERSE config (hvis kendt ticker)
     2. CoinGecko via search API (custom tickers som DOGE, SHIB, PEPE, PAXG)
     3. Binance fallback (USDT-suffix)
+    4. Binance fallback (BUSD-suffix)
     """
     if not ticker:
         return None
@@ -391,10 +411,13 @@ def fetch_btc_onchain():
                     f"https://api.blockchain.info/charts/{endpoint}",
                     params={"timespan": "30days", "format": "json"},
                     timeout=10,
-                ).json()
-                if "values" in r and r["values"]:
-                    metrics[key] = r["values"][-1]["y"]
-                    metrics[f"{key}_history"] = r["values"]
+                )
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                if "values" in data and data["values"]:
+                    metrics[key] = data["values"][-1]["y"]
+                    metrics[f"{key}_history"] = data["values"]
             except Exception:
                 pass
         return metrics
@@ -411,16 +434,19 @@ def fetch_trending_coins():
         r = requests.get(
             "https://api.coingecko.com/api/v3/search/trending",
             timeout=10
-        ).json()
+        )
+        if r.status_code != 200:
+            return []
+        data = r.json()
         return [
             {
-                "name": c["item"]["name"],
-                "symbol": c["item"]["symbol"].upper(),
+                "name": c["item"].get("name"),
+                "symbol": (c["item"].get("symbol") or "").upper(),
                 "rank": c["item"].get("market_cap_rank"),
                 "price_btc": c["item"].get("price_btc"),
                 "thumb": c["item"].get("thumb"),
             }
-            for c in r.get("coins", [])[:7]
+            for c in data.get("coins", [])[:7]
         ]
     except Exception:
         return []
@@ -442,8 +468,11 @@ def fetch_top_movers():
                 "price_change_percentage": "24h",
             },
             timeout=15,
-        ).json()
-        df = pd.DataFrame(r)
+        )
+        if r.status_code != 200:
+            return None, None
+        data = r.json()
+        df = pd.DataFrame(data)
         if df.empty:
             return None, None
         df = df[["symbol", "name", "current_price",
