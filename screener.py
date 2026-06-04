@@ -157,3 +157,35 @@ def categorize_opportunities(df_buys):
         categories["💸 Dividend (>3%)"] = cat
 
     return categories
+# ... behold al eksisterende kode i screener.py ...
+
+# Tilføj denne nye funktion til slutningen af filen:
+
+def sector_breakdown(df_all):
+    """Grupperer resultater per sektor og finder bedste pr. sektor"""
+    if df_all is None or df_all.empty:
+        return {}
+    df = df_all[df_all["status"] == "✅"].copy()
+    if df.empty or "sector" not in df.columns:
+        return {}
+
+    # Normalisér sektor-navne (fjern '?' og tomme)
+    df["sector"] = df["sector"].fillna("Ukendt").replace("?", "Ukendt")
+
+    sectors = {}
+    for sector_name in df["sector"].unique():
+        if not sector_name or sector_name == "Ukendt":
+            continue
+        sub = df[df["sector"] == sector_name].sort_values("overall", ascending=False)
+        if len(sub) == 0:
+            continue
+        sectors[sector_name] = {
+            "count": len(sub),
+            "avg_score": sub["overall"].mean(),
+            "best_score": sub["overall"].max(),
+            "top_pick": sub.iloc[0],
+            "all_stocks": sub,
+        }
+    # Sortér efter gennemsnitlig score (bedste sektorer først)
+    return dict(sorted(sectors.items(),
+                       key=lambda x: x[1]["avg_score"], reverse=True))
