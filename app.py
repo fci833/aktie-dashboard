@@ -27,6 +27,16 @@ from history import (
 )
 from ui_helpers import make_price_box, make_range_box, make_recommendation_card
 
+# 🪙 KRYPTO IMPORTS (NYT)
+from crypto_config import CRYPTO_UNIVERSE, CRYPTO_UNIVERSES
+from crypto_data import (
+    fetch_crypto_data, fetch_fear_greed, fetch_global_crypto_market,
+    is_crypto, normalize_crypto_ticker
+)
+from crypto_analysis import (
+    crypto_overall_score, crypto_recommendation
+)
+
 import warnings
 warnings.filterwarnings("ignore")
 import requests as plain_requests
@@ -190,7 +200,7 @@ with st.sidebar:
 
 # ============ NAVIGATION (radio i stedet for tabs så vi kan skifte programmatisk) ============
 
-view_options = ["📊 Analyse", "🔎 Screener", "🔍 Søg ticker", "🔧 Diagnose"]
+view_options = ["📊 Analyse", "🔎 Screener", "🪙 Krypto", "🔍 Søg ticker", "🔧 Diagnose"]
 selected_view = st.radio(
     "Navigation",
     view_options,
