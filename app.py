@@ -19,7 +19,12 @@ from analysis import (
     monte_carlo, recommendation, filter_by_days, filter_chart_period
 )
 from backtest import run_backtest, simulate_strategy
-from screener import run_screener, categorize_opportunities
+from screener import run_screener, categorize_opportunities, sector_breakdown
+from history import (
+    save_snapshot, list_snapshots, load_snapshot,
+    compare_snapshots, get_hot_stocks, get_score_history,
+    cleanup_old_snapshots
+)
 from ui_helpers import make_price_box, make_range_box, make_recommendation_card
 
 import warnings
@@ -45,6 +50,8 @@ if "current_ticker" not in st.session_state:
     st.session_state.current_ticker = ""
 if "screener_results" not in st.session_state:
     st.session_state.screener_results = None
+if "active_view" not in st.session_state:
+    st.session_state.active_view = "📊 Analyse"
 
 
 # ============ DIAGNOSE ============
@@ -122,6 +129,15 @@ def run_diagnostics(ticker):
     return results
 
 
+# ============ HJÆLPER: Skift til analyse ============
+
+def goto_analysis(ticker):
+    """Helper der skifter til analyse-fanen med en given ticker"""
+    st.session_state.current_ticker = ticker
+    st.session_state.active_view = "📊 Analyse"
+    st.rerun()
+
+
 # ============ SIDEBAR ============
 
 with st.sidebar:
@@ -157,8 +173,7 @@ with st.sidebar:
         with st.expander(region):
             for tk in ts:
                 if st.button(tk, key=f"q_{tk}", use_container_width=True):
-                    st.session_state.current_ticker = tk
-                    st.rerun()
+                    goto_analysis(tk)
 
     st.markdown("---")
     st.markdown("### 💱 Valutakurser")
@@ -173,16 +188,27 @@ with st.sidebar:
     st.caption("🎲 Monte Carlo: **2 år**")
 
 
-# ============ TABS ============
+# ============ NAVIGATION (radio i stedet for tabs så vi kan skifte programmatisk) ============
 
-main_tab, screener_tab, search_tab, diag_tab = st.tabs(
-    ["📊 Analyse", "🔎 Screener", "🔍 Søg ticker", "🔧 Diagnose"]
+view_options = ["📊 Analyse", "🔎 Screener", "🔍 Søg ticker", "🔧 Diagnose"]
+selected_view = st.radio(
+    "Navigation",
+    view_options,
+    index=view_options.index(st.session_state.active_view),
+    horizontal=True,
+    label_visibility="collapsed",
+    key="nav_radio",
 )
+if selected_view != st.session_state.active_view:
+    st.session_state.active_view = selected_view
+    st.rerun()
+
+st.markdown("---")
 
 
-# ============ SØGE-TAB ============
+# ============ SØGE-VIEW ============
 
-with search_tab:
+if st.session_state.active_view == "🔍 Søg ticker":
     st.subheader("🔍 Find ticker for et firma")
     query = st.text_input("Firmanavn", value="", key="search_query",
                           placeholder="novo nordisk")
@@ -196,10 +222,7 @@ with search_tab:
             for i, r in enumerate(results[:8]):
                 if cols[i % 4].button(f"📌 {r['symbol']}\n{r['name'][:25]}",
                                       key=f"sr_{i}", use_container_width=True):
-                    st.session_state.current_ticker = r["symbol"]
-                    st.success(f"Valgt: {r['symbol']}")
-                    time.sleep(0.5)
-                    st.rerun()
+                    goto_analysis(r["symbol"])
         else:
             st.warning("Ingen resultater fundet")
     st.markdown("---")
@@ -214,9 +237,9 @@ with search_tab:
     st.dataframe(examples, use_container_width=True, hide_index=True)
 
 
-# ============ DIAGNOSE-TAB ============
+# ============ DIAGNOSE-VIEW ============
 
-with diag_tab:
+elif st.session_state.active_view == "🔧 Diagnose":
     st.subheader("🔧 Diagnose - Test datakilder")
     diag_ticker = st.text_input("Test ticker", value="AAPL",
                                 key="diag_ticker").strip().upper()
@@ -228,21 +251,13 @@ with diag_tab:
                 st.code(details)
 
 
-# ============ SCREENER-TAB (UDVIDET) ============
+# ============ SCREENER-VIEW ============
 
-with screener_tab:
+elif st.session_state.active_view == "🔎 Screener":
     st.subheader("🔎 Markedsscreener")
     st.caption(
         "Find gode købsmuligheder · Sammenlign over tid · "
         "Sektoranalyse · Hot stocks"
-    )
-
-    # Importér de nye funktioner
-    from screener import sector_breakdown
-    from history import (
-        save_snapshot, list_snapshots, load_snapshot,
-        compare_snapshots, get_hot_stocks, get_score_history,
-        cleanup_old_snapshots
     )
 
     sc_modes = st.tabs([
@@ -300,7 +315,6 @@ with screener_tab:
                 )
             progress.empty()
 
-            # AUTO-GEM snapshot for senere sammenligning
             if not df_all.empty:
                 save_snapshot(df_all, universe_name)
 
@@ -324,7 +338,7 @@ with screener_tab:
             st.session_state.screener_results = None
             st.rerun()
 
-        # ===== Vis resultater =====
+        # Vis resultater
         if st.session_state.screener_results:
             res = st.session_state.screener_results
             df_all = res["all"]
@@ -383,12 +397,10 @@ with screener_tab:
                 cols = st.columns(4)
                 for i, (_, row) in enumerate(df_buys.head(top_n).iterrows()):
                     if cols[i % 4].button(
-                        f"📊 {row['ticker']}\n{row['overall']:.0f}/100",
+                        f"📊 {row['ticker']} {row['overall']:.0f}/100",
                         key=f"sc_{row['ticker']}", use_container_width=True
                     ):
-                        st.session_state.current_ticker = row["ticker"]
-                        st.success(f"Skifter til {row['ticker']}")
-                        time.sleep(0.5)
+                        goto_analysis(row["ticker"])
 
                 # Kategorier
                 st.markdown("---")
@@ -409,6 +421,23 @@ with screener_tab:
                                     ).round(2)
                             st.dataframe(cat_d, use_container_width=True,
                                          hide_index=True)
+
+                # Score-distribution scatter
+                st.markdown("---")
+                st.markdown("### 📈 Score-distribution")
+                fig = px.scatter(
+                    df_all[df_all["status"] == "✅"],
+                    x="f_score", y="t_score",
+                    size="overall", color="overall",
+                    hover_data=["ticker", "name", "recommendation"],
+                    color_continuous_scale="RdYlGn",
+                    title="Fundamental vs Teknisk score",
+                    labels={"f_score": "Fundamental score", "t_score": "Teknisk score"},
+                )
+                fig.add_hline(y=60, line_dash="dash", line_color="green", opacity=0.3)
+                fig.add_vline(x=60, line_dash="dash", line_color="green", opacity=0.3)
+                fig.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig, use_container_width=True)
 
                 # CSV eksport
                 csv = df_buys.to_csv(index=False).encode("utf-8")
@@ -437,7 +466,6 @@ with screener_tab:
                 st.warning("⚠️ Ingen sektor-info tilgængelig "
                            "(fungerer bedst med Yahoo+Finnhub data)")
             else:
-                # Oversigt: sektor-rangering
                 st.markdown("#### 🏆 Sektor-rangering")
                 rank_df = pd.DataFrame([
                     {
@@ -446,7 +474,7 @@ with screener_tab:
                         "Gns. score": round(s["avg_score"], 1),
                         "Bedste score": round(s["best_score"], 1),
                         "Top pick": s["top_pick"]["ticker"],
-                        "Top pick navn": s["top_pick"]["name"][:30],
+                        "Top pick navn": str(s["top_pick"]["name"])[:30],
                     }
                     for name, s in sectors.items()
                 ])
@@ -461,7 +489,6 @@ with screener_tab:
                     },
                 )
 
-                # Visualisering: sektor-score
                 fig_sec = px.bar(
                     rank_df.sort_values("Gns. score", ascending=True),
                     x="Gns. score", y="Sektor", orientation="h",
@@ -472,7 +499,6 @@ with screener_tab:
                 fig_sec.update_layout(template="plotly_dark", height=500)
                 st.plotly_chart(fig_sec, use_container_width=True)
 
-                # Detaljer per sektor
                 st.markdown("---")
                 st.markdown("#### 🔍 Top 3 pr. sektor")
                 for name, s in sectors.items():
@@ -482,15 +508,19 @@ with screener_tab:
                     ):
                         top3 = s["all_stocks"].head(3)
                         for _, row in top3.iterrows():
-                            cols = st.columns([1, 2, 1, 1, 1])
+                            cols = st.columns([1, 2, 1, 1, 1, 1])
                             cols[0].markdown(f"**{row['ticker']}**")
                             cols[1].caption(str(row.get("name", ""))[:40])
                             cols[2].metric("Score", f"{row['overall']:.0f}")
-                            cols[3].metric("RSI",
-                                f"{row['rsi']:.0f}" if pd.notna(row.get('rsi')) else "-")
+                            cols[3].metric(
+                                "RSI",
+                                f"{row['rsi']:.0f}" if pd.notna(row.get('rsi')) else "-"
+                            )
                             cols[4].markdown(f"_{row.get('recommendation', '')}_")
+                            if cols[5].button("📊", key=f"sec_btn_{row['ticker']}"):
+                                goto_analysis(row["ticker"])
 
-    # ===== MODE 3: SAMMENLIGN MED I GÅR =====
+    # ===== MODE 3: SAMMENLIGN =====
     with sc_modes[2]:
         st.markdown("### 🔔 Sammenlign med tidligere snapshots")
         st.caption(
@@ -506,11 +536,9 @@ with screener_tab:
                 "Kør screeneren igen senere (eller på en anden dag)."
             )
         else:
-            # Filter på univers
             unique_universes = list(set(s["universe"] for s in all_snaps))
             sel_universe = st.selectbox(
-                "🌍 Univers",
-                unique_universes, key="cmp_universe"
+                "🌍 Univers", unique_universes, key="cmp_universe"
             )
             uni_snaps = [s for s in all_snaps if s["universe"] == sel_universe]
 
@@ -546,7 +574,6 @@ with screener_tab:
                         st.success(f"✅ Sammenlignet "
                                    f"{ts_prev[:10]} → {ts_now[:10]}")
 
-                        # Filter på rating-ændringer
                         if "rating_changed" in cmp.columns:
                             changed = cmp[cmp["rating_changed"] == True].copy()
 
@@ -554,7 +581,6 @@ with screener_tab:
                             if changed.empty:
                                 st.info("Ingen aktier har ændret rating")
                             else:
-                                # Opdelt: Opgraderet vs nedgraderet
                                 rec_order = ["STÆRKT KØB", "KØB", "HOLD",
                                              "SÆLG", "STÆRKT SÆLG"]
                                 changed["was_idx"] = changed[
@@ -613,7 +639,6 @@ with screener_tab:
                                         hide_index=True,
                                     )
 
-                        # Top score-ændringer (også uden rating-skift)
                         st.markdown("#### 📈 Største score-stigninger")
                         if "score_change" in cmp.columns:
                             risers = cmp.dropna(subset=["score_change"]).nlargest(
@@ -645,8 +670,7 @@ with screener_tab:
     with sc_modes[3]:
         st.markdown("### 🔥 Hot stocks - stigende score over tid")
         st.caption(
-            "Find aktier hvor scoren er steget de sidste N snapshots. "
-            "Kræver flere screeninger gemt over tid."
+            "Find aktier hvor scoren er steget de sidste N snapshots."
         )
 
         all_snaps = list_snapshots()
@@ -686,7 +710,6 @@ with screener_tab:
                         f"({hot['n_snapshots']} snapshots)"
                     )
 
-                    # Risers
                     if not hot["risers"].empty:
                         st.markdown("#### 🚀 Stigende score (risers)")
                         risers_disp = hot["risers"][[
@@ -705,14 +728,8 @@ with screener_tab:
                         st.dataframe(
                             risers_disp, use_container_width=True,
                             hide_index=True,
-                            column_config={
-                                "score_change": st.column_config.NumberColumn(
-                                    "Score Δ", format="+%.1f"
-                                ),
-                            },
                         )
 
-                        # Bar chart
                         fig_hot = px.bar(
                             hot["risers"].head(15),
                             x="score_change", y="ticker", orientation="h",
@@ -723,7 +740,17 @@ with screener_tab:
                         fig_hot.update_layout(template="plotly_dark", height=500)
                         st.plotly_chart(fig_hot, use_container_width=True)
 
-                    # Fallers
+                        # Knapper til hurtig analyse
+                        st.markdown("##### 👆 Hurtig analyse:")
+                        hot_cols = st.columns(4)
+                        for i, (_, row) in enumerate(hot["risers"].head(8).iterrows()):
+                            if hot_cols[i % 4].button(
+                                f"📊 {row['ticker']} (+{row['score_change']:.0f})",
+                                key=f"hot_{row['ticker']}",
+                                use_container_width=True,
+                            ):
+                                goto_analysis(row["ticker"])
+
                     if not hot["fallers"].empty:
                         with st.expander(
                             f"📉 Faldende score ({len(hot['fallers'])} aktier)"
@@ -754,7 +781,6 @@ with screener_tab:
         else:
             st.success(f"✅ {len(all_snaps)} snapshots gemt")
 
-            # Vis som tabel
             snap_df = pd.DataFrame([
                 {
                     "Filnavn": s["filename"],
@@ -766,7 +792,6 @@ with screener_tab:
             ])
             st.dataframe(snap_df, use_container_width=True, hide_index=True)
 
-            # Score-historik for én ticker
             st.markdown("---")
             st.markdown("#### 📈 Score-historik for én ticker")
             track_ticker = st.text_input(
@@ -800,7 +825,6 @@ with screener_tab:
                     st.dataframe(hist_df, use_container_width=True,
                                  hide_index=True)
 
-            # Cleanup
             st.markdown("---")
             st.markdown("#### 🧹 Vedligeholdelse")
             cl1, cl2 = st.columns(2)
@@ -813,9 +837,9 @@ with screener_tab:
                 st.rerun()
 
 
-# ============ HOVED-ANALYSE-TAB ============
+# ============ HOVED-ANALYSE-VIEW ============
 
-with main_tab:
+elif st.session_state.active_view == "📊 Analyse":
     c1, c2 = st.columns([4, 1])
     default_t = st.session_state.current_ticker or "AAPL"
     ticker_input = c1.text_input(
@@ -866,7 +890,6 @@ with main_tab:
     if len(hist_full) < 200:
         st.warning(f"⚠️ Kun {len(hist_full)} dage data - SMA200 unøjagtig")
 
-    # ÉN beregning, brug overalt
     df_full = get_indicators(hist_full)
     df_chart_filtered = df_full.loc[df_full.index.isin(hist_chart.index)]
     df_technical = df_full.tail(len(hist_technical))
@@ -1174,7 +1197,6 @@ with main_tab:
                     )
                     st.plotly_chart(fig_hr, use_container_width=True)
 
-                # Strategi simulation
                 st.markdown("---")
                 st.markdown("### 💰 Strategi simulation (10.000 startkapital)")
                 if sim and len(sim["equity_curve"]) > 0:
@@ -1214,7 +1236,6 @@ with main_tab:
                             tl["price"] = tl["price"].round(2)
                             st.dataframe(tl, use_container_width=True, hide_index=True)
 
-                # Score vs return scatter
                 st.markdown("---")
                 st.markdown("### 🔍 Score vs faktisk afkast")
                 fig_sc = px.scatter(
