@@ -1,352 +1,433 @@
-"""Krypto-analyse: Komplet med targets, risk, MC, backtest"""
+"""Krypto-analyse: scoring, indikatorer, kursmål, risk, monte carlo, backtest"""
 import numpy as np
 import pandas as pd
-from datetime import datetime
-from crypto_data import fetch_fear_greed
+from datetime import datetime, timedelta
 
 
-# ===== SCORING (4-FAKTOR MODEL) =====
+# ============ TEKNISKE INDIKATORER ============
 
-def crypto_market_score(info):
-    score = 50.0
-    details = []
+def crypto_indicators(hist):
+    """Beregner tekniske indikatorer for krypto"""
+    if hist is None or len(hist) < 20:
+        return hist
 
-    rank = info.get("marketCapRank")
-    if rank:
-        if rank <= 10:
-            score += 15
-            details.append({"label": f"Top 10 (rank #{rank})", "impact": 15})
-        elif rank <= 30:
-            score += 10
-            details.append({"label": f"Top 30 (rank #{rank})", "impact": 10})
-        elif rank <= 100:
-            score += 5
-            details.append({"label": f"Top 100 (rank #{rank})", "impact": 5})
-        else:
-            score -= 10
-            details.append({"label": f"Lavt rank (#{rank})", "impact": -10})
+    df = hist.copy()
 
-    ath_change = info.get("ath_change_%", 0) or 0
-    if ath_change < -80:
-        score += 20
-        details.append({"label": "80%+ under ATH (deep value)", "impact": 20})
-    elif ath_change < -60:
-        score += 15
-        details.append({"label": "60%+ under ATH", "impact": 15})
-    elif ath_change < -40:
-        score += 10
-        details.append({"label": "40%+ under ATH", "impact": 10})
-    elif ath_change > -10:
-        score -= 15
-        details.append({"label": "Tæt på ATH (overheated)", "impact": -15})
-    elif ath_change > -25:
-        score -= 5
-        details.append({"label": "25% under ATH", "impact": -5})
-
-    circ = info.get("circulating_supply") or 0
-    max_sup = info.get("max_supply")
-    if max_sup and circ > 0:
-        ratio = circ / max_sup
-        if ratio > 0.95:
-            score += 15
-            details.append({"label": f"95%+ supply mined", "impact": 15})
-        elif ratio > 0.85:
-            score += 10
-            details.append({"label": f"85%+ supply mined", "impact": 10})
-        elif ratio < 0.3:
-            score -= 10
-            details.append({"label": f"Højt fremtidigt udbud", "impact": -10})
-    elif not max_sup:
-        score -= 5
-        details.append({"label": "Inflationær", "impact": -5})
-
-    mc = info.get("marketCap", 0) or 0
-    vol = info.get("totalVolume", 0) or 0
-    if mc > 0 and vol > 0:
-        liq_ratio = vol / mc
-        if liq_ratio > 0.15:
-            score += 10
-            details.append({"label": "Høj likviditet", "impact": 10})
-        elif liq_ratio < 0.02:
-            score -= 10
-            details.append({"label": "Lav likviditet", "impact": -10})
-
-    return max(0, min(100, score)), details
-
-
-def crypto_technical_score(df):
-    if df is None or len(df) < 50:
-        return 50.0, [{"label": "Utilstrækkelig data", "impact": 0}]
-
-    score = 50.0
-    details = []
-    close = df["Close"]
-
-    sma20 = close.rolling(20).mean().iloc[-1]
-    sma50 = close.rolling(50).mean().iloc[-1]
-    sma200 = close.rolling(200).mean().iloc[-1] if len(df) >= 200 else None
-    last = close.iloc[-1]
-
-    if sma200 and last > sma200:
-        score += 10
-        details.append({"label": "Pris > SMA200 (bull)", "impact": 10})
-    elif sma200:
-        score -= 10
-        details.append({"label": "Pris < SMA200 (bear)", "impact": -10})
-
-    if last > sma20 > sma50:
-        score += 10
-        details.append({"label": "Golden cross-tendens", "impact": 10})
-    elif last < sma20 < sma50:
-        score -= 5
-        details.append({"label": "Death cross-tendens", "impact": -5})
-
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(14).mean()
-    rs = gain / loss.replace(0, np.nan)
-    rsi = (100 - 100 / (1 + rs)).iloc[-1]
-    if not np.isnan(rsi):
-        if rsi < 30:
-            score += 15
-            details.append({"label": f"RSI oversold ({rsi:.0f})", "impact": 15})
-        elif rsi < 40:
-            score += 5
-            details.append({"label": f"RSI lav ({rsi:.0f})", "impact": 5})
-        elif rsi > 70:
-            score -= 15
-            details.append({"label": f"RSI overbought ({rsi:.0f})", "impact": -15})
-        elif rsi > 60:
-            score -= 5
-            details.append({"label": f"RSI høj ({rsi:.0f})", "impact": -5})
-
-    if len(close) >= 30:
-        mom_30 = (close.iloc[-1] / close.iloc[-30] - 1) * 100
-        if mom_30 > 30:
-            score -= 5
-            details.append({"label": f"+{mom_30:.0f}% (overheated)", "impact": -5})
-        elif mom_30 > 10:
-            score += 10
-            details.append({"label": f"+{mom_30:.0f}% momentum", "impact": 10})
-        elif mom_30 < -30:
-            score += 10
-            details.append({"label": f"{mom_30:.0f}% (bounce mulig)", "impact": 10})
-
-    returns = close.pct_change().dropna()
-    vol = returns.std() * np.sqrt(365) * 100
-    if vol < 50:
-        score += 5
-        details.append({"label": f"Lav vol ({vol:.0f}%)", "impact": 5})
-    elif vol > 100:
-        score -= 5
-        details.append({"label": f"Ekstrem vol ({vol:.0f}%)", "impact": -5})
-
-    return max(0, min(100, score)), details
-
-
-def crypto_sentiment_score(info):
-    score = 50.0
-    details = []
-
-    fg_df = fetch_fear_greed()
-    if fg_df is not None and not fg_df.empty:
-        fg = int(fg_df["value"].iloc[-1])
-        if fg < 25:
-            score += 20
-            details.append({"label": f"Extreme Fear ({fg})", "impact": 20})
-        elif fg < 45:
-            score += 10
-            details.append({"label": f"Fear ({fg})", "impact": 10})
-        elif fg > 75:
-            score -= 20
-            details.append({"label": f"Extreme Greed ({fg})", "impact": -20})
-        elif fg > 55:
-            score -= 5
-            details.append({"label": f"Greed ({fg})", "impact": -5})
-
-    twitter = info.get("twitter_followers", 0) or 0
-    if twitter > 1_000_000:
-        score += 10
-        details.append({"label": "Stor community (>1M Twitter)", "impact": 10})
-    elif twitter > 100_000:
-        score += 5
-        details.append({"label": ">100k Twitter", "impact": 5})
-
-    reddit = info.get("reddit_subscribers", 0) or 0
-    if reddit > 500_000:
-        score += 5
-        details.append({"label": f"Aktiv Reddit", "impact": 5})
-
-    return max(0, min(100, score)), details
-
-
-def crypto_developer_score(info):
-    score = 50.0
-    details = []
-
-    commits = info.get("github_commits_4w", 0) or 0
-    if commits > 100:
-        score += 15
-        details.append({"label": f"Meget aktiv ({commits} commits/4w)", "impact": 15})
-    elif commits > 30:
-        score += 10
-        details.append({"label": f"Aktiv ({commits} commits/4w)", "impact": 10})
-    elif commits > 5:
-        score += 5
-        details.append({"label": f"Moderat ({commits} commits/4w)", "impact": 5})
-    elif commits == 0:
-        score -= 15
-        details.append({"label": "Ingen recent udvikling", "impact": -15})
-
-    stars = info.get("github_stars", 0) or 0
-    if stars > 50_000:
-        score += 10
-        details.append({"label": f"Top GitHub ({stars:,} stars)", "impact": 10})
-    elif stars > 10_000:
-        score += 5
-        details.append({"label": f"Populært ({stars:,} stars)", "impact": 5})
-
-    return max(0, min(100, score)), details
-
-
-def crypto_overall_score(info, df):
-    market_s, market_d = crypto_market_score(info)
-    tech_s, tech_d = crypto_technical_score(df)
-    sent_s, sent_d = crypto_sentiment_score(info)
-    dev_s, dev_d = crypto_developer_score(info)
-
-    overall = market_s * 0.35 + tech_s * 0.30 + sent_s * 0.20 + dev_s * 0.15
-
-    return {
-        "overall": overall,
-        "market": market_s,
-        "technical": tech_s,
-        "sentiment": sent_s,
-        "developer": dev_s,
-        "details": {
-            "market": market_d, "technical": tech_d,
-            "sentiment": sent_d, "developer": dev_d,
-        },
-    }
-
-
-def crypto_recommendation(score):
-    if score >= 75:
-        return "🚀 STÆRKT KØB", "#16a34a"
-    elif score >= 60:
-        return "✅ KØB", "#22c55e"
-    elif score >= 40:
-        return "⏸️ HOLD", "#eab308"
-    elif score >= 25:
-        return "⚠️ SÆLG", "#ef4444"
-    else:
-        return "🛑 STÆRKT SÆLG", "#b91c1c"
-
-
-# ===== TEKNISKE INDIKATORER =====
-
-def crypto_indicators(df):
-    """Beregn alle indikatorer (samme som aktier)"""
-    df = df.copy()
+    # Moving averages
     df["SMA20"] = df["Close"].rolling(20).mean()
     df["SMA50"] = df["Close"].rolling(50).mean()
     df["SMA200"] = df["Close"].rolling(200).mean()
+    df["EMA12"] = df["Close"].ewm(span=12, adjust=False).mean()
+    df["EMA26"] = df["Close"].ewm(span=26, adjust=False).mean()
 
-    delta = df["Close"].diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(14).mean()
-    rs = gain / loss.replace(0, np.nan)
-    df["RSI"] = 100 - 100 / (1 + rs)
-
-    ema12 = df["Close"].ewm(span=12, adjust=False).mean()
-    ema26 = df["Close"].ewm(span=26, adjust=False).mean()
-    df["MACD"] = ema12 - ema26
+    # MACD
+    df["MACD"] = df["EMA12"] - df["EMA26"]
     df["MACD_signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_hist"] = df["MACD"] - df["MACD_signal"]
 
-    # Bollinger Bands
-    bb_mid = df["Close"].rolling(20).mean()
-    bb_std = df["Close"].rolling(20).std()
-    df["BB_upper"] = bb_mid + bb_std * 2
-    df["BB_lower"] = bb_mid - bb_std * 2
+    # RSI
+    delta = df["Close"].diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df["RSI"] = 100 - (100 / (1 + rs))
 
-    # ATR
+    # Bollinger Bands (20, 2)
+    df["BB_mid"] = df["Close"].rolling(20).mean()
+    bb_std = df["Close"].rolling(20).std()
+    df["BB_upper"] = df["BB_mid"] + 2 * bb_std
+    df["BB_lower"] = df["BB_mid"] - 2 * bb_std
+
+    # ATR (14)
     high_low = df["High"] - df["Low"]
     high_close = (df["High"] - df["Close"].shift()).abs()
     low_close = (df["Low"] - df["Close"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(14).mean()
 
+    # Volatility (20-dages annualized)
+    df["Volatility"] = df["Close"].pct_change().rolling(20).std() * np.sqrt(365)
+
     return df
 
 
-# ===== KURS-MÅL & STOP LOSS =====
+# ============ SCORE FUNKTIONER ============
 
-def crypto_price_targets(df, current_price, score_data=None):
+def _market_score(info):
+    """Score baseret på markedsdata: market cap, rank, volume"""
+    score = 50
+    details = []
+
+    # Market cap rank (lavere er bedre)
+    rank = info.get("marketCapRank")
+    if rank:
+        if rank <= 10:
+            score += 20
+            details.append({"label": f"Top 10 rank (#{rank})", "impact": 20})
+        elif rank <= 30:
+            score += 12
+            details.append({"label": f"Top 30 rank (#{rank})", "impact": 12})
+        elif rank <= 100:
+            score += 5
+            details.append({"label": f"Top 100 rank (#{rank})", "impact": 5})
+        elif rank > 500:
+            score -= 10
+            details.append({"label": f"Lav rank (#{rank})", "impact": -10})
+
+    # Market cap størrelse
+    mc = info.get("marketCap") or 0
+    if mc > 100e9:
+        score += 15
+        details.append({"label": "Mega cap (>$100B)", "impact": 15})
+    elif mc > 10e9:
+        score += 10
+        details.append({"label": "Large cap ($10-100B)", "impact": 10})
+    elif mc > 1e9:
+        score += 5
+        details.append({"label": "Mid cap ($1-10B)", "impact": 5})
+    elif mc < 100e6:
+        score -= 10
+        details.append({"label": "Small cap (<$100M)", "impact": -10})
+
+    # 24h volume / market cap ratio (likviditet)
+    vol = info.get("totalVolume") or 0
+    if mc > 0 and vol > 0:
+        vol_ratio = vol / mc
+        if vol_ratio > 0.20:
+            score += 8
+            details.append({"label": f"Høj likviditet ({vol_ratio*100:.1f}%)", "impact": 8})
+        elif vol_ratio > 0.05:
+            score += 3
+            details.append({"label": f"Normal likviditet ({vol_ratio*100:.1f}%)", "impact": 3})
+        elif vol_ratio < 0.01:
+            score -= 5
+            details.append({"label": f"Lav likviditet ({vol_ratio*100:.1f}%)", "impact": -5})
+
+    # ATH afstand
+    ath_change = info.get("ath_change_%")
+    if ath_change is not None:
+        if ath_change > -20:
+            score += 5
+            details.append({"label": f"Tæt på ATH ({ath_change:+.0f}%)", "impact": 5})
+        elif ath_change < -80:
+            score += 8
+            details.append({"label": f"Langt fra ATH ({ath_change:+.0f}%) - billig", "impact": 8})
+        elif ath_change < -50:
+            score += 3
+            details.append({"label": f"Et stykke fra ATH ({ath_change:+.0f}%)", "impact": 3})
+
+    return max(0, min(100, score)), details
+
+
+def _technical_score(hist):
+    """Score baseret på tekniske indikatorer"""
+    if hist is None or len(hist) < 50:
+        return 50, []
+
+    df = crypto_indicators(hist)
+    last = df.iloc[-1]
+    score = 50
+    details = []
+
+    # RSI
+    rsi = last.get("RSI")
+    if pd.notna(rsi):
+        if 40 <= rsi <= 60:
+            score += 8
+            details.append({"label": f"RSI neutral ({rsi:.0f})", "impact": 8})
+        elif 30 <= rsi < 40:
+            score += 12
+            details.append({"label": f"RSI oversolgt-zone ({rsi:.0f})", "impact": 12})
+        elif rsi < 30:
+            score += 15
+            details.append({"label": f"RSI stærkt oversolgt ({rsi:.0f}) - køb", "impact": 15})
+        elif 60 < rsi <= 70:
+            score -= 3
+            details.append({"label": f"RSI lidt overkøbt ({rsi:.0f})", "impact": -3})
+        elif rsi > 70:
+            score -= 12
+            details.append({"label": f"RSI overkøbt ({rsi:.0f}) - vent", "impact": -12})
+
+    # Pris vs SMA50
+    sma50 = last.get("SMA50")
+    close = last.get("Close")
+    if pd.notna(sma50) and pd.notna(close):
+        diff_pct = (close / sma50 - 1) * 100
+        if diff_pct > 5:
+            score += 5
+            details.append({"label": f"Over SMA50 (+{diff_pct:.1f}%)", "impact": 5})
+        elif diff_pct < -10:
+            score += 8
+            details.append({"label": f"Under SMA50 ({diff_pct:.1f}%) - rebound?", "impact": 8})
+        elif diff_pct < -5:
+            score -= 3
+            details.append({"label": f"Under SMA50 ({diff_pct:.1f}%)", "impact": -3})
+
+    # Pris vs SMA200 (Golden cross signal)
+    sma200 = last.get("SMA200")
+    if pd.notna(sma200) and pd.notna(sma50) and pd.notna(close):
+        if close > sma200 and sma50 > sma200:
+            score += 10
+            details.append({"label": "Bull market (pris>SMA200, SMA50>SMA200)", "impact": 10})
+        elif close < sma200 and sma50 < sma200:
+            score -= 8
+            details.append({"label": "Bear market (pris<SMA200, SMA50<SMA200)", "impact": -8})
+
+    # MACD
+    macd = last.get("MACD")
+    macd_sig = last.get("MACD_signal")
+    if pd.notna(macd) and pd.notna(macd_sig):
+        if macd > macd_sig and macd > 0:
+            score += 7
+            details.append({"label": "MACD bullish", "impact": 7})
+        elif macd < macd_sig and macd < 0:
+            score -= 7
+            details.append({"label": "MACD bearish", "impact": -7})
+
+    # Bollinger position
+    bb_u = last.get("BB_upper")
+    bb_l = last.get("BB_lower")
+    if pd.notna(bb_u) and pd.notna(bb_l) and pd.notna(close):
+        bb_range = bb_u - bb_l
+        if bb_range > 0:
+            bb_pos = (close - bb_l) / bb_range
+            if bb_pos < 0.2:
+                score += 8
+                details.append({"label": "BB nederste zone - oversolgt", "impact": 8})
+            elif bb_pos > 0.8:
+                score -= 5
+                details.append({"label": "BB øverste zone - overkøbt", "impact": -5})
+
+    # Momentum 30-dages
+    if len(df) >= 30:
+        ret_30d = (close / df["Close"].iloc[-30] - 1) * 100
+        if ret_30d > 30:
+            score -= 5
+            details.append({"label": f"30d momentum +{ret_30d:.0f}% - parabolic", "impact": -5})
+        elif ret_30d > 10:
+            score += 5
+            details.append({"label": f"30d momentum +{ret_30d:.0f}%", "impact": 5})
+        elif ret_30d < -30:
+            score += 8
+            details.append({"label": f"30d momentum {ret_30d:.0f}% - bounce?", "impact": 8})
+        elif ret_30d < -10:
+            score -= 3
+            details.append({"label": f"30d momentum {ret_30d:.0f}%", "impact": -3})
+
+    return max(0, min(100, score)), details
+
+
+def _sentiment_score(info):
+    """Score baseret på sentiment (community, social)"""
+    score = 50
+    details = []
+
+    # CoinGecko sentiment votes
+    sent_up = info.get("sentiment_votes_up_%")
+    if sent_up is not None:
+        if sent_up > 75:
+            score += 15
+            details.append({"label": f"Stærk positiv sentiment ({sent_up:.0f}%)", "impact": 15})
+        elif sent_up > 60:
+            score += 8
+            details.append({"label": f"Positiv sentiment ({sent_up:.0f}%)", "impact": 8})
+        elif sent_up < 40:
+            score -= 10
+            details.append({"label": f"Negativ sentiment ({sent_up:.0f}%)", "impact": -10})
+
+    # Community score
+    comm = info.get("community_score")
+    if comm is not None:
+        if comm > 60:
+            score += 10
+            details.append({"label": f"Stærk community ({comm:.0f})", "impact": 10})
+        elif comm > 40:
+            score += 5
+            details.append({"label": f"OK community ({comm:.0f})", "impact": 5})
+        elif comm < 20:
+            score -= 5
+            details.append({"label": f"Svag community ({comm:.0f})", "impact": -5})
+
+    # Public interest score
+    public = info.get("public_interest_score")
+    if public is not None and public > 0:
+        if public > 0.001:
+            score += 8
+            details.append({"label": "Høj public interest", "impact": 8})
+        elif public > 0.0001:
+            score += 3
+            details.append({"label": "Moderate public interest", "impact": 3})
+
+    # Twitter followers
+    twitter = info.get("twitter_followers")
+    if twitter:
+        if twitter > 1_000_000:
+            score += 8
+            details.append({"label": f"Twitter: {twitter/1e6:.1f}M followers", "impact": 8})
+        elif twitter > 100_000:
+            score += 4
+            details.append({"label": f"Twitter: {twitter/1e3:.0f}K followers", "impact": 4})
+
+    return max(0, min(100, score)), details
+
+
+def _developer_score(info):
+    """Score baseret på developer aktivitet (GitHub)"""
+    score = 50
+    details = []
+
+    dev = info.get("developer_score")
+    if dev is not None:
+        if dev > 70:
+            score += 20
+            details.append({"label": f"Excellent dev activity ({dev:.0f})", "impact": 20})
+        elif dev > 50:
+            score += 10
+            details.append({"label": f"God dev activity ({dev:.0f})", "impact": 10})
+        elif dev > 30:
+            score += 3
+            details.append({"label": f"OK dev activity ({dev:.0f})", "impact": 3})
+        elif dev < 15:
+            score -= 10
+            details.append({"label": f"Lav dev activity ({dev:.0f})", "impact": -10})
+
+    # GitHub stars
+    stars = info.get("github_stars")
+    if stars:
+        if stars > 10000:
+            score += 12
+            details.append({"label": f"GitHub: {stars/1000:.1f}K stars", "impact": 12})
+        elif stars > 1000:
+            score += 6
+            details.append({"label": f"GitHub: {stars} stars", "impact": 6})
+        elif stars > 100:
+            score += 2
+            details.append({"label": f"GitHub: {stars} stars", "impact": 2})
+
+    # Forks
+    forks = info.get("github_forks")
+    if forks:
+        if forks > 1000:
+            score += 8
+            details.append({"label": f"GitHub forks: {forks}", "impact": 8})
+        elif forks > 100:
+            score += 3
+            details.append({"label": f"GitHub forks: {forks}", "impact": 3})
+
+    # Commits sidste 4 uger
+    commits = info.get("commit_count_4_weeks")
+    if commits is not None:
+        if commits > 100:
+            score += 10
+            details.append({"label": f"{commits} commits/4 uger - meget aktiv", "impact": 10})
+        elif commits > 20:
+            score += 5
+            details.append({"label": f"{commits} commits/4 uger", "impact": 5})
+        elif commits == 0:
+            score -= 8
+            details.append({"label": "Ingen commits sidste 4 uger", "impact": -8})
+
+    return max(0, min(100, score)), details
+
+
+def crypto_overall_score(info, hist):
     """
-    Beregn intelligente kurs-niveauer for krypto.
-    Mere aggressive end aktier pga. højere volatilitet.
+    Samlet multi-faktor score for krypto:
+    - 35% market data
+    - 30% teknisk
+    - 20% sentiment
+    - 15% developer
     """
-    if df is None or len(df) < 50:
+    market, market_details = _market_score(info)
+    technical, technical_details = _technical_score(hist)
+    sentiment, sentiment_details = _sentiment_score(info)
+    developer, developer_details = _developer_score(info)
+
+    overall = (
+        market * 0.35
+        + technical * 0.30
+        + sentiment * 0.20
+        + developer * 0.15
+    )
+
+    return {
+        "overall": overall,
+        "market": market,
+        "technical": technical,
+        "sentiment": sentiment,
+        "developer": developer,
+        "details": {
+            "market": market_details,
+            "technical": technical_details,
+            "sentiment": sentiment_details,
+            "developer": developer_details,
+        }
+    }
+
+
+def crypto_recommendation(score):
+    """Anbefaling baseret på samlet score"""
+    if score >= 75:
+        return "STÆRKT KØB", "#16a34a"
+    elif score >= 60:
+        return "KØB", "#22c55e"
+    elif score >= 45:
+        return "HOLD", "#eab308"
+    elif score >= 30:
+        return "SÆLG", "#ef4444"
+    else:
+        return "STÆRKT SÆLG", "#b91c1c"
+
+
+# ============ KURSMÅL ============
+
+def crypto_price_targets(hist, current_price, scores=None):
+    """Beregn kursmål baseret på ATR, BB og historiske ranges"""
+    if hist is None or len(hist) < 20:
         return None
 
-    df_ind = crypto_indicators(df.copy())
-    last = df_ind.iloc[-1]
+    df = crypto_indicators(hist)
+    last = df.iloc[-1]
 
-    # 90-dages high/low (mere relevant end 52-uger for krypto)
-    recent_90d = df.tail(90) if len(df) >= 90 else df
-    high_90d = recent_90d["High"].max()
-    low_90d = recent_90d["Low"].min()
+    atr = last.get("ATR")
+    if pd.isna(atr) or atr <= 0:
+        atr = current_price * 0.05  # 5% fallback
 
-    # 1-årig
-    high_365d = df["High"].max()
-    low_365d = df["Low"].min()
+    bb_upper = last.get("BB_upper")
+    bb_lower = last.get("BB_lower")
+    if pd.isna(bb_upper) or pd.isna(bb_lower):
+        bb_upper = current_price * 1.15
+        bb_lower = current_price * 0.85
 
-    atr = last["ATR"] if not pd.isna(last["ATR"]) else current_price * 0.05
+    # Historiske ranges
+    high_90d = df["High"].tail(90).max() if len(df) >= 90 else df["High"].max()
+    low_90d = df["Low"].tail(90).min() if len(df) >= 90 else df["Low"].min()
+    high_365d = df["High"].tail(365).max() if len(df) >= 365 else df["High"].max()
+    low_365d = df["Low"].tail(365).min() if len(df) >= 365 else df["Low"].min()
 
-    # Bollinger Bands som tekniske targets
-    bb_upper = last["BB_upper"] if not pd.isna(last["BB_upper"]) else current_price * 1.1
-    bb_lower = last["BB_lower"] if not pd.isna(last["BB_lower"]) else current_price * 0.9
+    # Køb zone (under nuværende, mod BB lower / 90d low)
+    buy_high = max(bb_lower, current_price - 1.5 * atr)
+    buy_low = max(low_90d * 1.02, current_price - 3 * atr)
+    if buy_low > buy_high:
+        buy_low, buy_high = buy_high * 0.95, buy_high
 
-    # Score-baseret aggressivitet
-    score = score_data.get("overall", 50) if score_data else 50
-    aggressive = score >= 65  # Højere targets ved bullish score
+    # Stop loss (3x ATR under)
+    stop_loss = current_price - 3 * atr
 
-    # KØB ZONE: Sværere at time bunden i krypto, så bredere zone
-    if last["RSI"] and last["RSI"] < 35:
-        # Allerede oversold - nuværende pris er køb
-        buy_low = current_price * 0.95
-        buy_high = current_price * 1.02
-    else:
-        # Vent på pullback
-        buy_low = max(bb_lower, current_price - atr * 3)
-        buy_high = current_price - atr * 1
-        # Aldrig mere end 15% under nuværende
-        buy_low = max(buy_low, current_price * 0.80)
+    # Mål
+    target_short = bb_upper  # Bollinger upper (1-3 mdr)
+    target_long = high_90d * 1.10  # 10% over 90d high (6-12 mdr)
+    target_moon = high_365d * 1.20  # 20% over 365d high (12m+)
 
-    # STOP LOSS: 3x ATR (krypto er volatilt)
-    stop_loss = current_price - atr * 3
-    # Aldrig mere end 25% stop (krypto reality)
-    stop_loss = max(stop_loss, current_price * 0.75)
-
-    # KORT-TERM TARGET (1-3 måneder): BB upper eller +1 ATR
-    target_short = max(bb_upper, current_price + atr * 2)
-
-    # LANG-TERM TARGET (6-12 måneder): Score-baseret
-    if aggressive:
-        # Bullish: Target ATH eller +50%
-        target_long = max(high_365d, current_price * 1.5)
-    else:
-        # Konservativ: +30%
-        target_long = current_price * 1.3
-
-    # MOON TARGET (12m+): For bullish scenarier
-    target_moon = current_price * 2.5 if aggressive else current_price * 1.8
+    # Hvis vi er nær ATH, brug mere konservative mål
+    if current_price >= high_365d * 0.95:
+        target_long = current_price * 1.30
+        target_moon = current_price * 1.80
 
     return {
         "buy_low": buy_low,
         "buy_high": buy_high,
-        "stop_loss": stop_loss,
+        "stop_loss": max(0.01, stop_loss),
         "target_short": target_short,
         "target_long": target_long,
         "target_moon": target_moon,
@@ -355,259 +436,290 @@ def crypto_price_targets(df, current_price, score_data=None):
         "high_365d": high_365d,
         "low_365d": low_365d,
         "atr": atr,
-        "bb_upper": bb_upper,
-        "bb_lower": bb_lower,
     }
 
 
-# ===== RISK METRICS =====
+# ============ RISK METRICS ============
 
-def crypto_risk_metrics(df):
-    """Risk metrics tilpasset krypto (365 dage/år, ikke 252)"""
-    if df is None or len(df) < 30:
+def crypto_risk_metrics(hist):
+    """Beregn risk metrics: Sharpe, Sortino, Calmar, max DD, VaR"""
+    if hist is None or len(hist) < 30:
         return None
 
-    returns = df["Close"].pct_change().dropna()
+    returns = hist["Close"].pct_change().dropna()
+    if len(returns) < 30:
+        return None
 
-    # Annualisering: 365 dage for krypto (handles 24/7)
-    ann_return = (1 + returns.mean()) ** 365 - 1
-    ann_vol = returns.std() * np.sqrt(365)
+    # Krypto: 365 trading days/year
+    ann_factor = 365
 
-    # Sharpe (risk-free = 4% USD T-bills)
+    ann_r = float(returns.mean() * ann_factor)
+    ann_v = float(returns.std() * np.sqrt(ann_factor))
+
+    # Risk-free ~ 4% (US T-bill)
     rf = 0.04
-    sharpe = (ann_return - rf) / ann_vol if ann_vol > 0 else 0
+    sharpe = (ann_r - rf) / ann_v if ann_v > 0 else 0
 
-    # Sortino (downside deviation)
+    # Sortino (downside only)
     downside = returns[returns < 0]
-    downside_std = downside.std() * np.sqrt(365) if len(downside) > 0 else ann_vol
-    sortino = (ann_return - rf) / downside_std if downside_std > 0 else 0
+    downside_std = downside.std() * np.sqrt(ann_factor) if len(downside) > 0 else 0
+    sortino = (ann_r - rf) / downside_std if downside_std > 0 else 0
 
-    # Max Drawdown
+    # Drawdown series
     cum = (1 + returns).cumprod()
-    rolling_max = cum.cummax()
-    dd = (cum - rolling_max) / rolling_max
-    max_dd = dd.min()
+    running_max = cum.cummax()
+    dd_series = (cum - running_max) / running_max
+    max_dd = float(dd_series.min())
+
+    # Calmar = annual return / max drawdown
+    calmar = ann_r / abs(max_dd) if max_dd < 0 else 0
 
     # VaR 95% (1-day)
-    var95 = returns.quantile(0.05)
-
-    # Calmar ratio
-    calmar = ann_return / abs(max_dd) if max_dd != 0 else 0
+    var95 = float(np.percentile(returns, 5))
 
     return {
-        "ann_r": ann_return,
-        "ann_v": ann_vol,
+        "ann_r": ann_r,
+        "ann_v": ann_v,
         "sharpe": sharpe,
         "sortino": sortino,
         "calmar": calmar,
         "max_dd": max_dd,
         "var95": var95,
-        "dd_series": dd,
+        "dd_series": dd_series,
     }
 
 
-# ===== MONTE CARLO =====
+# ============ MONTE CARLO (uden scipy) ============
 
-def crypto_monte_carlo(df, n_sims=500, days=180):
-    """Monte Carlo med fat-tail distribution (mere realistisk for krypto)"""
-    if df is None or len(df) < 30:
+def crypto_monte_carlo(hist, n_sims=500, days=180):
+    """Monte Carlo med fat tails (Student-t distribution via numpy)"""
+    if hist is None or len(hist) < 30:
         return None, None
 
-    returns = df["Close"].pct_change().dropna().values
-    last_price = df["Close"].iloc[-1]
+    returns = hist["Close"].pct_change().dropna().values
+    if len(returns) < 30:
+        return None, None
 
-    # Brug Student-t fordeling (fatter tails end normal)
-    from scipy import stats
-    try:
-        # Fit t-distribution
-        params = stats.t.fit(returns)
-        df_t, loc, scale = params
+    mu = float(np.mean(returns))
+    sigma = float(np.std(returns))
+    last_price = float(hist["Close"].iloc[-1])
 
-        # Generer simulationer
-        sims = np.zeros((n_sims, days))
-        for i in range(n_sims):
-            random_returns = stats.t.rvs(df_t, loc=loc, scale=scale, size=days)
-            prices = last_price * np.cumprod(1 + random_returns)
-            sims[i] = prices
-    except Exception:
-        # Fallback til normal distribution
-        mu = returns.mean()
-        sigma = returns.std()
-        sims = np.zeros((n_sims, days))
-        for i in range(n_sims):
-            random_returns = np.random.normal(mu, sigma, days)
-            sims[i] = last_price * np.cumprod(1 + random_returns)
+    # Student-t med df=4 for fat tails (numpy's standard_t)
+    df = 4
+    # Normaliser så variansen er 1 (standard_t har varians df/(df-2))
+    scale_factor = np.sqrt((df - 2) / df) if df > 2 else 1.0
+
+    sims = np.zeros((n_sims, days))
+    for i in range(n_sims):
+        shocks = np.random.standard_t(df, size=days) * scale_factor
+        daily_returns = mu + sigma * shocks
+        # Cap ekstreme afkast for stabilitet
+        daily_returns = np.clip(daily_returns, -0.50, 0.50)
+        price_path = last_price * np.cumprod(1 + daily_returns)
+        sims[i] = price_path
 
     return sims, last_price
 
 
-# ===== BTC HALVING-CYCLE ANALYSE =====
-
-BTC_HALVINGS = ["2012-11-28", "2016-07-09", "2020-05-11", "2024-04-19"]
-NEXT_HALVING = "2028-04-15"
-
+# ============ BTC HALVING ============
 
 def btc_halving_analysis(symbol):
-    """Hvor er vi i halving-cyklen? Kun relevant for BTC"""
-    if symbol.upper() != "BTC":
+    """Analyse af BTC halving cycle"""
+    if symbol != "BTC":
         return None
 
-    today = pd.Timestamp.now()
-    last_halving = pd.Timestamp(BTC_HALVINGS[-1])
-    next_halving = pd.Timestamp(NEXT_HALVING)
+    # Historiske + næste halving
+    halvings = [
+        datetime(2012, 11, 28),
+        datetime(2016, 7, 9),
+        datetime(2020, 5, 11),
+        datetime(2024, 4, 19),
+        datetime(2028, 4, 15),  # forventet
+    ]
+
+    today = datetime.now()
+    last_halving = None
+    next_halving = None
+
+    for h in halvings:
+        if h <= today:
+            last_halving = h
+        else:
+            next_halving = h
+            break
+
+    if last_halving is None or next_halving is None:
+        return None
 
     days_since = (today - last_halving).days
     days_until = (next_halving - today).days
-    cycle_progress = days_since / (days_since + days_until) * 100
+    cycle_length = (next_halving - last_halving).days
+    cycle_progress = (days_since / cycle_length) * 100
 
-    # Historisk: Bull market peak ~12-18 mdr efter halving
-    if days_since < 180:
-        phase = "🟡 Tidlig fase (akkumulation)"
-        outlook = "Historisk svag - akkumuler"
-    elif days_since < 365:
-        phase = "🟢 Bull market start"
-        outlook = "Historisk start på rally"
-    elif days_since < 540:
-        phase = "🚀 Bull market peak"
-        outlook = "Historisk peak-zone (12-18m post-halving)"
-    elif days_since < 730:
-        phase = "🔴 Distribution"
-        outlook = "Historisk top-blow + correction"
-    else:
+    # Cycle-faser baseret på historiske mønstre
+    if cycle_progress < 25:
         phase = "🟠 Bear market / accumulation"
         outlook = "Pre-halving - akkumuler"
+    elif cycle_progress < 50:
+        phase = "🟡 Accumulation -> early bull"
+        outlook = "Bullish opbygning"
+    elif cycle_progress < 75:
+        phase = "🟢 Bull market"
+        outlook = "Peak euphoria nærmer sig"
+    elif cycle_progress < 100:
+        phase = "🔴 Distribution / bear"
+        outlook = "Cycle top er typisk her"
+    else:
+        phase = "Ukendt"
+        outlook = "?"
 
     return {
+        "last_halving": last_halving.strftime("%Y-%m-%d"),
+        "next_halving": next_halving.strftime("%Y-%m-%d"),
         "days_since_halving": days_since,
         "days_until_halving": days_until,
         "cycle_progress": cycle_progress,
         "phase": phase,
         "outlook": outlook,
-        "last_halving": BTC_HALVINGS[-1],
-        "next_halving": NEXT_HALVING,
     }
 
 
-# ===== KORRELATION TIL BTC =====
+# ============ BTC KORRELATION ============
 
-def calculate_btc_correlation(df_coin, df_btc):
-    """Beregn korrelation til BTC"""
-    if df_coin is None or df_btc is None:
+def calculate_btc_correlation(hist, btc_hist):
+    """Beregn korrelation og beta til BTC"""
+    if hist is None or btc_hist is None:
+        return None
+    if len(hist) < 30 or len(btc_hist) < 30:
         return None
 
-    # Align på datoer
-    coin_returns = df_coin["Close"].pct_change()
-    btc_returns = df_btc["Close"].pct_change()
+    # Align dates
+    df = pd.DataFrame({
+        "asset": hist["Close"],
+        "btc": btc_hist["Close"]
+    }).dropna()
 
-    aligned = pd.DataFrame({"coin": coin_returns, "btc": btc_returns}).dropna()
-    if len(aligned) < 30:
+    if len(df) < 30:
         return None
 
-    corr = aligned["coin"].corr(aligned["btc"])
+    asset_ret = df["asset"].pct_change().dropna()
+    btc_ret = df["btc"].pct_change().dropna()
 
-    # Beta (sensitivity til BTC)
-    cov = aligned["coin"].cov(aligned["btc"])
-    var_btc = aligned["btc"].var()
-    beta = cov / var_btc if var_btc > 0 else 1
+    # Korrelation
+    correlation = float(asset_ret.corr(btc_ret))
 
-    # Rolling correlation (sidste 30 dage)
-    rolling_corr = aligned["coin"].rolling(30).corr(aligned["btc"])
+    # Beta (asset_ret = alpha + beta * btc_ret)
+    cov = float(asset_ret.cov(btc_ret))
+    btc_var = float(btc_ret.var())
+    beta = cov / btc_var if btc_var > 0 else 0
+
+    # Rolling 30-dages korrelation
+    rolling_correlation = asset_ret.rolling(30).corr(btc_ret).dropna()
 
     return {
-        "correlation": corr,
+        "correlation": correlation,
         "beta": beta,
-        "rolling_correlation": rolling_corr,
+        "rolling_correlation": rolling_correlation,
     }
 
 
-# ===== BACKTEST =====
+# ============ BACKTEST ============
 
-def crypto_backtest(df, holding_days=30, sample_freq=7):
-    """Walk-forward backtest tilpasset krypto"""
-    if df is None or len(df) < 200 + holding_days:
+def crypto_backtest(hist, holding_days=30, sample_freq=7, min_history_days=200):
+    """
+    Walk-forward backtest af crypto-modellen.
+    For hvert sample-tidspunkt: beregn score på data UP TO that point,
+    sammenlign med faktisk afkast over de næste holding_days dage.
+    """
+    if hist is None or len(hist) < min_history_days + holding_days:
         return None
 
-    df_ind = crypto_indicators(df.copy())
+    # Skab fake "info" til scoring (kun det nødvendige)
     results = []
+    start_idx = min_history_days
+    end_idx = len(hist) - holding_days
 
-    start_idx = 200
-    end_idx = len(df_ind) - holding_days
+    if end_idx <= start_idx:
+        return None
 
     for i in range(start_idx, end_idx, sample_freq):
-        snapshot = df_ind.iloc[:i+1]
-        if len(snapshot) < 200:
+        # Data op til punkt i
+        hist_slice = hist.iloc[:i+1]
+        if len(hist_slice) < 50:
             continue
 
-        # Beregn score baseret på data op til dette punkt
-        last = snapshot.iloc[-1]
-        score = 50
+        # Minimal info-dict (vi har ikke historisk market cap data)
+        info_slice = {
+            "marketCapRank": 50,  # neutral
+            "marketCap": 1e9,
+            "totalVolume": 1e8,
+        }
 
-        if not pd.isna(last["RSI"]):
-            if last["RSI"] < 30:
-                score += 15
-            elif last["RSI"] > 70:
-                score -= 15
+        # Score
+        try:
+            t_score, _ = _technical_score(hist_slice)
+            # Brug kun teknisk score til backtest (det er det vi kan beregne historisk)
+            score = t_score
+        except Exception:
+            continue
 
-        if not pd.isna(last["SMA50"]) and not pd.isna(last["SMA200"]):
-            if last["Close"] > last["SMA200"]:
-                score += 10
-            else:
-                score -= 10
-            if last["SMA50"] > last["SMA200"]:
-                score += 10
-
-        # Recommendation
-        if score >= 65:
-            rec = "KØB"
-        elif score >= 50:
-            rec = "HOLD"
+        # Anbefaling
+        rec, _ = crypto_recommendation(score)
+        # Reducér til 3 kategorier for crypto
+        if rec in ("STÆRKT KØB", "KØB"):
+            simple_rec = "KØB"
+        elif rec in ("STÆRKT SÆLG", "SÆLG"):
+            simple_rec = "SÆLG"
         else:
-            rec = "SÆLG"
+            simple_rec = "HOLD"
 
-        # Faktisk afkast
-        entry = last["Close"]
-        exit_price = df_ind.iloc[i + holding_days]["Close"]
-        ret = (exit_price / entry - 1) * 100
+        # Faktisk afkast over de næste holding_days dage
+        entry_price = float(hist["Close"].iloc[i])
+        exit_idx = i + holding_days
+        if exit_idx >= len(hist):
+            break
+        exit_price = float(hist["Close"].iloc[exit_idx])
+        return_pct = (exit_price / entry_price - 1) * 100
 
         results.append({
-            "date": df_ind.index[i],
+            "date": hist.index[i],
             "score": score,
-            "recommendation": rec,
-            "entry_price": entry,
+            "recommendation": simple_rec,
+            "entry_price": entry_price,
             "exit_price": exit_price,
-            "return_pct": ret,
+            "return_pct": return_pct,
         })
 
     if not results:
         return None
 
-    df_res = pd.DataFrame(results)
+    df_results = pd.DataFrame(results)
 
-    # Stats per recommendation
+    # Stats per anbefaling
     stats = {}
     for rec in ["KØB", "HOLD", "SÆLG"]:
-        subset = df_res[df_res["recommendation"] == rec]
+        subset = df_results[df_results["recommendation"] == rec]
         if len(subset) > 0:
             stats[rec] = {
                 "count": len(subset),
-                "avg_return": subset["return_pct"].mean(),
-                "median_return": subset["return_pct"].median(),
                 "win_rate": (subset["return_pct"] > 0).mean() * 100,
-                "best": subset["return_pct"].max(),
-                "worst": subset["return_pct"].min(),
+                "avg_return": float(subset["return_pct"].mean()),
+                "median_return": float(subset["return_pct"].median()),
+                "best": float(subset["return_pct"].max()),
+                "worst": float(subset["return_pct"].min()),
             }
         else:
             stats[rec] = None
 
-    # Buy & hold over samme periode
-    bh_return = (df_ind.iloc[end_idx]["Close"] / df_ind.iloc[start_idx]["Close"] - 1) * 100
+    # Buy & hold over hele perioden
+    bh_return = (hist["Close"].iloc[end_idx] / hist["Close"].iloc[start_idx] - 1) * 100
 
     return {
-        "results": df_res,
+        "results": df_results,
         "stats": stats,
-        "n_trades": len(df_res),
-        "start_date": df_ind.index[start_idx],
-        "end_date": df_ind.index[end_idx],
+        "n_trades": len(df_results),
+        "start_date": df_results["date"].iloc[0],
+        "end_date": df_results["date"].iloc[-1],
+        "buy_hold_return": float(bh_return),
         "holding_days": holding_days,
-        "buy_hold_return": bh_return,
     }
