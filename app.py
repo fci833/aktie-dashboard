@@ -858,22 +858,60 @@ elif st.session_state.active_view == "🪙 Krypto":
 
     if global_data:
         gc = st.columns(5)
-        gc[0].metric(
-            "💰 Total Market Cap",
-            f"${global_data['total_market_cap_usd']/1e12:.2f}T",
-            f"{global_data['market_cap_change_24h']:+.2f}%"
-        )
-        gc[1].metric("📊 24h Volume", f"${global_data['total_volume_usd']/1e9:.1f}B")
-        gc[2].metric("👑 BTC Dominance", f"{global_data['btc_dominance']:.1f}%")
-        gc[3].metric("⚡ ETH Dominance", f"{global_data['eth_dominance']:.1f}%")
 
+        # Total Market Cap
+        mc = global_data.get('total_market_cap_usd') or 0
+        mc_change = global_data.get('market_cap_change_24h') or 0
+        if mc > 0:
+            gc[0].metric(
+                "💰 Total Market Cap",
+                f"${mc/1e12:.2f}T",
+                f"{mc_change:+.2f}%"
+            )
+        else:
+            gc[0].metric("💰 Total Market Cap", "N/A")
+
+        # 24h Volume
+        vol = global_data.get('total_volume_usd') or 0
+        if vol > 0:
+            gc[1].metric("📊 24h Volume", f"${vol/1e9:.1f}B")
+        else:
+            gc[1].metric("📊 24h Volume", "N/A")
+
+        # BTC Dominance
+        btc_dom = global_data.get('btc_dominance') or 0
+        gc[2].metric(
+            "👑 BTC Dominance",
+            f"{btc_dom:.1f}%" if btc_dom else "N/A"
+        )
+
+        # ETH Dominance
+        eth_dom = global_data.get('eth_dominance') or 0
+        gc[3].metric(
+            "⚡ ETH Dominance",
+            f"{eth_dom:.1f}%" if eth_dom else "N/A"
+        )
+
+        # Fear & Greed
         if fg_df is not None and not fg_df.empty:
-            fg_value = int(fg_df["value"].iloc[-1])
-            fg_label = fg_df["value_classification"].iloc[-1]
-            fg_color = "🔴" if fg_value < 25 else "🟢" if fg_value > 75 else "🟡"
-            gc[4].metric(f"{fg_color} Fear & Greed", f"{fg_value}/100", fg_label)
+            try:
+                fg_value = int(fg_df["value"].iloc[-1])
+                fg_label = fg_df["value_classification"].iloc[-1]
+                fg_color = "🔴" if fg_value < 25 else "🟢" if fg_value > 75 else "🟡"
+                gc[4].metric(f"{fg_color} Fear & Greed", f"{fg_value}/100", fg_label)
+            except Exception:
+                gc[4].metric("😱 Fear & Greed", "N/A")
+        else:
+            gc[4].metric("😱 Fear & Greed", "N/A")
+    else:
+        st.info(
+            "⏳ Globale markedsdata kan ikke hentes lige nu (CoinGecko rate-limit). "
+            "Prøv igen om 1-2 minutter eller fortsæt nedenfor — analysefunktionerne "
+            "virker stadig."
+        )
 
     st.markdown("---")
+
 
     crypto_tabs = st.tabs([
         "🎯 Pro Analyse",
