@@ -850,6 +850,302 @@ elif st.session_state.active_view == "🔎 Screener":
                 time.sleep(1)
                 st.rerun()
 
+# ============ KRYPTO-VIEW ============
+
+elif st.session_state.active_view == "🪙 Krypto":
+    st.subheader("🪙 Krypto Dashboard")
+    st.caption("Real-time crypto analyse · Multi-faktor scoring · Sentiment tracking")
+
+    # ===== GLOBAL MARKET OVERVIEW =====
+    global_data = fetch_global_crypto_market()
+    fg_df = fetch_fear_greed()
+
+    if global_data:
+        gc = st.columns(5)
+        gc[0].metric(
+            "💰 Total Market Cap",
+            f"${global_data['total_market_cap_usd']/1e12:.2f}T",
+            f"{global_data['market_cap_change_24h']:+.2f}%"
+        )
+        gc[1].metric("📊 24h Volume", f"${global_data['total_volume_usd']/1e9:.1f}B")
+        gc[2].metric("👑 BTC Dominance", f"{global_data['btc_dominance']:.1f}%")
+        gc[3].metric("⚡ ETH Dominance", f"{global_data['eth_dominance']:.1f}%")
+
+        if fg_df is not None and not fg_df.empty:
+            fg_value = int(fg_df["value"].iloc[-1])
+            fg_label = fg_df["value_classification"].iloc[-1]
+            fg_color = "🔴" if fg_value < 25 else "🟢" if fg_value > 75 else "🟡"
+            gc[4].metric(f"{fg_color} Fear & Greed", f"{fg_value}/100", fg_label)
+
+    st.markdown("---")
+
+    crypto_tabs = st.tabs([
+        "📊 Analyse", "🔎 Screener", "📈 Sammenligning", "📉 Fear & Greed"
+    ])
+
+    # ===== KRYPTO-ANALYSE =====
+    with crypto_tabs[0]:
+        col1, col2 = st.columns([3, 1])
+        crypto_choice = col1.selectbox(
+            "Vælg krypto",
+            options=list(CRYPTO_UNIVERSE.keys()),
+            format_func=lambda x: f"{x} - {CRYPTO_UNIVERSE[x]['category']}",
+            key="crypto_select",
+        )
+        analyze_btn = col2.button("🔍 Analysér", type="primary", use_container_width=True)
+
+        if analyze_btn or crypto_choice:
+            with st.spinner(f"Henter data for {crypto_choice}..."):
+                cdata = fetch_crypto_data(crypto_choice)
+
+            if cdata is None:
+                st.error(f"❌ Kunne ikke hente data for {crypto_choice}")
+            else:
+                info = cdata["info"]
+                hist = cdata["hist"]
+                st.success(f"✅ Data fra: **{cdata['source']}**")
+
+                # Header
+                st.markdown(f"## {info['longName']} ({info['symbol']})")
+                st.caption(f"🏢 {CRYPTO_UNIVERSE[crypto_choice]['category']} · "
+                           f"📅 {hist.index[0].date()} → {hist.index[-1].date()} · "
+                           f"💱 USD")
+
+                # Key metrics
+                price = info["currentPrice"]
+                prev = info.get("previousClose", price)
+                change_24h = info.get("change_24h", 0) or 0
+
+                k = st.columns(6)
+                k[0].metric("Pris", f"${price:,.4f}" if price < 1 else f"${price:,.2f}",
+                            f"{change_24h:+.2f}%")
+                if info.get("marketCap"):
+                    k[1].metric("Market Cap", f"${info['marketCap']/1e9:.2f}B")
+                if info.get("marketCapRank"):
+                    k[2].metric("Rank", f"#{info['marketCapRank']}")
+                if info.get("ath"):
+                    ath_pct = info.get("ath_change_%", 0)
+                    k[3].metric("ATH", f"${info['ath']:,.2f}", f"{ath_pct:.1f}%")
+                if info.get("circulating_supply"):
+                    k[4].metric("Circulating", f"{info['circulating_supply']/1e6:.1f}M")
+                if info.get("change_7d"):
+                    k[5].metric("7d", f"{info['change_7d']:+.2f}%")
+
+                # Score
+                with st.spinner("Beregner scores..."):
+                    scores = crypto_overall_score(info, hist)
+
+                rec, color = crypto_recommendation(scores["overall"])
+
+                st.markdown("---")
+                st.markdown("### 🎯 Multi-faktor Analyse")
+
+                sc = st.columns(5)
+                sc[0].markdown(
+                    f"<div style='background:{color}22;padding:1rem;border-radius:10px;"
+                    f"border-left:4px solid {color};text-align:center'>"
+                    f"<h3 style='color:{color};margin:0'>{rec}</h3>"
+                    f"<h1 style='margin:0.5rem 0'>{scores['overall']:.0f}/100</h1>"
+                    f"<small>Samlet score</small></div>",
+                    unsafe_allow_html=True,
+                )
+                sc[1].metric("📊 Marked", f"{scores['market']:.0f}/100", "35% vægt")
+                sc[2].metric("🔧 Teknisk", f"{scores['technical']:.0f}/100", "30% vægt")
+                sc[3].metric("💬 Sentiment", f"{scores['sentiment']:.0f}/100", "20% vægt")
+                sc[4].metric("👨‍💻 Developer", f"{scores['developer']:.0f}/100", "15% vægt")
+
+                # Performance tabel
+                if any(info.get(k) is not None for k in ["change_1h", "change_24h", "change_7d", "change_30d", "change_1y"]):
+                    st.markdown("### 📈 Performance")
+                    perf_cols = st.columns(5)
+                    for i, (label, key) in enumerate([
+                        ("1t", "change_1h"), ("24t", "change_24h"),
+                        ("7d", "change_7d"), ("30d", "change_30d"),
+                        ("1å", "change_1y")
+                    ]):
+                        v = info.get(key)
+                        if v is not None:
+                            perf_cols[i].metric(label, f"{v:+.2f}%")
+
+                # Pris-chart
+                st.markdown("### 📉 Prisudvikling")
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=hist.index, open=hist["Open"], high=hist["High"],
+                    low=hist["Low"], close=hist["Close"], name="Pris"
+                ))
+                if len(hist) >= 50:
+                    fig.add_trace(go.Scatter(
+                        x=hist.index, y=hist["Close"].rolling(50).mean(),
+                        name="SMA50", line=dict(color="orange")
+                    ))
+                if len(hist) >= 200:
+                    fig.add_trace(go.Scatter(
+                        x=hist.index, y=hist["Close"].rolling(200).mean(),
+                        name="SMA200", line=dict(color="purple")
+                    ))
+                fig.update_layout(template="plotly_dark", height=500,
+                                  xaxis_rangeslider_visible=False,
+                                  title=f"{info['symbol']}/USD - 1 år")
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Detaljerede scores
+                with st.expander("🔍 Score-detaljer"):
+                    detail_tabs = st.tabs(["📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"])
+                    for tab, key in zip(detail_tabs,
+                                         ["market", "technical", "sentiment", "developer"]):
+                        with tab:
+                            details = scores["details"][key]
+                            if details:
+                                df_d = pd.DataFrame(details)
+                                fig_d = px.bar(df_d, x="impact", y="label", orientation="h",
+                                                color="impact", color_continuous_scale="RdYlGn")
+                                fig_d.update_layout(template="plotly_dark", height=300,
+                                                     showlegend=False)
+                                st.plotly_chart(fig_d, use_container_width=True)
+
+                # Description
+                if info.get("description"):
+                    with st.expander("ℹ️ Om denne krypto"):
+                        st.write(info["description"])
+
+    # ===== KRYPTO-SCREENER =====
+    with crypto_tabs[1]:
+        st.markdown("### 🔎 Krypto-screener")
+
+        sc1, sc2 = st.columns([2, 1])
+        sel_universe = sc1.selectbox(
+            "Univers", list(CRYPTO_UNIVERSES.keys()), key="crypto_screener_universe"
+        )
+        min_score = sc2.slider("Min. score", 30, 90, 60, key="crypto_min_score")
+
+        if st.button("🚀 Kør krypto-screener", type="primary"):
+            tickers = CRYPTO_UNIVERSES[sel_universe]
+            results = []
+            progress = st.progress(0, text="Starter...")
+
+            for i, t in enumerate(tickers):
+                progress.progress((i+1) / len(tickers), text=f"Analyserer {t}...")
+                try:
+                    cdata = fetch_crypto_data(t)
+                    if cdata:
+                        scores = crypto_overall_score(cdata["info"], cdata["hist"])
+                        rec, _ = crypto_recommendation(scores["overall"])
+                        results.append({
+                            "Symbol": t,
+                            "Navn": cdata["info"]["longName"],
+                            "Pris ($)": cdata["info"]["currentPrice"],
+                            "Market Cap ($B)": (cdata["info"].get("marketCap") or 0) / 1e9,
+                            "24h %": cdata["info"].get("change_24h"),
+                            "7d %": cdata["info"].get("change_7d"),
+                            "Overall": scores["overall"],
+                            "Marked": scores["market"],
+                            "Teknisk": scores["technical"],
+                            "Sentiment": scores["sentiment"],
+                            "Developer": scores["developer"],
+                            "Anbefaling": rec,
+                        })
+                    time.sleep(0.5)  # Respektér rate limit
+                except Exception as e:
+                    print(f"Error {t}: {e}")
+
+            progress.empty()
+
+            if results:
+                df_r = pd.DataFrame(results)
+                df_filt = df_r[df_r["Overall"] >= min_score].sort_values("Overall", ascending=False)
+
+                st.success(f"✅ {len(df_filt)} kryptos opfylder kriterierne")
+
+                if not df_filt.empty:
+                    for col in ["Pris ($)", "Market Cap ($B)", "24h %", "7d %",
+                                "Overall", "Marked", "Teknisk", "Sentiment", "Developer"]:
+                        if col in df_filt.columns:
+                            df_filt[col] = pd.to_numeric(df_filt[col], errors="coerce").round(2)
+
+                    st.dataframe(
+                        df_filt, use_container_width=True, hide_index=True,
+                        column_config={
+                            "Overall": st.column_config.ProgressColumn(
+                                "Overall", min_value=0, max_value=100, format="%.0f"
+                            ),
+                        }
+                    )
+
+    # ===== SAMMENLIGNING =====
+    with crypto_tabs[2]:
+        st.markdown("### 📈 Sammenlign kryptos")
+        selected = st.multiselect(
+            "Vælg kryptos (max 5)",
+            list(CRYPTO_UNIVERSE.keys()),
+            default=["BTC", "ETH", "SOL"],
+            max_selections=5,
+        )
+
+        if selected and st.button("📊 Sammenlign", type="primary"):
+            fig_cmp = go.Figure()
+            for sym in selected:
+                cdata = fetch_crypto_data(sym)
+                if cdata:
+                    hist = cdata["hist"]
+                    # Normaliser til 100 ved start
+                    norm = hist["Close"] / hist["Close"].iloc[0] * 100
+                    fig_cmp.add_trace(go.Scatter(
+                        x=hist.index, y=norm, name=sym,
+                        line=dict(width=2)
+                    ))
+            fig_cmp.update_layout(
+                template="plotly_dark", height=500,
+                title="Performance sammenligning (normaliseret til 100)",
+                yaxis_title="Performance (start=100)",
+            )
+            st.plotly_chart(fig_cmp, use_container_width=True)
+
+    # ===== FEAR & GREED =====
+    with crypto_tabs[3]:
+        st.markdown("### 😱 Fear & Greed Index")
+        st.caption("Markedssentiment over tid · 0=Extreme Fear, 100=Extreme Greed")
+
+        if fg_df is not None and not fg_df.empty:
+            current = int(fg_df["value"].iloc[-1])
+            label = fg_df["value_classification"].iloc[-1]
+
+            # Gauge chart
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=current,
+                title={"text": f"Nu: {label}"},
+                gauge={
+                    "axis": {"range": [0, 100]},
+                    "bar": {"color": "white"},
+                    "steps": [
+                        {"range": [0, 25], "color": "#b91c1c"},
+                        {"range": [25, 45], "color": "#ef4444"},
+                        {"range": [45, 55], "color": "#eab308"},
+                        {"range": [55, 75], "color": "#22c55e"},
+                        {"range": [75, 100], "color": "#16a34a"},
+                    ],
+                }
+            ))
+            fig_gauge.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig_gauge, use_container_width=True)
+
+            # Historisk
+            fig_h = go.Figure()
+            fig_h.add_trace(go.Scatter(
+                x=fg_df["timestamp"], y=fg_df["value"],
+                mode="lines+markers", line=dict(color="#00d4aa", width=2),
+                fill="tozeroy", name="F&G Index"
+            ))
+            fig_h.add_hline(y=25, line_dash="dash", line_color="red",
+                            annotation_text="Extreme Fear")
+            fig_h.add_hline(y=75, line_dash="dash", line_color="green",
+                            annotation_text="Extreme Greed")
+            fig_h.update_layout(template="plotly_dark", height=400,
+                                title="Fear & Greed sidste 30 dage",
+                                yaxis_range=[0, 100])
+            st.plotly_chart(fig_h, use_container_width=True)
+
 
 # ============ HOVED-ANALYSE-VIEW ============
 
