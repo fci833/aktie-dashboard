@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Tests
+.pytest_cache/
+
+# Virtuelle miljøer
+.venv/
+venv/
+env/
+
+# Egg info
+*.egg-info/
+
+# Screener snapshots (personlige data)
+screener_history/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
