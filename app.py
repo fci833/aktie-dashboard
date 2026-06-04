@@ -696,13 +696,18 @@ elif st.session_state.active_view == "🔎 Screener":
                     hot_universe, n_days=n_days, min_change=min_change
                 )
 
-                if not hot or (hot.get("risers") is not None
-                               and hot["risers"].empty
-                               and hot["fallers"].empty):
-                    st.warning(
-                        "Ingen aktier opfylder kriterierne. "
-                        "Prøv at sænke min. ændring."
-                    )
+                # Sikker tjek af hot-dictionary
+risers = hot.get("risers") if isinstance(hot, dict) else None
+fallers = hot.get("fallers") if isinstance(hot, dict) else None
+
+risers_empty = risers is None or risers.empty
+fallers_empty = fallers is None or fallers.empty
+
+if not isinstance(hot, dict) or (risers_empty and fallers_empty):
+    st.warning(
+        "Ingen aktier opfylder kriterierne. "
+        "Prøv at sænke min. ændring."
+    )
                 else:
                     st.caption(
                         f"📅 Fra {hot['oldest_ts'][:10]} → "
