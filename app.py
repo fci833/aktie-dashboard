@@ -1956,7 +1956,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 valid_stats = {k: v for k, v in bt["stats"].items() if v is not None}
                 if valid_stats:
                     fig_hr = go.Figure()
-                    fig_hr.add_trace(go.Bar(
+                                        fig_hr.add_trace(go.Bar(
                         x=list(valid_stats.keys()),
                         y=[v["avg_return"] for v in valid_stats.values()],
                         text=[f"n={v['count']}<br>Hit={v['win_rate']:.0f}%"
@@ -1965,8 +1965,7 @@ elif st.session_state.active_view == "📊 Analyse":
                         marker_color=["#16a34a" if v["avg_return"] > 0 else "#ef4444"
                                       for v in valid_stats.values()],
                     ))
-                                       fig_hr.update_layout(
-                        template="plotly_dark", height=400,
+                    fig_hr.update_layout(                        template="plotly_dark", height=400,
                         title=f"Gennemsnitligt {bt['holding_days']}-dages afkast pr. anbefaling",
                         yaxis_title="Afkast %",
                     )
