@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.30
 yfinance
 pandas
 numpy
@@ -6,4 +6,5 @@ plotly
 ta
 curl_cffi
 finnhub-python
+requests
 pytest
