@@ -223,3 +223,83 @@ def fetch_crypto_data(ticker):
         return {"info": info, "hist": df, "source": "Binance"}
 
     return None
+
+# ===== ON-CHAIN DATA (BTC) =====
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_btc_onchain():
+    """BTC on-chain metrics fra blockchain.com"""
+    try:
+        metrics = {}
+        endpoints = {
+            "hash_rate": "hash-rate",
+            "difficulty": "difficulty",
+            "transactions": "n-transactions",
+            "active_addresses": "n-unique-addresses",
+            "mempool_size": "mempool-size",
+            "miners_revenue": "miners-revenue",
+        }
+        for key, endpoint in endpoints.items():
+            try:
+                r = requests.get(
+                    f"https://api.blockchain.info/charts/{endpoint}",
+                    params={"timespan": "30days", "format": "json"},
+                    timeout=10,
+                ).json()
+                if "values" in r and r["values"]:
+                    metrics[key] = r["values"][-1]["y"]
+                    metrics[f"{key}_history"] = r["values"]
+            except Exception:
+                pass
+        return metrics
+    except Exception:
+        return {}
+
+
+# ===== TRENDING COINS =====
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_trending_coins():
+    """Top 7 trending coins på CoinGecko"""
+    try:
+        r = requests.get("https://api.coingecko.com/api/v3/search/trending", timeout=10).json()
+        return [
+            {
+                "name": c["item"]["name"],
+                "symbol": c["item"]["symbol"].upper(),
+                "rank": c["item"]["market_cap_rank"],
+                "price_btc": c["item"]["price_btc"],
+                "thumb": c["item"]["thumb"],
+            }
+            for c in r.get("coins", [])[:7]
+        ]
+    except Exception:
+        return []
+
+
+# ===== TOP GAINERS / LOSERS =====
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_top_movers():
+    """Top 10 gainers + losers (24h)"""
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={
+                "vs_currency": "usd", "order": "market_cap_desc",
+                "per_page": 100, "page": 1,
+                "price_change_percentage": "24h",
+            },
+            timeout=15,
+        ).json()
+        df = pd.DataFrame(r)
+        if df.empty:
+            return None, None
+        df = df[["symbol", "name", "current_price",
+                 "price_change_percentage_24h", "market_cap"]].dropna()
+        df["symbol"] = df["symbol"].str.upper()
+        gainers = df.nlargest(10, "price_change_percentage_24h")
+        losers = df.nsmallest(10, "price_change_percentage_24h")
+        return gainers, losers
+    except Exception:
+        return None, None
