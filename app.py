@@ -691,23 +691,22 @@ elif st.session_state.active_view == "🔎 Screener":
             min_change = hcol2.slider("📊 Min. score-ændring", 1, 30, 5,
                                       key="hot_min_change")
 
-            if st.button("🔥 Find hot stocks", type="primary"):
+                      if st.button("🔥 Find hot stocks", type="primary"):
                 hot = get_hot_stocks(
                     hot_universe, n_days=n_days, min_change=min_change
                 )
 
-                # Sikker tjek af hot-dictionary
-risers = hot.get("risers") if isinstance(hot, dict) else None
-fallers = hot.get("fallers") if isinstance(hot, dict) else None
+                risers = hot.get("risers") if isinstance(hot, dict) else None
+                fallers = hot.get("fallers") if isinstance(hot, dict) else None
 
-risers_empty = risers is None or risers.empty
-fallers_empty = fallers is None or fallers.empty
+                risers_empty = risers is None or risers.empty
+                fallers_empty = fallers is None or fallers.empty
 
-if not isinstance(hot, dict) or (risers_empty and fallers_empty):
-    st.warning(
-        "Ingen aktier opfylder kriterierne. "
-        "Prøv at sænke min. ændring."
-    )
+                if not isinstance(hot, dict) or (risers_empty and fallers_empty):
+                    st.warning(
+                        "Ingen aktier opfylder kriterierne. "
+                        "Prøv at sænke min. ændring."
+                    )
                 else:
                     st.caption(
                         f"📅 Fra {hot['oldest_ts'][:10]} → "
@@ -715,11 +714,12 @@ if not isinstance(hot, dict) or (risers_empty and fallers_empty):
                         f"({hot['n_snapshots']} snapshots)"
                     )
 
-                    if not hot["risers"].empty:
+                    if not risers_empty:
                         st.markdown("#### 🚀 Stigende score (risers)")
                         risers_disp = hot["risers"][[
                             c for c in [
                                 "ticker", "name", "overall_now",
+                                # ... resten af din eksisterende kode fortsætter
                                 "overall_old", "score_change",
                                 "recommendation", "price_change_%"
                             ] if c in hot["risers"].columns
