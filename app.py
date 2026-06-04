@@ -884,21 +884,65 @@ elif st.session_state.active_view == "🪙 Krypto":
         "⛓️ On-Chain (BTC)",
     ])
 
-    # ===== TAB 1: PRO ANALYSE =====
+        # ===== TAB 1: PRO ANALYSE =====
     with crypto_tabs[0]:
-        ac1, ac2 = st.columns([3, 1])
-        crypto_choice = ac1.selectbox(
-            "Vælg krypto",
-            options=list(CRYPTO_UNIVERSE.keys()),
-            format_func=lambda x: f"{x} - {CRYPTO_UNIVERSE[x]['category']}",
-            key="crypto_pro_select",
+        st.markdown("### 🎯 Vælg krypto til analyse")
+
+        # To måder at vælge: dropdown ELLER manuel indtastning
+        input_method = st.radio(
+            "Vælg metode:",
+            ["📋 Vælg fra liste", "✏️ Skriv ticker selv"],
+            horizontal=True,
+            key="crypto_input_method"
         )
 
-        if ac2.button("🔍 Fuld Analyse", type="primary", use_container_width=True):
-            st.session_state["crypto_analyzed"] = crypto_choice
+        if input_method == "📋 Vælg fra liste":
+            ac1, ac2 = st.columns([3, 1])
+            crypto_choice = ac1.selectbox(
+                "Vælg krypto",
+                options=list(CRYPTO_UNIVERSE.keys()),
+                format_func=lambda x: f"{x} - {CRYPTO_UNIVERSE[x]['category']}",
+                key="crypto_pro_select",
+            )
 
-        if st.session_state.get("crypto_analyzed"):
-            symbol = st.session_state["crypto_analyzed"]
+            if ac2.button("🔍 Fuld Analyse", type="primary", use_container_width=True, key="btn_analyze_list"):
+                st.session_state["crypto_analyzed"] = crypto_choice
+
+        else:
+            ac1, ac2 = st.columns([3, 1])
+            custom_ticker = ac1.text_input(
+                "🪙 Skriv krypto-ticker (fx BTC, ETH, DOGE, SHIB, PEPE, WIF, BONK)",
+                value="",
+                key="custom_crypto_ticker",
+                placeholder="DOGE"
+            ).strip().upper()
+
+            st.caption(
+                "💡 **Tips:** Brug standard symboler som BTC, ETH, SOL, ADA, DOGE, "
+                "SHIB, PEPE, AVAX, LINK, WIF, BONK, FLOKI, TRUMP osv. "
+                "Systemet søger automatisk i CoinGecko."
+            )
+
+            if ac2.button("🔍 Analysér", type="primary", use_container_width=True, key="btn_analyze_custom"):
+                if custom_ticker:
+                    norm = normalize_crypto_ticker(custom_ticker)
+                    st.session_state["crypto_analyzed"] = norm
+                    st.success(f"🔍 Analyserer **{norm}**...")
+                else:
+                    st.warning("⚠️ Indtast venligst en ticker")
+
+        # Hurtige knapper for populære coins
+        st.markdown("##### 🔥 Populære coins (klik for instant analyse):")
+        popular_extra = ["BTC", "ETH", "SOL", "DOGE", "SHIB", "PEPE", "BONK", "WIF", "FLOKI", "AVAX"]
+        pop_cols = st.columns(len(popular_extra))
+        for i, sym in enumerate(popular_extra):
+            if pop_cols[i].button(sym, key=f"pop_{sym}", use_container_width=True):
+                st.session_state["crypto_analyzed"] = sym
+                st.rerun()
+
+        st.markdown("---")
+
+        if st.session_state.get("crypto_analyzed"):            symbol = st.session_state["crypto_analyzed"]
 
             with st.spinner(f"Henter komplet data for {symbol}..."):
                 cdata = fetch_crypto_data(symbol)
