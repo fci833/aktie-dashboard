@@ -1,4 +1,4 @@
-"""Aktie Dashboard - Hovedapp"""
+"""Aktie Dashboard - Hovedapp med Krypto"""
 import time
 import numpy as np
 import pandas as pd
@@ -6,6 +6,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+from datetime import datetime
 
 from config import ANALYSIS_PERIODS, SCREENER_UNIVERSES
 from data_sources import (
@@ -27,14 +28,18 @@ from history import (
 )
 from ui_helpers import make_price_box, make_range_box, make_recommendation_card
 
-# 🪙 KRYPTO IMPORTS (NYT)
+# 🪙 KRYPTO IMPORTS
 from crypto_config import CRYPTO_UNIVERSE, CRYPTO_UNIVERSES
 from crypto_data import (
     fetch_crypto_data, fetch_fear_greed, fetch_global_crypto_market,
-    is_crypto, normalize_crypto_ticker
+    is_crypto, normalize_crypto_ticker,
+    fetch_btc_onchain, fetch_trending_coins, fetch_top_movers,
 )
 from crypto_analysis import (
-    crypto_overall_score, crypto_recommendation
+    crypto_overall_score, crypto_recommendation,
+    crypto_indicators, crypto_price_targets, crypto_risk_metrics,
+    crypto_monte_carlo, btc_halving_analysis, calculate_btc_correlation,
+    crypto_backtest,
 )
 
 import warnings
@@ -45,7 +50,7 @@ st.set_page_config(page_title="Aktie Dashboard", layout="wide", page_icon="📈"
 st.markdown(
     "<h1 style='background:linear-gradient(90deg,#00d4aa,#0099ff);"
     "-webkit-background-clip:text;-webkit-text-fill-color:transparent;'>"
-    "📈 Pro Aktie Analyse Dashboard</h1>",
+    "📈 Pro Aktie & Krypto Dashboard</h1>",
     unsafe_allow_html=True,
 )
 
@@ -142,7 +147,6 @@ def run_diagnostics(ticker):
 # ============ HJÆLPER: Skift til analyse ============
 
 def goto_analysis(ticker):
-    """Helper der skifter til analyse-fanen med en given ticker"""
     st.session_state.current_ticker = ticker
     st.session_state.active_view = "📊 Analyse"
     st.rerun()
@@ -155,6 +159,8 @@ with st.sidebar:
     st.caption("✅ Yahoo Finance")
     st.caption("✅ Twelve Data" if TWELVE_KEY else "⚠️ Twelve Data (no key)")
     st.caption("✅ Finnhub" if FINNHUB_KEY else "⚠️ Finnhub (no key)")
+    st.caption("✅ CoinGecko (krypto)")
+    st.caption("✅ Binance (krypto)")
     if st.session_state.last_source != "?":
         st.success(f"Sidst: **{st.session_state.last_source}**")
 
@@ -178,6 +184,7 @@ with st.sidebar:
         "🇺🇸 US": ["AAPL", "MSFT", "GOOGL", "NVDA", "TSLA"],
         "🇩🇰 DK": ["NOVO-B.CO", "MAERSK-B.CO", "DSV.CO", "ORSTED.CO"],
         "🇪🇺 EU": ["ASML.AS", "SAP.DE", "NESN.SW"],
+        "🪙 Crypto": ["BTC", "ETH", "SOL", "ADA"],
     }
     for region, ts in quick.items():
         with st.expander(region):
@@ -198,7 +205,7 @@ with st.sidebar:
     st.caption("🎲 Monte Carlo: **2 år**")
 
 
-# ============ NAVIGATION (radio i stedet for tabs så vi kan skifte programmatisk) ============
+# ============ NAVIGATION ============
 
 view_options = ["📊 Analyse", "🔎 Screener", "🪙 Krypto", "🔍 Søg ticker", "🔧 Diagnose"]
 selected_view = st.radio(
@@ -449,7 +456,6 @@ elif st.session_state.active_view == "🔎 Screener":
                 fig.update_layout(template="plotly_dark", height=500)
                 st.plotly_chart(fig, use_container_width=True)
 
-                # CSV eksport
                 csv = df_buys.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     "📥 Download købsmuligheder (CSV)", csv,
@@ -542,8 +548,7 @@ elif st.session_state.active_view == "🔎 Screener":
         if len(all_snaps) < 2:
             st.warning(
                 f"⚠️ Du har kun {len(all_snaps)} snapshot(s). "
-                "Du skal have mindst 2 for at sammenligne. "
-                "Kør screeneren igen senere (eller på en anden dag)."
+                "Du skal have mindst 2 for at sammenligne."
             )
         else:
             unique_universes = list(set(s["universe"] for s in all_snaps))
@@ -579,7 +584,7 @@ elif st.session_state.active_view == "🔎 Screener":
                     cmp = compare_snapshots(df_now, df_prev)
 
                     if cmp.empty:
-                        st.error("Kunne ikke sammenligne (manglende data)")
+                        st.error("Kunne ikke sammenligne")
                     else:
                         st.success(f"✅ Sammenlignet "
                                    f"{ts_prev[:10]} → {ts_now[:10]}")
@@ -676,19 +681,14 @@ elif st.session_state.active_view == "🔎 Screener":
                                 use_container_width=True, hide_index=True,
                             )
 
-        # ===== MODE 4: HOT STOCKS =====
+    # ===== MODE 4: HOT STOCKS =====
     with sc_modes[3]:
         st.markdown("### 🔥 Hot stocks - stigende score over tid")
-        st.caption(
-            "Find aktier hvor scoren er steget de sidste N snapshots."
-        )
+        st.caption("Find aktier hvor scoren er steget de sidste N snapshots.")
 
         all_snaps = list_snapshots()
         if len(all_snaps) < 2:
-            st.warning(
-                "⚠️ Du har brug for mindst 2 snapshots. "
-                "Kør screeneren over flere dage."
-            )
+            st.warning("⚠️ Du har brug for mindst 2 snapshots.")
         else:
             unique_universes = list(set(s["universe"] for s in all_snaps))
             hot_universe = st.selectbox(
@@ -754,7 +754,6 @@ elif st.session_state.active_view == "🔎 Screener":
                         fig_hot.update_layout(template="plotly_dark", height=500)
                         st.plotly_chart(fig_hot, use_container_width=True)
 
-                        # Knapper til hurtig analyse
                         st.markdown("##### 👆 Hurtig analyse:")
                         hot_cols = st.columns(4)
                         for i, (_, row) in enumerate(hot["risers"].head(8).iterrows()):
@@ -780,18 +779,15 @@ elif st.session_state.active_view == "🔎 Screener":
                                 fallers_disp, use_container_width=True,
                                 hide_index=True,
                             )
-                            
+
     # ===== MODE 5: HISTORIK =====
     with sc_modes[4]:
         st.markdown("### 📜 Snapshot-historik")
-        st.caption(
-            "Alle gemte screeninger. Bruges til sammenligning og hot stocks."
-        )
+        st.caption("Alle gemte screeninger.")
 
         all_snaps = list_snapshots()
         if not all_snaps:
-            st.info("Ingen snapshots gemt endnu. "
-                    "Kør en screener for at oprette din første!")
+            st.info("Ingen snapshots gemt endnu.")
         else:
             st.success(f"✅ {len(all_snaps)} snapshots gemt")
 
@@ -815,8 +811,7 @@ elif st.session_state.active_view == "🔎 Screener":
             if track_ticker:
                 hist_df = get_score_history(track_ticker, n_days=30)
                 if hist_df.empty:
-                    st.warning(f"Ingen historik for {track_ticker} "
-                               "(check at den er i et tidligere screen)")
+                    st.warning(f"Ingen historik for {track_ticker}")
                 else:
                     fig_track = go.Figure()
                     fig_track.add_trace(go.Scatter(
@@ -850,18 +845,10 @@ elif st.session_state.active_view == "🔎 Screener":
                 time.sleep(1)
                 st.rerun()
 
+
 # ============ KRYPTO-VIEW (ULTIMATIV) ============
 
 elif st.session_state.active_view == "🪙 Krypto":
-    from crypto_data import (
-        fetch_btc_onchain, fetch_trending_coins, fetch_top_movers
-    )
-    from crypto_analysis import (
-        crypto_indicators, crypto_price_targets, crypto_risk_metrics,
-        crypto_monte_carlo, btc_halving_analysis, calculate_btc_correlation,
-        crypto_backtest
-    )
-
     st.subheader("🪙 Krypto Dashboard - Pro Edition")
     st.caption("Real-time data · Multi-faktor scoring · Risk management · Backtest")
 
@@ -897,7 +884,7 @@ elif st.session_state.active_view == "🪙 Krypto":
         "⛓️ On-Chain (BTC)",
     ])
 
-    # ===== TAB 1: PRO ANALYSE (ULTIMATIV) =====
+    # ===== TAB 1: PRO ANALYSE =====
     with crypto_tabs[0]:
         ac1, ac2 = st.columns([3, 1])
         crypto_choice = ac1.selectbox(
@@ -925,15 +912,13 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                 st.success(f"✅ Data fra: **{cdata['source']}** · {len(hist)} dage")
 
-                # ===== HEADER =====
                 st.markdown(f"## {info['longName']} ({info['symbol']})")
                 st.caption(
                     f"🏢 {CRYPTO_UNIVERSE[symbol]['category']} · "
-                    f"📅 {hist.index[0].date()} → {hist.index[-1].date()} · "
-                    f"💱 USD"
+                    f"📅 {hist.index[0].date()} → {hist.index[-1].date()} · 💱 USD"
                 )
 
-                # ===== KEY METRICS =====
+                # Key metrics
                 change_24h = info.get("change_24h", 0) or 0
                 k = st.columns(7)
                 k[0].metric(
@@ -955,7 +940,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 if info.get("change_1y") is not None:
                     k[6].metric("1y", f"{info['change_1y']:+.1f}%")
 
-                # ===== SCORES =====
+                # Scores
                 with st.spinner("Beregner multi-faktor scores..."):
                     scores = crypto_overall_score(info, hist)
 
@@ -978,7 +963,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 sc[3].metric("💬 Sentiment", f"{scores['sentiment']:.0f}/100", "20% vægt")
                 sc[4].metric("👨‍💻 Developer", f"{scores['developer']:.0f}/100", "15% vægt")
 
-                # ===== KURSMÅL & STOP LOSS =====
+                # Kursmål
                 st.markdown("---")
                 st.markdown("### 💰 Kursniveauer & Risk Management")
                 st.caption("Baseret på ATR, Bollinger Bands og 90/365 dages high/low")
@@ -993,7 +978,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     moon_pct = (targets["target_moon"] / price - 1) * 100
 
                     pt = st.columns(6)
-
                     pt[0].markdown(
                         f"<div style='background:#16a34a22;padding:0.8rem;border-radius:10px;"
                         f"border-left:4px solid #16a34a;text-align:center'>"
@@ -1050,7 +1034,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"ATR: ${targets['atr']:.2f}"
                     )
 
-                # ===== BTC HALVING (kun BTC) =====
+                # BTC Halving (kun BTC)
                 if symbol == "BTC":
                     halv = btc_halving_analysis(symbol)
                     if halv:
@@ -1064,7 +1048,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         hc[3].metric("📊 Cycle progress", f"{halv['cycle_progress']:.0f}%")
                         st.info(f"**{halv['phase']}** — {halv['outlook']}")
 
-                # ===== AVANCERET TABS =====
+                # Avancerede tabs
                 st.markdown("---")
                 pro_tabs = st.tabs([
                     "📊 Charts",
@@ -1076,7 +1060,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     "🔍 Score breakdown"
                 ])
 
-                # === Charts ===
+                # Charts
                 with pro_tabs[0]:
                     df_ind = crypto_indicators(hist)
                     fig = make_subplots(
@@ -1140,7 +1124,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
-                # === Tekniske detaljer ===
+                # Tekniske detaljer
                 with pro_tabs[1]:
                     df_ind = crypto_indicators(hist)
                     last = df_ind.iloc[-1]
@@ -1151,9 +1135,11 @@ elif st.session_state.active_view == "🪙 Krypto":
                                  f"{last['MACD']:.4f}" if not pd.isna(last["MACD"]) else "-")
                     cc[2].metric("ATR",
                                  f"${last['ATR']:.2f}" if not pd.isna(last["ATR"]) else "-")
-                    cc[3].metric("BB Width",
-                                 f"{((last['BB_upper']-last['BB_lower'])/last['Close']*100):.1f}%"
-                                 if not pd.isna(last["BB_upper"]) else "-")
+                    if not pd.isna(last["BB_upper"]):
+                        cc[3].metric(
+                            "BB Width",
+                            f"{((last['BB_upper']-last['BB_lower'])/last['Close']*100):.1f}%"
+                        )
 
                     cc2 = st.columns(3)
                     cc2[0].metric("SMA20",
@@ -1163,7 +1149,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     cc2[2].metric("SMA200",
                                   f"${last['SMA200']:.2f}" if not pd.isna(last["SMA200"]) else "-")
 
-                # === Risiko ===
+                # Risiko
                 with pro_tabs[2]:
                     risk = crypto_risk_metrics(hist)
                     if risk:
@@ -1190,9 +1176,9 @@ elif st.session_state.active_view == "🪙 Krypto":
                         )
                         st.plotly_chart(fig_dd, use_container_width=True)
 
-                # === Monte Carlo ===
+                # Monte Carlo
                 with pro_tabs[3]:
-                    st.caption("🎲 500 simulationer · 180 dage · Student-t (fat tails)")
+                    st.caption("🎲 500 simulationer · Student-t (fat tails)")
 
                     mc_days = st.slider("Dage frem", 30, 365, 180, key="mc_days")
                     sims, lp = crypto_monte_carlo(hist, n_sims=500, days=mc_days)
@@ -1241,7 +1227,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         )
                         st.plotly_chart(fig_m, use_container_width=True)
 
-                # === Backtest ===
+                # Backtest
                 with pro_tabs[4]:
                     st.caption("🎯 Walk-forward backtest af model-anbefalinger")
 
@@ -1256,7 +1242,8 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                     if st.button("🚀 Kør krypto-backtest", type="primary"):
                         with st.spinner("Kører walk-forward..."):
-                            bt = crypto_backtest(hist, holding_days=holding, sample_freq=freq)
+                            bt = crypto_backtest(hist, holding_days=holding,
+                                                  sample_freq=freq)
 
                         if bt is None:
                             st.error(f"Ikke nok data ({len(hist)} dage)")
@@ -1305,7 +1292,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                             else:
                                 st.warning(f"⚠️ Ingen/negativ korrelation: {corr:.3f}")
 
-                # === BTC Korrelation ===
+                # BTC Korrelation
                 with pro_tabs[5]:
                     if symbol == "BTC":
                         st.info("Dette er BTC — sammenligning med sig selv ikke meningsfuld")
@@ -1326,8 +1313,8 @@ elif st.session_state.active_view == "🪙 Krypto":
                                 cc[1].metric(
                                     "Beta til BTC",
                                     f"{corr_data['beta']:.2f}",
-                                    "Mere volatil end BTC" if corr_data['beta'] > 1.2 else
-                                    "Mindre volatil end BTC" if corr_data['beta'] < 0.8 else
+                                    "Mere volatil" if corr_data['beta'] > 1.2 else
+                                    "Mindre volatil" if corr_data['beta'] < 0.8 else
                                     "Ligner BTC"
                                 )
 
@@ -1339,7 +1326,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                                 ))
                                 fig_corr.add_hline(y=0.7, line_dash="dash",
                                                     line_color="green",
-                                                    annotation_text="Høj korrelation")
+                                                    annotation_text="Høj")
                                 fig_corr.update_layout(
                                     template="plotly_dark", height=400,
                                     title=f"30-dages rolling korrelation: {symbol} vs BTC",
@@ -1347,7 +1334,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                                 )
                                 st.plotly_chart(fig_corr, use_container_width=True)
 
-                # === Score breakdown ===
+                # Score breakdown
                 with pro_tabs[6]:
                     detail_subtabs = st.tabs([
                         "📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"
@@ -1369,7 +1356,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                                 st.dataframe(df_d, use_container_width=True,
                                              hide_index=True)
 
-                # ===== Description =====
                 if info.get("description"):
                     with st.expander("ℹ️ Om denne krypto"):
                         st.write(info["description"])
@@ -1382,21 +1368,22 @@ elif st.session_state.active_view == "🪙 Krypto":
         sel_universe = sc1.selectbox(
             "Univers", list(CRYPTO_UNIVERSES.keys()), key="cs_universe"
         )
-        min_score = sc2.slider("Min. score", 30, 90, 55, key="cs_min")
+        min_score_c = sc2.slider("Min. score", 30, 90, 55, key="cs_min")
 
         if st.button("🚀 Kør krypto-screener", type="primary"):
-            tickers = CRYPTO_UNIVERSES[sel_universe]
-            results = []
-            progress = st.progress(0, text="Starter...")
+            tickers_c = CRYPTO_UNIVERSES[sel_universe]
+            results_c = []
+            progress_c = st.progress(0, text="Starter...")
 
-            for i, t in enumerate(tickers):
-                progress.progress((i+1) / len(tickers), text=f"Analyserer {t}...")
+            for i, t in enumerate(tickers_c):
+                progress_c.progress((i+1) / len(tickers_c),
+                                     text=f"Analyserer {t}...")
                 try:
                     cdata = fetch_crypto_data(t)
                     if cdata:
                         scores = crypto_overall_score(cdata["info"], cdata["hist"])
                         rec, _ = crypto_recommendation(scores["overall"])
-                        results.append({
+                        results_c.append({
                             "Symbol": t,
                             "Navn": cdata["info"]["longName"],
                             "Pris ($)": cdata["info"]["currentPrice"],
@@ -1415,11 +1402,11 @@ elif st.session_state.active_view == "🪙 Krypto":
                 except Exception as e:
                     print(f"Error {t}: {e}")
 
-            progress.empty()
+            progress_c.empty()
 
-            if results:
-                df_r = pd.DataFrame(results)
-                df_filt = df_r[df_r["Overall"] >= min_score].sort_values(
+            if results_c:
+                df_r = pd.DataFrame(results_c)
+                df_filt = df_r[df_r["Overall"] >= min_score_c].sort_values(
                     "Overall", ascending=False
                 )
 
@@ -1441,9 +1428,9 @@ elif st.session_state.active_view == "🪙 Krypto":
                         }
                     )
 
-                    csv = df_filt.to_csv(index=False).encode("utf-8")
+                    csv_c = df_filt.to_csv(index=False).encode("utf-8")
                     st.download_button(
-                        "📥 Download CSV", csv,
+                        "📥 Download CSV", csv_c,
                         f"crypto_screener_{datetime.now().strftime('%Y%m%d')}.csv",
                         "text/csv"
                     )
@@ -1502,7 +1489,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     cmp_data[sym] = cdata
 
             if cmp_data:
-                # Performance chart (normaliseret)
                 fig_cmp = go.Figure()
                 for sym, cdata in cmp_data.items():
                     hist = cdata["hist"]
@@ -1517,7 +1503,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                 )
                 st.plotly_chart(fig_cmp, use_container_width=True)
 
-                # Score sammenligning
                 cmp_rows = []
                 for sym, cdata in cmp_data.items():
                     scores = crypto_overall_score(cdata["info"], cdata["hist"])
@@ -1588,7 +1573,7 @@ elif st.session_state.active_view == "🪙 Krypto":
         if onchain:
             oc = st.columns(3)
             if "hash_rate" in onchain:
-                oc[0].metric("⚡ Hash Rate (TH/s)", f"{onchain['hash_rate']/1e6:,.1f}M")
+                oc[0].metric("⚡ Hash Rate", f"{onchain['hash_rate']/1e6:,.1f}M TH/s")
             if "difficulty" in onchain:
                 oc[1].metric("⚙️ Difficulty", f"{onchain['difficulty']/1e12:,.2f}T")
             if "active_addresses" in onchain:
@@ -1600,9 +1585,8 @@ elif st.session_state.active_view == "🪙 Krypto":
             if "mempool_size" in onchain:
                 oc2[1].metric("🔄 Mempool (bytes)", f"{onchain['mempool_size']:,.0f}")
             if "miners_revenue" in onchain:
-                oc2[2].metric("⛏️ Miner Revenue ($)", f"${onchain['miners_revenue']:,.0f}")
+                oc2[2].metric("⛏️ Miner Revenue", f"${onchain['miners_revenue']:,.0f}")
 
-            # Hash rate chart
             if "hash_rate_history" in onchain:
                 hr_df = pd.DataFrame(onchain["hash_rate_history"])
                 hr_df["x"] = pd.to_datetime(hr_df["x"], unit="s")
@@ -1618,6 +1602,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 st.plotly_chart(fig_hr, use_container_width=True)
         else:
             st.warning("Kunne ikke hente on-chain data")
+
 
 # ============ HOVED-ANALYSE-VIEW ============
 
@@ -1637,6 +1622,16 @@ elif st.session_state.active_view == "📊 Analyse":
     if not ticker:
         st.info("👆 Indtast en ticker, eller brug **🔍 Søg ticker** fanen")
         st.stop()
+
+    # Auto-redirect til krypto-view hvis det er en krypto-ticker
+    if is_crypto(ticker):
+        norm = normalize_crypto_ticker(ticker)
+        if norm in CRYPTO_UNIVERSE:
+            st.info(f"🪙 **{norm}** er en kryptovaluta. "
+                    f"Skifter til **Krypto-fanen**...")
+            st.session_state["crypto_analyzed"] = norm
+            st.session_state.active_view = "🪙 Krypto"
+            st.rerun()
 
     with st.spinner(f"Henter data for {ticker}..."):
         data = fetch_data(ticker)
@@ -1780,7 +1775,7 @@ elif st.session_state.active_view == "📊 Analyse":
         "💎 DCF", "📉 Risiko", "🎲 Monte Carlo", "🎯 Backtest"
     ])
 
-    # ----- Charts -----
+    # Charts
     with sub_tabs[0]:
         df_plot = df_chart_filtered
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
@@ -1810,7 +1805,7 @@ elif st.session_state.active_view == "📊 Analyse":
                           template="plotly_dark", title=f"{navn} - Visning: {period}")
         st.plotly_chart(fig, use_container_width=True)
 
-    # ----- Fundamentals -----
+    # Fundamentals
     with sub_tabs[1]:
         st.caption("🏛️ Fundamentale data (TTM)")
         df_f = pd.DataFrame(f_det)
@@ -1823,7 +1818,7 @@ elif st.session_state.active_view == "📊 Analyse":
         else:
             st.info(f"Ingen fundamentale data fra **{data['source']}**")
 
-    # ----- Teknisk -----
+    # Teknisk
     with sub_tabs[2]:
         st.caption("⚡ Tekniske signaler (12 måneder)")
         df_t = pd.DataFrame(t_det)
@@ -1839,7 +1834,7 @@ elif st.session_state.active_view == "📊 Analyse":
         cc[2].metric("ADX", f"{last['ADX']:.1f}" if not np.isnan(last["ADX"]) else "-")
         cc[3].metric("ATR", f"{last['ATR']:.2f}" if not np.isnan(last["ATR"]) else "-")
 
-    # ----- DCF -----
+    # DCF
     with sub_tabs[3]:
         c = st.columns(3)
         cg = c[0].slider("Vækstrate", 0.0, 0.30, 0.10, 0.01)
@@ -1858,7 +1853,7 @@ elif st.session_state.active_view == "📊 Analyse":
         else:
             st.warning("Ikke nok FCF-data til DCF")
 
-    # ----- Risiko -----
+    # Risiko
     with sub_tabs[4]:
         st.caption("📉 Risk metrics (3 år)")
         risk = risk_metrics(hist_risk)
@@ -1877,7 +1872,7 @@ elif st.session_state.active_view == "📊 Analyse":
                              title="Drawdown % (3 år)")
         st.plotly_chart(fig_dd, use_container_width=True)
 
-    # ----- Monte Carlo -----
+    # Monte Carlo
     with sub_tabs[5]:
         st.caption("🎲 Monte Carlo: 300 simulationer (2 års volatilitet)")
         sims, lp = monte_carlo(hist_mc)
@@ -1900,7 +1895,7 @@ elif st.session_state.active_view == "📊 Analyse":
                             title="Monte Carlo - 252 dage frem")
         st.plotly_chart(fig_m, use_container_width=True)
 
-    # ----- Backtest -----
+    # Backtest
     with sub_tabs[6]:
         st.markdown("## 🎯 Backtest - Validerer modellens anbefalinger historisk")
         st.caption(
@@ -1973,78 +1968,4 @@ elif st.session_state.active_view == "📊 Analyse":
                     fig_hr.add_hline(y=bt["buy_hold_return"], line_dash="dash",
                                      line_color="#0099ff",
                                      annotation_text=f"Buy & Hold: {bt['buy_hold_return']:+.1f}%")
-                    fig_hr.update_layout(
-                        title=f"Gennemsnit afkast {bt['holding_days']} dage frem",
-                        yaxis_title="Afkast %", template="plotly_dark", height=400
-                    )
-                    st.plotly_chart(fig_hr, use_container_width=True)
-
-                st.markdown("---")
-                st.markdown("### 💰 Strategi simulation (10.000 startkapital)")
-                if sim and len(sim["equity_curve"]) > 0:
-                    sc1, sc2, sc3, sc4 = st.columns(4)
-                    sc1.metric("📊 Strategi afkast", f"{sim['strategy_return']:+.2f}%",
-                               f"{sim['outperformance']:+.2f}% vs B&H")
-                    sc2.metric("📈 Buy & Hold", f"{sim['buy_hold_return']:+.2f}%")
-                    sc3.metric("💼 Slut værdi", f"{sim['final_value']:,.0f}")
-                    sc4.metric("🔁 Antal trades", sim["n_trades"])
-
-                    eq = sim["equity_curve"]
-                    fig_eq = go.Figure()
-                    fig_eq.add_trace(go.Scatter(x=eq["date"], y=eq["strategy"],
-                                                 name="Strategi",
-                                                 line=dict(color="#00d4aa", width=2)))
-                    fig_eq.add_trace(go.Scatter(x=eq["date"], y=eq["buy_hold"],
-                                                 name="Buy & Hold",
-                                                 line=dict(color="#0099ff", width=2, dash="dash")))
-                    if len(sim["trades"]) > 0:
-                        for _, trade in sim["trades"][sim["trades"]["action"] == "KØB"].iterrows():
-                            fig_eq.add_vline(x=trade["date"], line_color="#16a34a",
-                                             line_width=1, opacity=0.3)
-                        for _, trade in sim["trades"][sim["trades"]["action"] == "SÆLG"].iterrows():
-                            fig_eq.add_vline(x=trade["date"], line_color="#ef4444",
-                                             line_width=1, opacity=0.3)
-                    fig_eq.update_layout(
-                        title=f"Strategi vs Buy & Hold (Køb≥{buy_threshold}, Sælg≤30)",
-                        yaxis_title=f"Værdi ({valuta})",
-                        template="plotly_dark", height=500
-                    )
-                    st.plotly_chart(fig_eq, use_container_width=True)
-
-                    if len(sim["trades"]) > 0:
-                        with st.expander(f"📋 Se alle {sim['n_trades']} trades"):
-                            tl = sim["trades"].copy()
-                            tl["date"] = tl["date"].dt.strftime("%Y-%m-%d")
-                            tl["price"] = tl["price"].round(2)
-                            st.dataframe(tl, use_container_width=True, hide_index=True)
-
-                st.markdown("---")
-                st.markdown("### 🔍 Score vs faktisk afkast")
-                fig_sc = px.scatter(
-                    bt["results"], x="score", y="return_pct", color="recommendation",
-                    color_discrete_map={
-                        "STÆRKT KØB": "#16a34a", "KØB": "#22c55e",
-                        "HOLD": "#eab308", "SÆLG": "#ef4444", "STÆRKT SÆLG": "#b91c1c"
-                    },
-                    hover_data=["date", "entry_price", "exit_price"],
-                    title=f"Score vs {bt['holding_days']}-dages afkast",
-                    labels={"score": "Score (0-100)", "return_pct": "Afkast %"}
-                )
-                fig_sc.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
-                fig_sc.add_vline(x=50, line_dash="dash", line_color="white", opacity=0.3)
-                fig_sc.update_layout(template="plotly_dark", height=500)
-                st.plotly_chart(fig_sc, use_container_width=True)
-
-                corr = bt["results"]["score"].corr(bt["results"]["return_pct"])
-                if corr > 0.3:
-                    st.success(f"✅ **Stærk positiv korrelation: {corr:.3f}**")
-                elif corr > 0.1:
-                    st.info(f"➖ **Svag positiv korrelation: {corr:.3f}**")
-                elif corr > -0.1:
-                    st.warning(f"⚠️ **Ingen korrelation: {corr:.3f}**")
-                else:
-                    st.error(f"❌ **Negativ korrelation: {corr:.3f}**")
-
-                st.warning("⚠️ **DISCLAIMER**: Historisk performance garanterer ikke fremtidige resultater.")
-        else:
-            st.info("👆 Tryk **🚀 Kør backtest** for at se hvor godt anbefalingerne har virket historisk")
+                    fig_hr.
