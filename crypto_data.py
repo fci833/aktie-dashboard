@@ -1,10 +1,17 @@
-"""Krypto-datakilder med fallback-kæde + custom ticker support + robust fejlhåndtering"""
+"""Krypto-datakilder med intelligent fallback + custom ticker support"""
 import time
 import requests
 import numpy as np
 import pandas as pd
 import streamlit as st
 from crypto_config import CRYPTO_UNIVERSE
+
+
+# Standard headers for at undgå CoinGecko-blokering
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; AktieDashboard/1.0)",
+    "Accept": "application/json",
+}
 
 
 def is_crypto(ticker):
@@ -40,6 +47,7 @@ def search_coingecko_id(symbol):
         r = requests.get(
             "https://api.coingecko.com/api/v3/search",
             params={"query": symbol},
+            headers=HEADERS,
             timeout=10,
         )
         if r.status_code != 200:
@@ -67,13 +75,13 @@ def search_coingecko_id(symbol):
         return None
 
 
-# ===== COINGECKO HOVEDFETCH =====
+# ===== COINGECKO HOVEDFETCH (kun når Binance ikke kan) =====
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_coingecko(coin_id):
     """Hent komplet krypto-data fra CoinGecko med robust fallback"""
     try:
-        # === 1. HOVED-DATA (info, market_data, community, developer) ===
+        # === 1. HOVED-DATA ===
         r = requests.get(
             f"https://api.coingecko.com/api/v3/coins/{coin_id}",
             params={
@@ -84,6 +92,7 @@ def fetch_coingecko(coin_id):
                 "developer_data": "true",
                 "sparkline": "false",
             },
+            headers=HEADERS,
             timeout=15,
         )
         if r.status_code == 429:
@@ -93,10 +102,11 @@ def fetch_coingecko(coin_id):
             return None
         data = r.json()
 
-        # === 2. MARKET CHART (prices + volumes) - mest pålidelig ===
+        # === 2. MARKET CHART (prices + volumes) ===
         chart_r = requests.get(
             f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
             params={"vs_currency": "usd", "days": "365", "interval": "daily"},
+            headers=HEADERS,
             timeout=15,
         )
         if chart_r.status_code == 429:
@@ -113,16 +123,16 @@ def fetch_coingecko(coin_id):
             print(f"CoinGecko: ingen prices for {coin_id}")
             return None
 
-        # Byg DataFrame fra prices (close)
         df_prices = pd.DataFrame(prices, columns=["ts", "Close"])
         df_prices["ts"] = pd.to_datetime(df_prices["ts"], unit="ms").dt.normalize()
         df_prices = df_prices.drop_duplicates(subset="ts").set_index("ts")
 
-        # === 3. OHLC - prøv hvis muligt, ellers fake fra close ===
+        # === 3. OHLC (best effort) ===
         try:
             ohlc_r = requests.get(
                 f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc",
                 params={"vs_currency": "usd", "days": "365"},
+                headers=HEADERS,
                 timeout=15,
             )
             ohlc = ohlc_r.json() if ohlc_r.status_code == 200 else []
@@ -134,7 +144,6 @@ def fetch_coingecko(coin_id):
             df["ts"] = pd.to_datetime(df["ts"], unit="ms").dt.normalize()
             df = df.drop_duplicates(subset="ts").set_index("ts")
         else:
-            # Fallback: byg OHLC fra close prices
             print(f"CoinGecko: bruger close-prices fallback for {coin_id}")
             df = df_prices.copy()
             df["Open"] = df["Close"].shift(1).fillna(df["Close"])
@@ -160,7 +169,6 @@ def fetch_coingecko(coin_id):
         cd = data.get("community_data") or {}
         dd = data.get("developer_data") or {}
 
-        # Sikker .get med .get fallback for nested dicts
         def safe_get(d, *keys):
             for k in keys:
                 if not isinstance(d, dict):
@@ -193,14 +201,11 @@ def fetch_coingecko(coin_id):
             "change_7d": md.get("price_change_percentage_7d"),
             "change_30d": md.get("price_change_percentage_30d"),
             "change_1y": md.get("price_change_percentage_1y"),
-            # Sentiment
             "sentiment_votes_up_%": data.get("sentiment_votes_up_percentage"),
             "community_score": data.get("community_score"),
             "public_interest_score": data.get("public_interest_score"),
-            # Community
             "twitter_followers": cd.get("twitter_followers"),
             "reddit_subscribers": cd.get("reddit_subscribers"),
-            # Developer
             "developer_score": data.get("developer_score"),
             "github_stars": dd.get("stars"),
             "github_forks": dd.get("forks"),
@@ -218,11 +223,11 @@ def fetch_coingecko(coin_id):
         return None
 
 
-# ===== BINANCE =====
+# ===== BINANCE (primær for kendte coins - ingen rate limit) =====
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_binance(symbol, interval="1d", limit=500):
-    """Hent OHLCV fra Binance"""
+    """Hent OHLCV fra Binance - hurtigt og uden rate limit"""
     try:
         r = requests.get(
             "https://api.binance.com/api/v3/klines",
@@ -272,7 +277,11 @@ def fetch_fear_greed():
 def fetch_global_crypto_market():
     """Total krypto-marked statistik - robust mod manglende felter"""
     try:
-        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/global",
+            headers=HEADERS,
+            timeout=10,
+        )
         if r.status_code != 200:
             print(f"Global endpoint failed: {r.status_code}")
             return None
@@ -291,71 +300,133 @@ def fetch_global_crypto_market():
         return None
 
 
-# ===== HOVED-FETCH MED FALLBACK + CUSTOM TICKER SUPPORT =====
+# ===== HJÆLPER: Berig Binance-data med CoinGecko-metadata =====
+
+def _enrich_binance_with_coingecko(binance_data, coin_id):
+    """
+    Tager Binance OHLC og prøver at berige med CoinGecko metadata
+    (market cap, dev score, etc.) — uden at bryde hvis CoinGecko fejler.
+    """
+    try:
+        r = requests.get(
+            f"https://api.coingecko.com/api/v3/coins/{coin_id}",
+            params={
+                "localization": "false",
+                "tickers": "false",
+                "market_data": "true",
+                "community_data": "true",
+                "developer_data": "true",
+                "sparkline": "false",
+            },
+            headers=HEADERS,
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return binance_data
+
+        data = r.json()
+        md = data.get("market_data") or {}
+        cd = data.get("community_data") or {}
+        dd = data.get("developer_data") or {}
+
+        info = binance_data["info"]
+        info["longName"] = data.get("name") or info["longName"]
+        info["marketCap"] = (md.get("market_cap") or {}).get("usd")
+        info["marketCapRank"] = md.get("market_cap_rank")
+        info["totalVolume"] = (md.get("total_volume") or {}).get("usd")
+        info["ath"] = (md.get("ath") or {}).get("usd")
+        info["ath_change_%"] = (md.get("ath_change_percentage") or {}).get("usd")
+        info["change_24h"] = md.get("price_change_percentage_24h") or info.get("change_24h")
+        info["change_7d"] = md.get("price_change_percentage_7d") or info.get("change_7d")
+        info["change_30d"] = md.get("price_change_percentage_30d") or info.get("change_30d")
+        info["change_1y"] = md.get("price_change_percentage_1y")
+        info["sentiment_votes_up_%"] = data.get("sentiment_votes_up_percentage")
+        info["community_score"] = data.get("community_score")
+        info["public_interest_score"] = data.get("public_interest_score")
+        info["twitter_followers"] = cd.get("twitter_followers")
+        info["reddit_subscribers"] = cd.get("reddit_subscribers")
+        info["developer_score"] = data.get("developer_score")
+        info["github_stars"] = dd.get("stars")
+        info["github_forks"] = dd.get("forks")
+        info["commit_count_4_weeks"] = dd.get("commit_count_4_weeks")
+        info["description"] = ((data.get("description") or {}).get("en") or "")[:500]
+
+        binance_data["source"] = "Binance + CoinGecko"
+        return binance_data
+
+    except Exception as e:
+        print(f"Could not enrich {coin_id}: {e}")
+        return binance_data
+
+
+# ===== HOVED-FETCH MED INTELLIGENT FALLBACK =====
 
 def fetch_crypto_data(ticker):
     """
-    Hovedfunktion til at hente krypto-data.
-    Prøver i rækkefølge:
-    1. CoinGecko via CRYPTO_UNIVERSE config (hvis kendt ticker)
-    2. CoinGecko via search API (custom tickers som DOGE, SHIB, PEPE, PAXG)
-    3. Binance fallback (USDT-suffix)
-    4. Binance fallback (BUSD-suffix)
+    Hovedfunktion - PRIORITERER Binance for hastighed, beriger med CoinGecko.
+
+    Strategi:
+    1. Kendt ticker → Binance (hurtigt, ingen rate limit) + berig med CoinGecko metadata
+    2. Hvis Binance fejler → CoinGecko fuld data (med retries)
+    3. Ukendt ticker → CoinGecko search → Binance hvis muligt, ellers CoinGecko
+    4. Sidste udvej → Binance med USDT/BUSD/USD-suffix
     """
     if not ticker:
         return None
 
     symbol = normalize_crypto_ticker(ticker)
 
-    # ----- 1. Kendt ticker fra CRYPTO_UNIVERSE -----
+    # ----- 1. KENDT TICKER: Prioritér Binance + berig med CoinGecko -----
     if symbol in CRYPTO_UNIVERSE:
         config = CRYPTO_UNIVERSE[symbol]
 
-        # Prøv CoinGecko først
-        data = fetch_coingecko(config["cg"])
-        if data and data != "RATE_LIMIT":
-            return data
-
-        # Fallback: Binance
+        # Step 1a: Prøv Binance først (hurtigt, pålideligt, ingen rate limit)
         df = fetch_binance(config["binance"], limit=365)
         if df is not None and not df.empty:
-            return _build_binance_response(df, symbol, config.get("category"))
+            response = _build_binance_response(df, symbol, config.get("category"))
+            response = _enrich_binance_with_coingecko(response, config["cg"])
+            return response
 
-        # Hvis CoinGecko er rate-limited, prøv search som sidste udvej
-        if data == "RATE_LIMIT":
-            time.sleep(2)
-            coin_id = search_coingecko_id(symbol)
-            if coin_id:
-                data = fetch_coingecko(coin_id)
-                if data and data != "RATE_LIMIT":
-                    return data
+        # Step 1b: Binance fejlede → CoinGecko med retries
+        for attempt in range(3):
+            data = fetch_coingecko(config["cg"])
+            if data and data != "RATE_LIMIT":
+                return data
+            if data == "RATE_LIMIT":
+                wait_time = (attempt + 1) * 2
+                print(f"Rate limited, venter {wait_time}s før retry...")
+                time.sleep(wait_time)
+            else:
+                break
 
         return None
 
-    # ----- 2. Ukendt ticker → CoinGecko search -----
+    # ----- 2. UKENDT TICKER: CoinGecko search -----
     coin_id = search_coingecko_id(symbol)
     if coin_id:
-        data = fetch_coingecko(coin_id)
-        if data and data != "RATE_LIMIT":
-            return data
-        # Hvis rate-limited, vent og prøv igen
-        if data == "RATE_LIMIT":
-            time.sleep(3)
+        # Prøv først Binance med USDT (hvis tilgængelig)
+        df = fetch_binance(f"{symbol}USDT", limit=365)
+        if df is not None and not df.empty:
+            response = _build_binance_response(df, symbol, "Custom")
+            response = _enrich_binance_with_coingecko(response, coin_id)
+            return response
+
+        # Ellers: fuld CoinGecko (med retries)
+        for attempt in range(3):
             data = fetch_coingecko(coin_id)
             if data and data != "RATE_LIMIT":
                 return data
+            if data == "RATE_LIMIT":
+                time.sleep((attempt + 1) * 2)
+            else:
+                break
 
-    # ----- 3. Sidste forsøg: Binance med USDT-suffix -----
-    binance_symbol = f"{symbol}USDT"
-    df = fetch_binance(binance_symbol, limit=365)
-    if df is not None and not df.empty:
-        return _build_binance_response(df, symbol, "Custom")
-
-    # ----- 4. Prøv Binance med BUSD-suffix (legacy) -----
-    binance_busd = f"{symbol}BUSD"
-    df = fetch_binance(binance_busd, limit=365)
-    if df is not None and not df.empty:
-        return _build_binance_response(df, symbol, "Custom")
+    # ----- 3. SIDSTE UDVEJ: Binance med suffix-varianter -----
+    for suffix in ["USDT", "BUSD", "USD"]:
+        binance_symbol = f"{symbol}{suffix}"
+        df = fetch_binance(binance_symbol, limit=365)
+        if df is not None and not df.empty:
+            return _build_binance_response(df, symbol, "Custom")
 
     return None
 
@@ -366,7 +437,6 @@ def _build_binance_response(df, symbol, category=None):
     prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else last
     change_24h = (last / prev - 1) * 100 if prev else 0
 
-    # Beregn ændringer
     change_7d = None
     change_30d = None
     if len(df) >= 7:
@@ -433,6 +503,7 @@ def fetch_trending_coins():
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/search/trending",
+            headers=HEADERS,
             timeout=10
         )
         if r.status_code != 200:
@@ -467,6 +538,7 @@ def fetch_top_movers():
                 "page": 1,
                 "price_change_percentage": "24h",
             },
+            headers=HEADERS,
             timeout=15,
         )
         if r.status_code != 200:
