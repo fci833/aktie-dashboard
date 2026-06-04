@@ -1968,4 +1968,116 @@ elif st.session_state.active_view == "📊 Analyse":
                     fig_hr.add_hline(y=bt["buy_hold_return"], line_dash="dash",
                                      line_color="#0099ff",
                                      annotation_text=f"Buy & Hold: {bt['buy_hold_return']:+.1f}%")
-                    fig_hr.
+                                        fig_hr.update_layout(
+                        template="plotly_dark", height=400,
+                        title=f"Gennemsnitligt {bt['holding_days']}-dages afkast pr. anbefaling",
+                        yaxis_title="Afkast %",
+                    )
+                    st.plotly_chart(fig_hr, use_container_width=True)
+
+                st.markdown("---")
+                st.markdown("### 🔬 Korrelation: Score vs faktisk afkast")
+                st.caption(
+                    "Hvis modellen virker, skal høj score → højt afkast. "
+                    "Punkter i øverste højre = succes."
+                )
+                fig_corr = px.scatter(
+                    bt["results"], x="score", y="return_pct",
+                    color="recommendation",
+                    color_discrete_map={
+                        "STÆRKT KØB": "#16a34a", "KØB": "#22c55e",
+                        "HOLD": "#eab308", "SÆLG": "#ef4444",
+                        "STÆRKT SÆLG": "#b91c1c",
+                    },
+                    title=f"Score vs {holding_days}-dages afkast",
+                    labels={"score": "Model score", "return_pct": "Faktisk afkast %"},
+                    hover_data=["date"],
+                )
+                fig_corr.add_hline(y=0, line_dash="dash", line_color="white",
+                                   opacity=0.3)
+                fig_corr.add_vline(x=50, line_dash="dash", line_color="white",
+                                   opacity=0.3)
+                fig_corr.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig_corr, use_container_width=True)
+
+                correlation = bt["results"]["score"].corr(bt["results"]["return_pct"])
+                if correlation > 0.3:
+                    st.success(
+                        f"✅ Stærk positiv korrelation: {correlation:.3f} - "
+                        f"modellen virker!"
+                    )
+                elif correlation > 0.1:
+                    st.info(
+                        f"➖ Svag positiv korrelation: {correlation:.3f} - "
+                        f"modellen har værdi"
+                    )
+                elif correlation > -0.1:
+                    st.warning(
+                        f"⚠️ Ingen korrelation: {correlation:.3f} - "
+                        f"modellen er ikke bedre end tilfældigt"
+                    )
+                else:
+                    st.error(
+                        f"❌ Negativ korrelation: {correlation:.3f} - "
+                        f"modellen forudsiger forkert!"
+                    )
+
+                if sim:
+                    st.markdown("---")
+                    st.markdown("### 💼 Strategi-simulation")
+                    st.caption(
+                        f"Køb når score ≥ {buy_threshold}, sælg når score ≤ 30. "
+                        f"Start: $10.000"
+                    )
+
+                    sm = st.columns(4)
+                    sm[0].metric(
+                        "💰 Slutværdi (strategi)",
+                        f"${sim['strategy_final']:,.0f}",
+                        f"{sim['strategy_return']:+.1f}%"
+                    )
+                    sm[1].metric(
+                        "📈 Buy & Hold",
+                        f"${sim['bh_final']:,.0f}",
+                        f"{sim['bh_return']:+.1f}%"
+                    )
+                    sm[2].metric(
+                        "🎯 Outperformance",
+                        f"{sim['outperformance']:+.1f}%",
+                        delta_color="normal" if sim["outperformance"] > 0 else "inverse"
+                    )
+                    sm[3].metric("📊 Antal trades", sim["n_trades"])
+
+                    fig_sim = go.Figure()
+                    fig_sim.add_trace(go.Scatter(
+                        x=sim["dates"], y=sim["strategy_values"],
+                        name="Strategi (model)",
+                        line=dict(color="#00d4aa", width=3),
+                    ))
+                    fig_sim.add_trace(go.Scatter(
+                        x=sim["dates"], y=sim["bh_values"],
+                        name="Buy & Hold",
+                        line=dict(color="#0099ff", width=2, dash="dash"),
+                    ))
+                    fig_sim.update_layout(
+                        template="plotly_dark", height=450,
+                        title=f"Portefølje-værdi over tid (start $10.000)",
+                        yaxis_title="Værdi ($)",
+                    )
+                    st.plotly_chart(fig_sim, use_container_width=True)
+
+                with st.expander("📅 Vis alle backtest-samples"):
+                    display_df = bt["results"][[
+                        "date", "score", "recommendation",
+                        "entry_price", "exit_price", "return_pct"
+                    ]].copy()
+                    display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
+                    display_df["score"] = display_df["score"].round(1)
+                    display_df["entry_price"] = display_df["entry_price"].round(2)
+                    display_df["exit_price"] = display_df["exit_price"].round(2)
+                    display_df["return_pct"] = display_df["return_pct"].round(2)
+                    display_df.columns = [
+                        "Dato", "Score", "Anbefaling",
+                        "Entry pris", "Exit pris", "Afkast %"
+                    ]
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
