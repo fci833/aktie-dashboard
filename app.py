@@ -1913,7 +1913,7 @@ elif st.session_state.active_view == "📊 Analyse":
         )
         buy_threshold = bt_col3.slider("🟢 KØB tærskel (score)", 50, 80, 60)
 
-        if st.button("🚀 Kør backtest", type="primary"):
+                if st.button("🚀 Kør backtest", type="primary"):
             with st.spinner("Kører walk-forward backtest..."):
                 bt = run_backtest(hist_full, holding_days=holding_days,
                                   sample_freq=sample_freq)
@@ -1937,7 +1937,8 @@ elif st.session_state.active_view == "📊 Analyse":
                     s = bt["stats"].get(rec_label)
                     if s:
                         rows.append({
-                            "Anbefaling": rec_label, "Antal signaler": s["count"],
+                            "Anbefaling": rec_label,
+                            "Antal signaler": s["count"],
                             "Hit rate": f"{s['win_rate']:.1f}%",
                             "Gns. afkast": f"{s['avg_return']:+.2f}%",
                             "Median": f"{s['median_return']:+.2f}%",
@@ -1946,9 +1947,13 @@ elif st.session_state.active_view == "📊 Analyse":
                         })
                     else:
                         rows.append({
-                            "Anbefaling": rec_label, "Antal signaler": 0,
-                            "Hit rate": "-", "Gns. afkast": "-",
-                            "Median": "-", "Bedst": "-", "Værst": "-",
+                            "Anbefaling": rec_label,
+                            "Antal signaler": 0,
+                            "Hit rate": "-",
+                            "Gns. afkast": "-",
+                            "Median": "-",
+                            "Bedst": "-",
+                            "Værst": "-",
                         })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
                 st.markdown(f"📈 **Buy & Hold over samme periode:** {bt['buy_hold_return']:+.2f}%")
@@ -1956,16 +1961,16 @@ elif st.session_state.active_view == "📊 Analyse":
                 valid_stats = {k: v for k, v in bt["stats"].items() if v is not None}
                 if valid_stats:
                     fig_hr = go.Figure()
-                                        fig_hr.add_trace(go.Bar(
+                    fig_hr.add_trace(go.Bar(
                         x=list(valid_stats.keys()),
                         y=[v["avg_return"] for v in valid_stats.values()],
-                        text=[f"n={v['count']}<br>Hit={v['win_rate']:.0f}%"
-                              for v in valid_stats.values()],
+                        text=[f"n={v['count']}<br>Hit={v['win_rate']:.0f}%" for v in valid_stats.values()],
                         textposition="auto",
-                        marker_color=["#16a34a" if v["avg_return"] > 0 else "#ef4444"
-                                      for v in valid_stats.values()],
+                        marker_color=["#16a34a" if v["avg_return"] > 0 else "#ef4444" for v in valid_stats.values()],
                     ))
-                    fig_hr.update_layout(                        template="plotly_dark", height=400,
+                    fig_hr.update_layout(
+                        template="plotly_dark",
+                        height=400,
                         title=f"Gennemsnitligt {bt['holding_days']}-dages afkast pr. anbefaling",
                         yaxis_title="Afkast %",
                     )
@@ -1973,16 +1978,16 @@ elif st.session_state.active_view == "📊 Analyse":
 
                 st.markdown("---")
                 st.markdown("### 🔬 Korrelation: Score vs faktisk afkast")
-                st.caption(
-                    "Hvis modellen virker, skal høj score → højt afkast. "
-                    "Punkter i øverste højre = succes."
-                )
+                st.caption("Hvis modellen virker, skal høj score → højt afkast.")
+
                 fig_corr = px.scatter(
                     bt["results"], x="score", y="return_pct",
                     color="recommendation",
                     color_discrete_map={
-                        "STÆRKT KØB": "#16a34a", "KØB": "#22c55e",
-                        "HOLD": "#eab308", "SÆLG": "#ef4444",
+                        "STÆRKT KØB": "#16a34a",
+                        "KØB": "#22c55e",
+                        "HOLD": "#eab308",
+                        "SÆLG": "#ef4444",
                         "STÆRKT SÆLG": "#b91c1c",
                     },
                     title=f"Score vs {holding_days}-dages afkast",
