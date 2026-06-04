@@ -1965,10 +1965,7 @@ elif st.session_state.active_view == "📊 Analyse":
                         marker_color=["#16a34a" if v["avg_return"] > 0 else "#ef4444"
                                       for v in valid_stats.values()],
                     ))
-                    fig_hr.add_hline(y=bt["buy_hold_return"], line_dash="dash",
-                                     line_color="#0099ff",
-                                     annotation_text=f"Buy & Hold: {bt['buy_hold_return']:+.1f}%")
-                                        fig_hr.update_layout(
+                                       fig_hr.update_layout(
                         template="plotly_dark", height=400,
                         title=f"Gennemsnitligt {bt['holding_days']}-dages afkast pr. anbefaling",
                         yaxis_title="Afkast %",
@@ -1993,59 +1990,31 @@ elif st.session_state.active_view == "📊 Analyse":
                     labels={"score": "Model score", "return_pct": "Faktisk afkast %"},
                     hover_data=["date"],
                 )
-                fig_corr.add_hline(y=0, line_dash="dash", line_color="white",
-                                   opacity=0.3)
-                fig_corr.add_vline(x=50, line_dash="dash", line_color="white",
-                                   opacity=0.3)
+                fig_corr.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
+                fig_corr.add_vline(x=50, line_dash="dash", line_color="white", opacity=0.3)
                 fig_corr.update_layout(template="plotly_dark", height=500)
                 st.plotly_chart(fig_corr, use_container_width=True)
 
                 correlation = bt["results"]["score"].corr(bt["results"]["return_pct"])
                 if correlation > 0.3:
-                    st.success(
-                        f"✅ Stærk positiv korrelation: {correlation:.3f} - "
-                        f"modellen virker!"
-                    )
+                    st.success(f"✅ Stærk positiv korrelation: {correlation:.3f} - modellen virker!")
                 elif correlation > 0.1:
-                    st.info(
-                        f"➖ Svag positiv korrelation: {correlation:.3f} - "
-                        f"modellen har værdi"
-                    )
+                    st.info(f"➖ Svag positiv korrelation: {correlation:.3f} - modellen har værdi")
                 elif correlation > -0.1:
-                    st.warning(
-                        f"⚠️ Ingen korrelation: {correlation:.3f} - "
-                        f"modellen er ikke bedre end tilfældigt"
-                    )
+                    st.warning(f"⚠️ Ingen korrelation: {correlation:.3f} - modellen er ikke bedre end tilfældigt")
                 else:
-                    st.error(
-                        f"❌ Negativ korrelation: {correlation:.3f} - "
-                        f"modellen forudsiger forkert!"
-                    )
+                    st.error(f"❌ Negativ korrelation: {correlation:.3f} - modellen forudsiger forkert!")
 
                 if sim:
                     st.markdown("---")
                     st.markdown("### 💼 Strategi-simulation")
-                    st.caption(
-                        f"Køb når score ≥ {buy_threshold}, sælg når score ≤ 30. "
-                        f"Start: $10.000"
-                    )
+                    st.caption(f"Køb når score ≥ {buy_threshold}, sælg når score ≤ 30. Start: $10.000")
 
                     sm = st.columns(4)
-                    sm[0].metric(
-                        "💰 Slutværdi (strategi)",
-                        f"${sim['strategy_final']:,.0f}",
-                        f"{sim['strategy_return']:+.1f}%"
-                    )
-                    sm[1].metric(
-                        "📈 Buy & Hold",
-                        f"${sim['bh_final']:,.0f}",
-                        f"{sim['bh_return']:+.1f}%"
-                    )
-                    sm[2].metric(
-                        "🎯 Outperformance",
-                        f"{sim['outperformance']:+.1f}%",
-                        delta_color="normal" if sim["outperformance"] > 0 else "inverse"
-                    )
+                    sm[0].metric("💰 Slutværdi (strategi)", f"${sim['strategy_final']:,.0f}", f"{sim['strategy_return']:+.1f}%")
+                    sm[1].metric("📈 Buy & Hold", f"${sim['bh_final']:,.0f}", f"{sim['bh_return']:+.1f}%")
+                    sm[2].metric("🎯 Outperformance", f"{sim['outperformance']:+.1f}%",
+                                 delta_color="normal" if sim["outperformance"] > 0 else "inverse")
                     sm[3].metric("📊 Antal trades", sim["n_trades"])
 
                     fig_sim = go.Figure()
@@ -2061,7 +2030,7 @@ elif st.session_state.active_view == "📊 Analyse":
                     ))
                     fig_sim.update_layout(
                         template="plotly_dark", height=450,
-                        title=f"Portefølje-værdi over tid (start $10.000)",
+                        title="Portefølje-værdi over tid (start $10.000)",
                         yaxis_title="Værdi ($)",
                     )
                     st.plotly_chart(fig_sim, use_container_width=True)
