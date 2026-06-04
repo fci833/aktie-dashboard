@@ -884,7 +884,7 @@ elif st.session_state.active_view == "🪙 Krypto":
         "⛓️ On-Chain (BTC)",
     ])
 
-        # ===== TAB 1: PRO ANALYSE =====
+          # ===== TAB 1: PRO ANALYSE =====
     with crypto_tabs[0]:
         st.markdown("### 🎯 Vælg krypto til analyse")
 
@@ -942,13 +942,20 @@ elif st.session_state.active_view == "🪙 Krypto":
 
         st.markdown("---")
 
-        if st.session_state.get("crypto_analyzed"):            symbol = st.session_state["crypto_analyzed"]
+        if st.session_state.get("crypto_analyzed"):
+            symbol = st.session_state["crypto_analyzed"]
 
             with st.spinner(f"Henter komplet data for {symbol}..."):
                 cdata = fetch_crypto_data(symbol)
 
             if cdata is None:
-                st.error(f"❌ Kunne ikke hente data for {symbol}")
+                st.error(f"❌ Kunne ikke hente data for **{symbol}**")
+                st.info(
+                    "💡 **Mulige årsager:**\n"
+                    "- Tickeren findes ikke (tjek stavning)\n"
+                    "- CoinGecko er midlertidigt rate-limited (vent 1-2 min)\n"
+                    "- Coin er for ny / ikke listet på CoinGecko eller Binance"
+                )
             else:
                 info = cdata["info"]
                 hist = cdata["hist"]
@@ -956,9 +963,16 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                 st.success(f"✅ Data fra: **{cdata['source']}** · {len(hist)} dage")
 
+                # Brug category fra CRYPTO_UNIVERSE hvis det findes, ellers fra info
+                category = (
+                    CRYPTO_UNIVERSE[symbol]["category"]
+                    if symbol in CRYPTO_UNIVERSE
+                    else info.get("category", "Cryptocurrency")
+                )
+
                 st.markdown(f"## {info['longName']} ({info['symbol']})")
                 st.caption(
-                    f"🏢 {CRYPTO_UNIVERSE[symbol]['category']} · "
+                    f"🏢 {category} · "
                     f"📅 {hist.index[0].date()} → {hist.index[-1].date()} · 💱 USD"
                 )
 
@@ -1027,7 +1041,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"border-left:4px solid #16a34a;text-align:center'>"
                         f"<small>🟢 KØB ZONE</small>"
                         f"<h4 style='margin:0.3rem 0'>"
-                        f"${targets['buy_low']:,.2f}<br>${targets['buy_high']:,.2f}</h4>"
+                        f"${targets['buy_low']:,.4f}<br>${targets['buy_high']:,.4f}</h4>"
                         f"<small>{buy_low_pct:+.1f}% til {buy_high_pct:+.1f}%</small>"
                         f"</div>", unsafe_allow_html=True
                     )
@@ -1035,7 +1049,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"<div style='background:#0099ff22;padding:0.8rem;border-radius:10px;"
                         f"border-left:4px solid #0099ff;text-align:center'>"
                         f"<small>📍 NUVÆRENDE</small>"
-                        f"<h4 style='margin:0.3rem 0'>${price:,.2f}</h4>"
+                        f"<h4 style='margin:0.3rem 0'>${price:,.4f}</h4>"
                         f"<small>{change_24h:+.2f}% (24h)</small>"
                         f"</div>", unsafe_allow_html=True
                     )
@@ -1043,7 +1057,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"<div style='background:#ef444422;padding:0.8rem;border-radius:10px;"
                         f"border-left:4px solid #ef4444;text-align:center'>"
                         f"<small>🛑 STOP LOSS</small>"
-                        f"<h4 style='margin:0.3rem 0'>${targets['stop_loss']:,.2f}</h4>"
+                        f"<h4 style='margin:0.3rem 0'>${targets['stop_loss']:,.4f}</h4>"
                         f"<small>{stop_pct:+.1f}% (3x ATR)</small>"
                         f"</div>", unsafe_allow_html=True
                     )
@@ -1051,7 +1065,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"<div style='background:#eab30822;padding:0.8rem;border-radius:10px;"
                         f"border-left:4px solid #eab308;text-align:center'>"
                         f"<small>🎯 KORT (1-3m)</small>"
-                        f"<h4 style='margin:0.3rem 0'>${targets['target_short']:,.2f}</h4>"
+                        f"<h4 style='margin:0.3rem 0'>${targets['target_short']:,.4f}</h4>"
                         f"<small>{short_pct:+.1f}% (BB)</small>"
                         f"</div>", unsafe_allow_html=True
                     )
@@ -1059,7 +1073,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"<div style='background:#22c55e22;padding:0.8rem;border-radius:10px;"
                         f"border-left:4px solid #22c55e;text-align:center'>"
                         f"<small>🚀 LANG (6-12m)</small>"
-                        f"<h4 style='margin:0.3rem 0'>${targets['target_long']:,.2f}</h4>"
+                        f"<h4 style='margin:0.3rem 0'>${targets['target_long']:,.4f}</h4>"
                         f"<small>{long_pct:+.1f}%</small>"
                         f"</div>", unsafe_allow_html=True
                     )
@@ -1067,15 +1081,15 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"<div style='background:#a855f722;padding:0.8rem;border-radius:10px;"
                         f"border-left:4px solid #a855f7;text-align:center'>"
                         f"<small>🌙 MOON (12m+)</small>"
-                        f"<h4 style='margin:0.3rem 0'>${targets['target_moon']:,.2f}</h4>"
+                        f"<h4 style='margin:0.3rem 0'>${targets['target_moon']:,.4f}</h4>"
                         f"<small>{moon_pct:+.1f}%</small>"
                         f"</div>", unsafe_allow_html=True
                     )
 
                     st.caption(
-                        f"📊 90d range: ${targets['low_90d']:.2f} → ${targets['high_90d']:.2f} · "
-                        f"365d: ${targets['low_365d']:.2f} → ${targets['high_365d']:.2f} · "
-                        f"ATR: ${targets['atr']:.2f}"
+                        f"📊 90d range: ${targets['low_90d']:.4f} → ${targets['high_90d']:.4f} · "
+                        f"365d: ${targets['low_365d']:.4f} → ${targets['high_365d']:.4f} · "
+                        f"ATR: ${targets['atr']:.4f}"
                     )
 
                 # BTC Halving (kun BTC)
@@ -1115,24 +1129,26 @@ elif st.session_state.active_view == "🪙 Krypto":
                         x=df_ind.index, open=df_ind["Open"], high=df_ind["High"],
                         low=df_ind["Low"], close=df_ind["Close"], name="Pris"
                     ), 1, 1)
-                    fig.add_trace(go.Scatter(
-                        x=df_ind.index, y=df_ind["SMA50"], name="SMA50",
-                        line=dict(color="orange")
-                    ), 1, 1)
-                    if len(df_ind) >= 200:
+                    if "SMA50" in df_ind.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_ind.index, y=df_ind["SMA50"], name="SMA50",
+                            line=dict(color="orange")
+                        ), 1, 1)
+                    if len(df_ind) >= 200 and "SMA200" in df_ind.columns:
                         fig.add_trace(go.Scatter(
                             x=df_ind.index, y=df_ind["SMA200"], name="SMA200",
                             line=dict(color="purple")
                         ), 1, 1)
-                    fig.add_trace(go.Scatter(
-                        x=df_ind.index, y=df_ind["BB_upper"], name="BB Upper",
-                        line=dict(color="rgba(255,255,255,0.3)", dash="dot")
-                    ), 1, 1)
-                    fig.add_trace(go.Scatter(
-                        x=df_ind.index, y=df_ind["BB_lower"], name="BB Lower",
-                        line=dict(color="rgba(255,255,255,0.3)", dash="dot"),
-                        fill="tonexty", fillcolor="rgba(255,255,255,0.05)"
-                    ), 1, 1)
+                    if "BB_upper" in df_ind.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_ind.index, y=df_ind["BB_upper"], name="BB Upper",
+                            line=dict(color="rgba(255,255,255,0.3)", dash="dot")
+                        ), 1, 1)
+                        fig.add_trace(go.Scatter(
+                            x=df_ind.index, y=df_ind["BB_lower"], name="BB Lower",
+                            line=dict(color="rgba(255,255,255,0.3)", dash="dot"),
+                            fill="tonexty", fillcolor="rgba(255,255,255,0.05)"
+                        ), 1, 1)
 
                     if targets:
                         fig.add_hline(y=targets["buy_high"], line_dash="dot",
@@ -1145,21 +1161,23 @@ elif st.session_state.active_view == "🪙 Krypto":
                                       line_color="#22c55e",
                                       annotation_text="Mål", row=1, col=1)
 
-                    fig.add_trace(go.Scatter(
-                        x=df_ind.index, y=df_ind["RSI"], name="RSI",
-                        line=dict(color="#00d4aa")
-                    ), 2, 1)
-                    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-                    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+                    if "RSI" in df_ind.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_ind.index, y=df_ind["RSI"], name="RSI",
+                            line=dict(color="#00d4aa")
+                        ), 2, 1)
+                        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+                        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
 
-                    fig.add_trace(go.Scatter(
-                        x=df_ind.index, y=df_ind["MACD"], name="MACD",
-                        line=dict(color="#0099ff")
-                    ), 3, 1)
-                    fig.add_trace(go.Scatter(
-                        x=df_ind.index, y=df_ind["MACD_signal"], name="Signal",
-                        line=dict(color="orange")
-                    ), 3, 1)
+                    if "MACD" in df_ind.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_ind.index, y=df_ind["MACD"], name="MACD",
+                            line=dict(color="#0099ff")
+                        ), 3, 1)
+                        fig.add_trace(go.Scatter(
+                            x=df_ind.index, y=df_ind["MACD_signal"], name="Signal",
+                            line=dict(color="orange")
+                        ), 3, 1)
 
                     fig.update_layout(
                         height=800, xaxis_rangeslider_visible=False,
@@ -1174,12 +1192,12 @@ elif st.session_state.active_view == "🪙 Krypto":
                     last = df_ind.iloc[-1]
                     cc = st.columns(4)
                     cc[0].metric("RSI",
-                                 f"{last['RSI']:.1f}" if not pd.isna(last["RSI"]) else "-")
+                                 f"{last['RSI']:.1f}" if not pd.isna(last.get("RSI")) else "-")
                     cc[1].metric("MACD",
-                                 f"{last['MACD']:.4f}" if not pd.isna(last["MACD"]) else "-")
+                                 f"{last['MACD']:.4f}" if not pd.isna(last.get("MACD")) else "-")
                     cc[2].metric("ATR",
-                                 f"${last['ATR']:.2f}" if not pd.isna(last["ATR"]) else "-")
-                    if not pd.isna(last["BB_upper"]):
+                                 f"${last['ATR']:.4f}" if not pd.isna(last.get("ATR")) else "-")
+                    if not pd.isna(last.get("BB_upper")):
                         cc[3].metric(
                             "BB Width",
                             f"{((last['BB_upper']-last['BB_lower'])/last['Close']*100):.1f}%"
@@ -1187,11 +1205,11 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                     cc2 = st.columns(3)
                     cc2[0].metric("SMA20",
-                                  f"${last['SMA20']:.2f}" if not pd.isna(last["SMA20"]) else "-")
+                                  f"${last['SMA20']:.4f}" if not pd.isna(last.get("SMA20")) else "-")
                     cc2[1].metric("SMA50",
-                                  f"${last['SMA50']:.2f}" if not pd.isna(last["SMA50"]) else "-")
+                                  f"${last['SMA50']:.4f}" if not pd.isna(last.get("SMA50")) else "-")
                     cc2[2].metric("SMA200",
-                                  f"${last['SMA200']:.2f}" if not pd.isna(last["SMA200"]) else "-")
+                                  f"${last['SMA200']:.4f}" if not pd.isna(last.get("SMA200")) else "-")
 
                 # Risiko
                 with pro_tabs[2]:
@@ -1219,6 +1237,8 @@ elif st.session_state.active_view == "🪙 Krypto":
                             title="Drawdown %"
                         )
                         st.plotly_chart(fig_dd, use_container_width=True)
+                    else:
+                        st.warning("Ikke nok data til risk metrics")
 
                 # Monte Carlo
                 with pro_tabs[3]:
@@ -1232,15 +1252,15 @@ elif st.session_state.active_view == "🪙 Krypto":
                         p5, p25, p50, p75, p95 = np.percentile(final, [5, 25, 50, 75, 95])
 
                         mc_cols = st.columns(5)
-                        mc_cols[0].metric("5% (worst)", f"${p5:,.2f}",
+                        mc_cols[0].metric("5% (worst)", f"${p5:,.4f}",
                                            f"{(p5/lp-1)*100:+.0f}%")
-                        mc_cols[1].metric("25%", f"${p25:,.2f}",
+                        mc_cols[1].metric("25%", f"${p25:,.4f}",
                                            f"{(p25/lp-1)*100:+.0f}%")
-                        mc_cols[2].metric(f"Median ({mc_days}d)", f"${p50:,.2f}",
+                        mc_cols[2].metric(f"Median ({mc_days}d)", f"${p50:,.4f}",
                                            f"{(p50/lp-1)*100:+.0f}%")
-                        mc_cols[3].metric("75%", f"${p75:,.2f}",
+                        mc_cols[3].metric("75%", f"${p75:,.4f}",
                                            f"{(p75/lp-1)*100:+.0f}%")
-                        mc_cols[4].metric("95% (best)", f"${p95:,.2f}",
+                        mc_cols[4].metric("95% (best)", f"${p95:,.4f}",
                                            f"{(p95/lp-1)*100:+.0f}%")
 
                         fig_m = go.Figure()
@@ -1270,6 +1290,8 @@ elif st.session_state.active_view == "🪙 Krypto":
                             title=f"Monte Carlo - {mc_days} dage frem"
                         )
                         st.plotly_chart(fig_m, use_container_width=True)
+                    else:
+                        st.warning("Ikke nok data til Monte Carlo")
 
                 # Backtest
                 with pro_tabs[4]:
@@ -1284,7 +1306,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         "Sample frekvens", [3, 7, 14], index=1, key="ct_freq"
                     )
 
-                    if st.button("🚀 Kør krypto-backtest", type="primary"):
+                    if st.button("🚀 Kør krypto-backtest", type="primary", key="btn_crypto_bt"):
                         with st.spinner("Kører walk-forward..."):
                             bt = crypto_backtest(hist, holding_days=holding,
                                                   sample_freq=freq)
@@ -1298,11 +1320,11 @@ elif st.session_state.active_view == "🪙 Krypto":
                             )
 
                             rows = []
-                            for rec in ["KØB", "HOLD", "SÆLG"]:
-                                s = bt["stats"].get(rec)
+                            for rec_lbl in ["KØB", "HOLD", "SÆLG"]:
+                                s = bt["stats"].get(rec_lbl)
                                 if s:
                                     rows.append({
-                                        "Anbefaling": rec, "Antal": s["count"],
+                                        "Anbefaling": rec_lbl, "Antal": s["count"],
                                         "Hit rate": f"{s['win_rate']:.1f}%",
                                         "Gns. afkast": f"{s['avg_return']:+.2f}%",
                                         "Median": f"{s['median_return']:+.2f}%",
@@ -1377,6 +1399,10 @@ elif st.session_state.active_view == "🪙 Krypto":
                                     yaxis_range=[-1, 1]
                                 )
                                 st.plotly_chart(fig_corr, use_container_width=True)
+                            else:
+                                st.warning("Ikke nok data til korrelations-analyse")
+                        else:
+                            st.error("Kunne ikke hente BTC-data")
 
                 # Score breakdown
                 with pro_tabs[6]:
@@ -1399,6 +1425,8 @@ elif st.session_state.active_view == "🪙 Krypto":
                                 st.plotly_chart(fig_d, use_container_width=True)
                                 st.dataframe(df_d, use_container_width=True,
                                              hide_index=True)
+                            else:
+                                st.info(f"Ingen {key}-data tilgængelig")
 
                 if info.get("description"):
                     with st.expander("ℹ️ Om denne krypto"):
