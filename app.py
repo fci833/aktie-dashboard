@@ -850,13 +850,22 @@ elif st.session_state.active_view == "🔎 Screener":
                 time.sleep(1)
                 st.rerun()
 
-# ============ KRYPTO-VIEW ============
+# ============ KRYPTO-VIEW (ULTIMATIV) ============
 
 elif st.session_state.active_view == "🪙 Krypto":
-    st.subheader("🪙 Krypto Dashboard")
-    st.caption("Real-time crypto analyse · Multi-faktor scoring · Sentiment tracking")
+    from crypto_data import (
+        fetch_btc_onchain, fetch_trending_coins, fetch_top_movers
+    )
+    from crypto_analysis import (
+        crypto_indicators, crypto_price_targets, crypto_risk_metrics,
+        crypto_monte_carlo, btc_halving_analysis, calculate_btc_correlation,
+        crypto_backtest
+    )
 
-    # ===== GLOBAL MARKET OVERVIEW =====
+    st.subheader("🪙 Krypto Dashboard - Pro Edition")
+    st.caption("Real-time data · Multi-faktor scoring · Risk management · Backtest")
+
+    # ===== GLOBAL OVERVIEW =====
     global_data = fetch_global_crypto_market()
     fg_df = fetch_fear_greed()
 
@@ -880,59 +889,74 @@ elif st.session_state.active_view == "🪙 Krypto":
     st.markdown("---")
 
     crypto_tabs = st.tabs([
-        "📊 Analyse", "🔎 Screener", "📈 Sammenligning", "📉 Fear & Greed"
+        "🎯 Pro Analyse",
+        "🔎 Screener",
+        "🔥 Trending",
+        "📈 Sammenlign",
+        "😱 Sentiment",
+        "⛓️ On-Chain (BTC)",
     ])
 
-    # ===== KRYPTO-ANALYSE =====
+    # ===== TAB 1: PRO ANALYSE (ULTIMATIV) =====
     with crypto_tabs[0]:
-        col1, col2 = st.columns([3, 1])
-        crypto_choice = col1.selectbox(
+        ac1, ac2 = st.columns([3, 1])
+        crypto_choice = ac1.selectbox(
             "Vælg krypto",
             options=list(CRYPTO_UNIVERSE.keys()),
             format_func=lambda x: f"{x} - {CRYPTO_UNIVERSE[x]['category']}",
-            key="crypto_select",
+            key="crypto_pro_select",
         )
-        analyze_btn = col2.button("🔍 Analysér", type="primary", use_container_width=True)
 
-        if analyze_btn or crypto_choice:
-            with st.spinner(f"Henter data for {crypto_choice}..."):
-                cdata = fetch_crypto_data(crypto_choice)
+        if ac2.button("🔍 Fuld Analyse", type="primary", use_container_width=True):
+            st.session_state["crypto_analyzed"] = crypto_choice
+
+        if st.session_state.get("crypto_analyzed"):
+            symbol = st.session_state["crypto_analyzed"]
+
+            with st.spinner(f"Henter komplet data for {symbol}..."):
+                cdata = fetch_crypto_data(symbol)
 
             if cdata is None:
-                st.error(f"❌ Kunne ikke hente data for {crypto_choice}")
+                st.error(f"❌ Kunne ikke hente data for {symbol}")
             else:
                 info = cdata["info"]
                 hist = cdata["hist"]
-                st.success(f"✅ Data fra: **{cdata['source']}**")
-
-                # Header
-                st.markdown(f"## {info['longName']} ({info['symbol']})")
-                st.caption(f"🏢 {CRYPTO_UNIVERSE[crypto_choice]['category']} · "
-                           f"📅 {hist.index[0].date()} → {hist.index[-1].date()} · "
-                           f"💱 USD")
-
-                # Key metrics
                 price = info["currentPrice"]
-                prev = info.get("previousClose", price)
-                change_24h = info.get("change_24h", 0) or 0
 
-                k = st.columns(6)
-                k[0].metric("Pris", f"${price:,.4f}" if price < 1 else f"${price:,.2f}",
-                            f"{change_24h:+.2f}%")
+                st.success(f"✅ Data fra: **{cdata['source']}** · {len(hist)} dage")
+
+                # ===== HEADER =====
+                st.markdown(f"## {info['longName']} ({info['symbol']})")
+                st.caption(
+                    f"🏢 {CRYPTO_UNIVERSE[symbol]['category']} · "
+                    f"📅 {hist.index[0].date()} → {hist.index[-1].date()} · "
+                    f"💱 USD"
+                )
+
+                # ===== KEY METRICS =====
+                change_24h = info.get("change_24h", 0) or 0
+                k = st.columns(7)
+                k[0].metric(
+                    "Pris",
+                    f"${price:,.4f}" if price < 1 else f"${price:,.2f}",
+                    f"{change_24h:+.2f}%"
+                )
                 if info.get("marketCap"):
                     k[1].metric("Market Cap", f"${info['marketCap']/1e9:.2f}B")
                 if info.get("marketCapRank"):
                     k[2].metric("Rank", f"#{info['marketCapRank']}")
                 if info.get("ath"):
-                    ath_pct = info.get("ath_change_%", 0)
-                    k[3].metric("ATH", f"${info['ath']:,.2f}", f"{ath_pct:.1f}%")
-                if info.get("circulating_supply"):
-                    k[4].metric("Circulating", f"{info['circulating_supply']/1e6:.1f}M")
-                if info.get("change_7d"):
-                    k[5].metric("7d", f"{info['change_7d']:+.2f}%")
+                    k[3].metric("ATH", f"${info['ath']:,.2f}",
+                                f"{info.get('ath_change_%', 0):.0f}%")
+                if info.get("change_7d") is not None:
+                    k[4].metric("7d", f"{info['change_7d']:+.1f}%")
+                if info.get("change_30d") is not None:
+                    k[5].metric("30d", f"{info['change_30d']:+.1f}%")
+                if info.get("change_1y") is not None:
+                    k[6].metric("1y", f"{info['change_1y']:+.1f}%")
 
-                # Score
-                with st.spinner("Beregner scores..."):
+                # ===== SCORES =====
+                with st.spinner("Beregner multi-faktor scores..."):
                     scores = crypto_overall_score(info, hist)
 
                 rec, color = crypto_recommendation(scores["overall"])
@@ -945,7 +969,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     f"<div style='background:{color}22;padding:1rem;border-radius:10px;"
                     f"border-left:4px solid {color};text-align:center'>"
                     f"<h3 style='color:{color};margin:0'>{rec}</h3>"
-                    f"<h1 style='margin:0.5rem 0'>{scores['overall']:.0f}/100</h1>"
+                    f"<h1 style='margin:0.3rem 0'>{scores['overall']:.0f}/100</h1>"
                     f"<small>Samlet score</small></div>",
                     unsafe_allow_html=True,
                 )
@@ -954,70 +978,411 @@ elif st.session_state.active_view == "🪙 Krypto":
                 sc[3].metric("💬 Sentiment", f"{scores['sentiment']:.0f}/100", "20% vægt")
                 sc[4].metric("👨‍💻 Developer", f"{scores['developer']:.0f}/100", "15% vægt")
 
-                # Performance tabel
-                if any(info.get(k) is not None for k in ["change_1h", "change_24h", "change_7d", "change_30d", "change_1y"]):
-                    st.markdown("### 📈 Performance")
-                    perf_cols = st.columns(5)
-                    for i, (label, key) in enumerate([
-                        ("1t", "change_1h"), ("24t", "change_24h"),
-                        ("7d", "change_7d"), ("30d", "change_30d"),
-                        ("1å", "change_1y")
-                    ]):
-                        v = info.get(key)
-                        if v is not None:
-                            perf_cols[i].metric(label, f"{v:+.2f}%")
+                # ===== KURSMÅL & STOP LOSS =====
+                st.markdown("---")
+                st.markdown("### 💰 Kursniveauer & Risk Management")
+                st.caption("Baseret på ATR, Bollinger Bands og 90/365 dages high/low")
 
-                # Pris-chart
-                st.markdown("### 📉 Prisudvikling")
-                fig = go.Figure()
-                fig.add_trace(go.Candlestick(
-                    x=hist.index, open=hist["Open"], high=hist["High"],
-                    low=hist["Low"], close=hist["Close"], name="Pris"
-                ))
-                if len(hist) >= 50:
-                    fig.add_trace(go.Scatter(
-                        x=hist.index, y=hist["Close"].rolling(50).mean(),
-                        name="SMA50", line=dict(color="orange")
-                    ))
-                if len(hist) >= 200:
-                    fig.add_trace(go.Scatter(
-                        x=hist.index, y=hist["Close"].rolling(200).mean(),
-                        name="SMA200", line=dict(color="purple")
-                    ))
-                fig.update_layout(template="plotly_dark", height=500,
-                                  xaxis_rangeslider_visible=False,
-                                  title=f"{info['symbol']}/USD - 1 år")
-                st.plotly_chart(fig, use_container_width=True)
+                targets = crypto_price_targets(hist, price, scores)
+                if targets:
+                    buy_low_pct = (targets["buy_low"] / price - 1) * 100
+                    buy_high_pct = (targets["buy_high"] / price - 1) * 100
+                    stop_pct = (targets["stop_loss"] / price - 1) * 100
+                    short_pct = (targets["target_short"] / price - 1) * 100
+                    long_pct = (targets["target_long"] / price - 1) * 100
+                    moon_pct = (targets["target_moon"] / price - 1) * 100
 
-                # Detaljerede scores
-                with st.expander("🔍 Score-detaljer"):
-                    detail_tabs = st.tabs(["📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"])
-                    for tab, key in zip(detail_tabs,
+                    pt = st.columns(6)
+
+                    pt[0].markdown(
+                        f"<div style='background:#16a34a22;padding:0.8rem;border-radius:10px;"
+                        f"border-left:4px solid #16a34a;text-align:center'>"
+                        f"<small>🟢 KØB ZONE</small>"
+                        f"<h4 style='margin:0.3rem 0'>"
+                        f"${targets['buy_low']:,.2f}<br>${targets['buy_high']:,.2f}</h4>"
+                        f"<small>{buy_low_pct:+.1f}% til {buy_high_pct:+.1f}%</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    pt[1].markdown(
+                        f"<div style='background:#0099ff22;padding:0.8rem;border-radius:10px;"
+                        f"border-left:4px solid #0099ff;text-align:center'>"
+                        f"<small>📍 NUVÆRENDE</small>"
+                        f"<h4 style='margin:0.3rem 0'>${price:,.2f}</h4>"
+                        f"<small>{change_24h:+.2f}% (24h)</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    pt[2].markdown(
+                        f"<div style='background:#ef444422;padding:0.8rem;border-radius:10px;"
+                        f"border-left:4px solid #ef4444;text-align:center'>"
+                        f"<small>🛑 STOP LOSS</small>"
+                        f"<h4 style='margin:0.3rem 0'>${targets['stop_loss']:,.2f}</h4>"
+                        f"<small>{stop_pct:+.1f}% (3x ATR)</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    pt[3].markdown(
+                        f"<div style='background:#eab30822;padding:0.8rem;border-radius:10px;"
+                        f"border-left:4px solid #eab308;text-align:center'>"
+                        f"<small>🎯 KORT (1-3m)</small>"
+                        f"<h4 style='margin:0.3rem 0'>${targets['target_short']:,.2f}</h4>"
+                        f"<small>{short_pct:+.1f}% (BB)</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    pt[4].markdown(
+                        f"<div style='background:#22c55e22;padding:0.8rem;border-radius:10px;"
+                        f"border-left:4px solid #22c55e;text-align:center'>"
+                        f"<small>🚀 LANG (6-12m)</small>"
+                        f"<h4 style='margin:0.3rem 0'>${targets['target_long']:,.2f}</h4>"
+                        f"<small>{long_pct:+.1f}%</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    pt[5].markdown(
+                        f"<div style='background:#a855f722;padding:0.8rem;border-radius:10px;"
+                        f"border-left:4px solid #a855f7;text-align:center'>"
+                        f"<small>🌙 MOON (12m+)</small>"
+                        f"<h4 style='margin:0.3rem 0'>${targets['target_moon']:,.2f}</h4>"
+                        f"<small>{moon_pct:+.1f}%</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+
+                    st.caption(
+                        f"📊 90d range: ${targets['low_90d']:.2f} → ${targets['high_90d']:.2f} · "
+                        f"365d: ${targets['low_365d']:.2f} → ${targets['high_365d']:.2f} · "
+                        f"ATR: ${targets['atr']:.2f}"
+                    )
+
+                # ===== BTC HALVING (kun BTC) =====
+                if symbol == "BTC":
+                    halv = btc_halving_analysis(symbol)
+                    if halv:
+                        st.markdown("---")
+                        st.markdown("### ⛏️ BTC Halving Cycle")
+                        hc = st.columns(4)
+                        hc[0].metric("📅 Sidste halving", halv["last_halving"])
+                        hc[1].metric("📆 Dage siden", f"{halv['days_since_halving']}")
+                        hc[2].metric("🎯 Næste halving", halv["next_halving"],
+                                     f"om {halv['days_until_halving']} dage")
+                        hc[3].metric("📊 Cycle progress", f"{halv['cycle_progress']:.0f}%")
+                        st.info(f"**{halv['phase']}** — {halv['outlook']}")
+
+                # ===== AVANCERET TABS =====
+                st.markdown("---")
+                pro_tabs = st.tabs([
+                    "📊 Charts",
+                    "🔧 Tekniske detaljer",
+                    "📉 Risiko",
+                    "🎲 Monte Carlo",
+                    "🎯 Backtest",
+                    "🔗 BTC Korrelation",
+                    "🔍 Score breakdown"
+                ])
+
+                # === Charts ===
+                with pro_tabs[0]:
+                    df_ind = crypto_indicators(hist)
+                    fig = make_subplots(
+                        rows=3, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.05
+                    )
+                    fig.add_trace(go.Candlestick(
+                        x=df_ind.index, open=df_ind["Open"], high=df_ind["High"],
+                        low=df_ind["Low"], close=df_ind["Close"], name="Pris"
+                    ), 1, 1)
+                    fig.add_trace(go.Scatter(
+                        x=df_ind.index, y=df_ind["SMA50"], name="SMA50",
+                        line=dict(color="orange")
+                    ), 1, 1)
+                    if len(df_ind) >= 200:
+                        fig.add_trace(go.Scatter(
+                            x=df_ind.index, y=df_ind["SMA200"], name="SMA200",
+                            line=dict(color="purple")
+                        ), 1, 1)
+                    fig.add_trace(go.Scatter(
+                        x=df_ind.index, y=df_ind["BB_upper"], name="BB Upper",
+                        line=dict(color="rgba(255,255,255,0.3)", dash="dot")
+                    ), 1, 1)
+                    fig.add_trace(go.Scatter(
+                        x=df_ind.index, y=df_ind["BB_lower"], name="BB Lower",
+                        line=dict(color="rgba(255,255,255,0.3)", dash="dot"),
+                        fill="tonexty", fillcolor="rgba(255,255,255,0.05)"
+                    ), 1, 1)
+
+                    if targets:
+                        fig.add_hline(y=targets["buy_high"], line_dash="dot",
+                                      line_color="#16a34a",
+                                      annotation_text="Køb", row=1, col=1)
+                        fig.add_hline(y=targets["stop_loss"], line_dash="dot",
+                                      line_color="#ef4444",
+                                      annotation_text="Stop", row=1, col=1)
+                        fig.add_hline(y=targets["target_long"], line_dash="dot",
+                                      line_color="#22c55e",
+                                      annotation_text="Mål", row=1, col=1)
+
+                    fig.add_trace(go.Scatter(
+                        x=df_ind.index, y=df_ind["RSI"], name="RSI",
+                        line=dict(color="#00d4aa")
+                    ), 2, 1)
+                    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+                    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+
+                    fig.add_trace(go.Scatter(
+                        x=df_ind.index, y=df_ind["MACD"], name="MACD",
+                        line=dict(color="#0099ff")
+                    ), 3, 1)
+                    fig.add_trace(go.Scatter(
+                        x=df_ind.index, y=df_ind["MACD_signal"], name="Signal",
+                        line=dict(color="orange")
+                    ), 3, 1)
+
+                    fig.update_layout(
+                        height=800, xaxis_rangeslider_visible=False,
+                        template="plotly_dark",
+                        title=f"{info['symbol']}/USD - Komplet teknisk analyse"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                # === Tekniske detaljer ===
+                with pro_tabs[1]:
+                    df_ind = crypto_indicators(hist)
+                    last = df_ind.iloc[-1]
+                    cc = st.columns(4)
+                    cc[0].metric("RSI",
+                                 f"{last['RSI']:.1f}" if not pd.isna(last["RSI"]) else "-")
+                    cc[1].metric("MACD",
+                                 f"{last['MACD']:.4f}" if not pd.isna(last["MACD"]) else "-")
+                    cc[2].metric("ATR",
+                                 f"${last['ATR']:.2f}" if not pd.isna(last["ATR"]) else "-")
+                    cc[3].metric("BB Width",
+                                 f"{((last['BB_upper']-last['BB_lower'])/last['Close']*100):.1f}%"
+                                 if not pd.isna(last["BB_upper"]) else "-")
+
+                    cc2 = st.columns(3)
+                    cc2[0].metric("SMA20",
+                                  f"${last['SMA20']:.2f}" if not pd.isna(last["SMA20"]) else "-")
+                    cc2[1].metric("SMA50",
+                                  f"${last['SMA50']:.2f}" if not pd.isna(last["SMA50"]) else "-")
+                    cc2[2].metric("SMA200",
+                                  f"${last['SMA200']:.2f}" if not pd.isna(last["SMA200"]) else "-")
+
+                # === Risiko ===
+                with pro_tabs[2]:
+                    risk = crypto_risk_metrics(hist)
+                    if risk:
+                        st.caption("📉 Risk metrics (annualiseret med 365 dage)")
+                        rc = st.columns(4)
+                        rc[0].metric("Ann. afkast", f"{risk['ann_r']*100:.1f}%")
+                        rc[1].metric("Ann. volatilitet", f"{risk['ann_v']*100:.1f}%")
+                        rc[2].metric("Sharpe", f"{risk['sharpe']:.2f}")
+                        rc[3].metric("Sortino", f"{risk['sortino']:.2f}")
+
+                        rc2 = st.columns(3)
+                        rc2[0].metric("Calmar", f"{risk['calmar']:.2f}")
+                        rc2[1].metric("Max Drawdown", f"{risk['max_dd']*100:.1f}%")
+                        rc2[2].metric("VaR 95% (1d)", f"{risk['var95']*100:.2f}%")
+
+                        fig_dd = go.Figure(go.Scatter(
+                            x=risk["dd_series"].index,
+                            y=risk["dd_series"] * 100,
+                            fill="tozeroy", line=dict(color="#ef4444")
+                        ))
+                        fig_dd.update_layout(
+                            template="plotly_dark", height=350,
+                            title="Drawdown %"
+                        )
+                        st.plotly_chart(fig_dd, use_container_width=True)
+
+                # === Monte Carlo ===
+                with pro_tabs[3]:
+                    st.caption("🎲 500 simulationer · 180 dage · Student-t (fat tails)")
+
+                    mc_days = st.slider("Dage frem", 30, 365, 180, key="mc_days")
+                    sims, lp = crypto_monte_carlo(hist, n_sims=500, days=mc_days)
+
+                    if sims is not None:
+                        final = sims[:, -1]
+                        p5, p25, p50, p75, p95 = np.percentile(final, [5, 25, 50, 75, 95])
+
+                        mc_cols = st.columns(5)
+                        mc_cols[0].metric("5% (worst)", f"${p5:,.2f}",
+                                           f"{(p5/lp-1)*100:+.0f}%")
+                        mc_cols[1].metric("25%", f"${p25:,.2f}",
+                                           f"{(p25/lp-1)*100:+.0f}%")
+                        mc_cols[2].metric(f"Median ({mc_days}d)", f"${p50:,.2f}",
+                                           f"{(p50/lp-1)*100:+.0f}%")
+                        mc_cols[3].metric("75%", f"${p75:,.2f}",
+                                           f"{(p75/lp-1)*100:+.0f}%")
+                        mc_cols[4].metric("95% (best)", f"${p95:,.2f}",
+                                           f"{(p95/lp-1)*100:+.0f}%")
+
+                        fig_m = go.Figure()
+                        for i in range(min(150, len(sims))):
+                            fig_m.add_trace(go.Scatter(
+                                y=sims[i],
+                                line=dict(width=0.5, color="rgba(0,212,170,0.1)"),
+                                showlegend=False
+                            ))
+                        fig_m.add_trace(go.Scatter(
+                            y=np.percentile(sims, 50, axis=0),
+                            name="Median",
+                            line=dict(color="#00d4aa", width=3)
+                        ))
+                        fig_m.add_trace(go.Scatter(
+                            y=np.percentile(sims, 5, axis=0),
+                            name="5% (worst)",
+                            line=dict(color="#ef4444", width=2, dash="dash")
+                        ))
+                        fig_m.add_trace(go.Scatter(
+                            y=np.percentile(sims, 95, axis=0),
+                            name="95% (best)",
+                            line=dict(color="#22c55e", width=2, dash="dash")
+                        ))
+                        fig_m.update_layout(
+                            template="plotly_dark", height=500,
+                            title=f"Monte Carlo - {mc_days} dage frem"
+                        )
+                        st.plotly_chart(fig_m, use_container_width=True)
+
+                # === Backtest ===
+                with pro_tabs[4]:
+                    st.caption("🎯 Walk-forward backtest af model-anbefalinger")
+
+                    bc1, bc2 = st.columns(2)
+                    holding = bc1.selectbox(
+                        "Holding periode (dage)",
+                        [14, 30, 60, 90, 180], index=1, key="ct_hold"
+                    )
+                    freq = bc2.selectbox(
+                        "Sample frekvens", [3, 7, 14], index=1, key="ct_freq"
+                    )
+
+                    if st.button("🚀 Kør krypto-backtest", type="primary"):
+                        with st.spinner("Kører walk-forward..."):
+                            bt = crypto_backtest(hist, holding_days=holding, sample_freq=freq)
+
+                        if bt is None:
+                            st.error(f"Ikke nok data ({len(hist)} dage)")
+                        else:
+                            st.markdown(
+                                f"📊 **{bt['n_trades']} samples** · "
+                                f"{bt['start_date'].date()} → {bt['end_date'].date()}"
+                            )
+
+                            rows = []
+                            for rec in ["KØB", "HOLD", "SÆLG"]:
+                                s = bt["stats"].get(rec)
+                                if s:
+                                    rows.append({
+                                        "Anbefaling": rec, "Antal": s["count"],
+                                        "Hit rate": f"{s['win_rate']:.1f}%",
+                                        "Gns. afkast": f"{s['avg_return']:+.2f}%",
+                                        "Median": f"{s['median_return']:+.2f}%",
+                                        "Bedst": f"{s['best']:+.1f}%",
+                                        "Værst": f"{s['worst']:+.1f}%",
+                                    })
+                            st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                                         hide_index=True)
+                            st.markdown(f"📈 **Buy & Hold:** {bt['buy_hold_return']:+.2f}%")
+
+                            fig_bt = px.scatter(
+                                bt["results"], x="score", y="return_pct",
+                                color="recommendation",
+                                color_discrete_map={
+                                    "KØB": "#22c55e", "HOLD": "#eab308",
+                                    "SÆLG": "#ef4444"
+                                },
+                                title=f"Score vs {holding}-dages afkast",
+                                labels={"score": "Score", "return_pct": "Afkast %"}
+                            )
+                            fig_bt.add_hline(y=0, line_dash="dash",
+                                             line_color="white", opacity=0.3)
+                            fig_bt.update_layout(template="plotly_dark", height=400)
+                            st.plotly_chart(fig_bt, use_container_width=True)
+
+                            corr = bt["results"]["score"].corr(bt["results"]["return_pct"])
+                            if corr > 0.3:
+                                st.success(f"✅ Stærk korrelation: {corr:.3f}")
+                            elif corr > 0.1:
+                                st.info(f"➖ Svag korrelation: {corr:.3f}")
+                            else:
+                                st.warning(f"⚠️ Ingen/negativ korrelation: {corr:.3f}")
+
+                # === BTC Korrelation ===
+                with pro_tabs[5]:
+                    if symbol == "BTC":
+                        st.info("Dette er BTC — sammenligning med sig selv ikke meningsfuld")
+                    else:
+                        with st.spinner("Henter BTC til sammenligning..."):
+                            btc_data = fetch_crypto_data("BTC")
+
+                        if btc_data:
+                            corr_data = calculate_btc_correlation(hist, btc_data["hist"])
+                            if corr_data:
+                                cc = st.columns(2)
+                                cc[0].metric(
+                                    "Korrelation til BTC",
+                                    f"{corr_data['correlation']:.3f}",
+                                    "Høj" if corr_data['correlation'] > 0.7 else
+                                    "Medium" if corr_data['correlation'] > 0.4 else "Lav"
+                                )
+                                cc[1].metric(
+                                    "Beta til BTC",
+                                    f"{corr_data['beta']:.2f}",
+                                    "Mere volatil end BTC" if corr_data['beta'] > 1.2 else
+                                    "Mindre volatil end BTC" if corr_data['beta'] < 0.8 else
+                                    "Ligner BTC"
+                                )
+
+                                fig_corr = go.Figure(go.Scatter(
+                                    x=corr_data["rolling_correlation"].index,
+                                    y=corr_data["rolling_correlation"],
+                                    fill="tozeroy",
+                                    line=dict(color="#00d4aa", width=2),
+                                ))
+                                fig_corr.add_hline(y=0.7, line_dash="dash",
+                                                    line_color="green",
+                                                    annotation_text="Høj korrelation")
+                                fig_corr.update_layout(
+                                    template="plotly_dark", height=400,
+                                    title=f"30-dages rolling korrelation: {symbol} vs BTC",
+                                    yaxis_range=[-1, 1]
+                                )
+                                st.plotly_chart(fig_corr, use_container_width=True)
+
+                # === Score breakdown ===
+                with pro_tabs[6]:
+                    detail_subtabs = st.tabs([
+                        "📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"
+                    ])
+                    for tab, key in zip(detail_subtabs,
                                          ["market", "technical", "sentiment", "developer"]):
                         with tab:
                             details = scores["details"][key]
                             if details:
                                 df_d = pd.DataFrame(details)
-                                fig_d = px.bar(df_d, x="impact", y="label", orientation="h",
-                                                color="impact", color_continuous_scale="RdYlGn")
-                                fig_d.update_layout(template="plotly_dark", height=300,
-                                                     showlegend=False)
+                                fig_d = px.bar(
+                                    df_d, x="impact", y="label", orientation="h",
+                                    color="impact", color_continuous_scale="RdYlGn"
+                                )
+                                fig_d.update_layout(
+                                    template="plotly_dark", height=300, showlegend=False
+                                )
                                 st.plotly_chart(fig_d, use_container_width=True)
+                                st.dataframe(df_d, use_container_width=True,
+                                             hide_index=True)
 
-                # Description
+                # ===== Description =====
                 if info.get("description"):
                     with st.expander("ℹ️ Om denne krypto"):
                         st.write(info["description"])
 
-    # ===== KRYPTO-SCREENER =====
+    # ===== TAB 2: SCREENER =====
     with crypto_tabs[1]:
         st.markdown("### 🔎 Krypto-screener")
 
         sc1, sc2 = st.columns([2, 1])
         sel_universe = sc1.selectbox(
-            "Univers", list(CRYPTO_UNIVERSES.keys()), key="crypto_screener_universe"
+            "Univers", list(CRYPTO_UNIVERSES.keys()), key="cs_universe"
         )
-        min_score = sc2.slider("Min. score", 30, 90, 60, key="crypto_min_score")
+        min_score = sc2.slider("Min. score", 30, 90, 55, key="cs_min")
 
         if st.button("🚀 Kør krypto-screener", type="primary"):
             tickers = CRYPTO_UNIVERSES[sel_universe]
@@ -1035,17 +1400,18 @@ elif st.session_state.active_view == "🪙 Krypto":
                             "Symbol": t,
                             "Navn": cdata["info"]["longName"],
                             "Pris ($)": cdata["info"]["currentPrice"],
-                            "Market Cap ($B)": (cdata["info"].get("marketCap") or 0) / 1e9,
+                            "MC ($B)": (cdata["info"].get("marketCap") or 0) / 1e9,
                             "24h %": cdata["info"].get("change_24h"),
                             "7d %": cdata["info"].get("change_7d"),
+                            "30d %": cdata["info"].get("change_30d"),
                             "Overall": scores["overall"],
                             "Marked": scores["market"],
                             "Teknisk": scores["technical"],
                             "Sentiment": scores["sentiment"],
-                            "Developer": scores["developer"],
+                            "Dev": scores["developer"],
                             "Anbefaling": rec,
                         })
-                    time.sleep(0.5)  # Respektér rate limit
+                    time.sleep(0.5)
                 except Exception as e:
                     print(f"Error {t}: {e}")
 
@@ -1053,15 +1419,18 @@ elif st.session_state.active_view == "🪙 Krypto":
 
             if results:
                 df_r = pd.DataFrame(results)
-                df_filt = df_r[df_r["Overall"] >= min_score].sort_values("Overall", ascending=False)
+                df_filt = df_r[df_r["Overall"] >= min_score].sort_values(
+                    "Overall", ascending=False
+                )
 
                 st.success(f"✅ {len(df_filt)} kryptos opfylder kriterierne")
 
                 if not df_filt.empty:
-                    for col in ["Pris ($)", "Market Cap ($B)", "24h %", "7d %",
-                                "Overall", "Marked", "Teknisk", "Sentiment", "Developer"]:
+                    for col in ["Pris ($)", "MC ($B)", "24h %", "7d %", "30d %",
+                                "Overall", "Marked", "Teknisk", "Sentiment", "Dev"]:
                         if col in df_filt.columns:
-                            df_filt[col] = pd.to_numeric(df_filt[col], errors="coerce").round(2)
+                            df_filt[col] = pd.to_numeric(df_filt[col],
+                                                          errors="coerce").round(2)
 
                     st.dataframe(
                         df_filt, use_container_width=True, hide_index=True,
@@ -1072,45 +1441,107 @@ elif st.session_state.active_view == "🪙 Krypto":
                         }
                     )
 
-    # ===== SAMMENLIGNING =====
+                    csv = df_filt.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "📥 Download CSV", csv,
+                        f"crypto_screener_{datetime.now().strftime('%Y%m%d')}.csv",
+                        "text/csv"
+                    )
+
+    # ===== TAB 3: TRENDING =====
     with crypto_tabs[2]:
+        st.markdown("### 🔥 Trending Coins (CoinGecko)")
+        trending = fetch_trending_coins()
+        if trending:
+            tcols = st.columns(min(7, len(trending)))
+            for i, t in enumerate(trending):
+                with tcols[i]:
+                    st.markdown(f"**{t['symbol']}**")
+                    st.caption(t['name'][:20])
+                    if t.get("rank"):
+                        st.caption(f"#{t['rank']}")
+
+        st.markdown("---")
+        st.markdown("### 📈 Top Gainers / Losers (24h)")
+        gainers, losers = fetch_top_movers()
+        if gainers is not None:
+            gc1, gc2 = st.columns(2)
+            with gc1:
+                st.markdown("#### 🚀 Top 10 Gainers")
+                gainers_d = gainers.copy()
+                gainers_d.columns = ["Sym", "Navn", "Pris", "24h %", "MC"]
+                gainers_d["24h %"] = gainers_d["24h %"].round(2)
+                gainers_d["Pris"] = gainers_d["Pris"].round(4)
+                gainers_d["MC"] = (gainers_d["MC"] / 1e9).round(2)
+                st.dataframe(gainers_d, use_container_width=True, hide_index=True)
+
+            with gc2:
+                st.markdown("#### 📉 Top 10 Losers")
+                losers_d = losers.copy()
+                losers_d.columns = ["Sym", "Navn", "Pris", "24h %", "MC"]
+                losers_d["24h %"] = losers_d["24h %"].round(2)
+                losers_d["Pris"] = losers_d["Pris"].round(4)
+                losers_d["MC"] = (losers_d["MC"] / 1e9).round(2)
+                st.dataframe(losers_d, use_container_width=True, hide_index=True)
+
+    # ===== TAB 4: SAMMENLIGN =====
+    with crypto_tabs[3]:
         st.markdown("### 📈 Sammenlign kryptos")
         selected = st.multiselect(
-            "Vælg kryptos (max 5)",
+            "Vælg kryptos (max 6)",
             list(CRYPTO_UNIVERSE.keys()),
             default=["BTC", "ETH", "SOL"],
-            max_selections=5,
+            max_selections=6,
         )
 
         if selected and st.button("📊 Sammenlign", type="primary"):
-            fig_cmp = go.Figure()
+            cmp_data = {}
             for sym in selected:
                 cdata = fetch_crypto_data(sym)
                 if cdata:
+                    cmp_data[sym] = cdata
+
+            if cmp_data:
+                # Performance chart (normaliseret)
+                fig_cmp = go.Figure()
+                for sym, cdata in cmp_data.items():
                     hist = cdata["hist"]
-                    # Normaliser til 100 ved start
                     norm = hist["Close"] / hist["Close"].iloc[0] * 100
                     fig_cmp.add_trace(go.Scatter(
-                        x=hist.index, y=norm, name=sym,
-                        line=dict(width=2)
+                        x=hist.index, y=norm, name=sym, line=dict(width=2)
                     ))
-            fig_cmp.update_layout(
-                template="plotly_dark", height=500,
-                title="Performance sammenligning (normaliseret til 100)",
-                yaxis_title="Performance (start=100)",
-            )
-            st.plotly_chart(fig_cmp, use_container_width=True)
+                fig_cmp.update_layout(
+                    template="plotly_dark", height=500,
+                    title="Performance (normaliseret til 100)",
+                    yaxis_title="Performance"
+                )
+                st.plotly_chart(fig_cmp, use_container_width=True)
 
-    # ===== FEAR & GREED =====
-    with crypto_tabs[3]:
+                # Score sammenligning
+                cmp_rows = []
+                for sym, cdata in cmp_data.items():
+                    scores = crypto_overall_score(cdata["info"], cdata["hist"])
+                    cmp_rows.append({
+                        "Symbol": sym,
+                        "Pris ($)": round(cdata["info"]["currentPrice"], 2),
+                        "MC ($B)": round((cdata["info"].get("marketCap") or 0) / 1e9, 2),
+                        "Overall": round(scores["overall"], 1),
+                        "Marked": round(scores["market"], 1),
+                        "Teknisk": round(scores["technical"], 1),
+                        "Sentiment": round(scores["sentiment"], 1),
+                        "Dev": round(scores["developer"], 1),
+                    })
+                st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True,
+                             hide_index=True)
+
+    # ===== TAB 5: SENTIMENT =====
+    with crypto_tabs[4]:
         st.markdown("### 😱 Fear & Greed Index")
-        st.caption("Markedssentiment over tid · 0=Extreme Fear, 100=Extreme Greed")
 
         if fg_df is not None and not fg_df.empty:
             current = int(fg_df["value"].iloc[-1])
             label = fg_df["value_classification"].iloc[-1]
 
-            # Gauge chart
             fig_gauge = go.Figure(go.Indicator(
                 mode="gauge+number",
                 value=current,
@@ -1130,22 +1561,63 @@ elif st.session_state.active_view == "🪙 Krypto":
             fig_gauge.update_layout(template="plotly_dark", height=400)
             st.plotly_chart(fig_gauge, use_container_width=True)
 
-            # Historisk
             fig_h = go.Figure()
             fig_h.add_trace(go.Scatter(
                 x=fg_df["timestamp"], y=fg_df["value"],
-                mode="lines+markers", line=dict(color="#00d4aa", width=2),
-                fill="tozeroy", name="F&G Index"
+                mode="lines+markers",
+                line=dict(color="#00d4aa", width=2),
+                fill="tozeroy", name="F&G"
             ))
-            fig_h.add_hline(y=25, line_dash="dash", line_color="red",
-                            annotation_text="Extreme Fear")
-            fig_h.add_hline(y=75, line_dash="dash", line_color="green",
-                            annotation_text="Extreme Greed")
-            fig_h.update_layout(template="plotly_dark", height=400,
-                                title="Fear & Greed sidste 30 dage",
-                                yaxis_range=[0, 100])
+            fig_h.add_hline(y=25, line_dash="dash", line_color="red")
+            fig_h.add_hline(y=75, line_dash="dash", line_color="green")
+            fig_h.update_layout(
+                template="plotly_dark", height=400,
+                title="Fear & Greed - sidste 30 dage",
+                yaxis_range=[0, 100]
+            )
             st.plotly_chart(fig_h, use_container_width=True)
 
+    # ===== TAB 6: ON-CHAIN =====
+    with crypto_tabs[5]:
+        st.markdown("### ⛓️ Bitcoin On-Chain Metrics")
+        st.caption("Network health · Hash rate · Active addresses · Mempool")
+
+        with st.spinner("Henter on-chain data..."):
+            onchain = fetch_btc_onchain()
+
+        if onchain:
+            oc = st.columns(3)
+            if "hash_rate" in onchain:
+                oc[0].metric("⚡ Hash Rate (TH/s)", f"{onchain['hash_rate']/1e6:,.1f}M")
+            if "difficulty" in onchain:
+                oc[1].metric("⚙️ Difficulty", f"{onchain['difficulty']/1e12:,.2f}T")
+            if "active_addresses" in onchain:
+                oc[2].metric("👥 Active Addresses", f"{onchain['active_addresses']:,.0f}")
+
+            oc2 = st.columns(3)
+            if "transactions" in onchain:
+                oc2[0].metric("📊 Daily Transactions", f"{onchain['transactions']:,.0f}")
+            if "mempool_size" in onchain:
+                oc2[1].metric("🔄 Mempool (bytes)", f"{onchain['mempool_size']:,.0f}")
+            if "miners_revenue" in onchain:
+                oc2[2].metric("⛏️ Miner Revenue ($)", f"${onchain['miners_revenue']:,.0f}")
+
+            # Hash rate chart
+            if "hash_rate_history" in onchain:
+                hr_df = pd.DataFrame(onchain["hash_rate_history"])
+                hr_df["x"] = pd.to_datetime(hr_df["x"], unit="s")
+                fig_hr = go.Figure(go.Scatter(
+                    x=hr_df["x"], y=hr_df["y"] / 1e6,
+                    fill="tozeroy", line=dict(color="#f59e0b")
+                ))
+                fig_hr.update_layout(
+                    template="plotly_dark", height=400,
+                    title="BTC Hash Rate (M TH/s) - 30 dage",
+                    yaxis_title="Hash Rate (M TH/s)"
+                )
+                st.plotly_chart(fig_hr, use_container_width=True)
+        else:
+            st.warning("Kunne ikke hente on-chain data")
 
 # ============ HOVED-ANALYSE-VIEW ============
 
