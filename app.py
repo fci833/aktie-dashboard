@@ -666,7 +666,7 @@ elif st.session_state.active_view == "🔎 Screener":
                                 use_container_width=True, hide_index=True,
                             )
 
-    # ===== MODE 4: HOT STOCKS =====
+        # ===== MODE 4: HOT STOCKS =====
     with sc_modes[3]:
         st.markdown("### 🔥 Hot stocks - stigende score over tid")
         st.caption(
@@ -691,7 +691,7 @@ elif st.session_state.active_view == "🔎 Screener":
             min_change = hcol2.slider("📊 Min. score-ændring", 1, 30, 5,
                                       key="hot_min_change")
 
-                      if st.button("🔥 Find hot stocks", type="primary"):
+            if st.button("🔥 Find hot stocks", type="primary"):
                 hot = get_hot_stocks(
                     hot_universe, n_days=n_days, min_change=min_change
                 )
@@ -719,7 +719,6 @@ elif st.session_state.active_view == "🔎 Screener":
                         risers_disp = hot["risers"][[
                             c for c in [
                                 "ticker", "name", "overall_now",
-                                # ... resten af din eksisterende kode fortsætter
                                 "overall_old", "score_change",
                                 "recommendation", "price_change_%"
                             ] if c in hot["risers"].columns
@@ -756,11 +755,11 @@ elif st.session_state.active_view == "🔎 Screener":
                             ):
                                 goto_analysis(row["ticker"])
 
-                    if not hot["fallers"].empty:
+                    if not fallers_empty:
                         with st.expander(
-                            f"📉 Faldende score ({len(hot['fallers'])} aktier)"
+                            f"📉 Faldende score ({len(fallers)} aktier)"
                         ):
-                            fallers_disp = hot["fallers"].copy()
+                            fallers_disp = fallers.copy()
                             for col in ["overall_now", "overall_old",
                                         "score_change", "price_change_%"]:
                                 if col in fallers_disp.columns:
@@ -771,7 +770,7 @@ elif st.session_state.active_view == "🔎 Screener":
                                 fallers_disp, use_container_width=True,
                                 hide_index=True,
                             )
-
+                            
     # ===== MODE 5: HISTORIK =====
     with sc_modes[4]:
         st.markdown("### 📜 Snapshot-historik")
