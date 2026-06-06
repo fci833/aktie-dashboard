@@ -2149,7 +2149,7 @@ elif st.session_state.active_view == "📊 Analyse":
             st.metric("Market Cap", "N/A")
     # Beregn scores
     df_indicators = get_indicators(hist)
-    df_technical = filter_by_days(df_indicators, ANALYSIS_PERIODS["TECHNICAL"])
+    df_technical = filter_by_days(df_indicators, ANALYSIS_PERIODS["technical"])
 
     f_score, f_details = fundamental_score(info)
     t_score, t_details = technical_score(df_technical)
@@ -2183,8 +2183,9 @@ elif st.session_state.active_view == "📊 Analyse":
 
         # Beregn stop-loss baseret på targets eller default
         targets_data = calculate_price_targets(
-            filter_by_days(df_indicators, ANALYSIS_PERIODS["PRICE_TARGETS"]),
+            filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"]),
             price, overall
+        )
         )
         default_stop = targets_data.get("stop_loss", price * 0.92) if targets_data else price * 0.92
 
@@ -2360,7 +2361,7 @@ elif st.session_state.active_view == "📊 Analyse":
 
     # ===== KURSMÅL =====
     with main_tabs[2]:
-        df_targets = filter_by_days(df_indicators, ANALYSIS_PERIODS["PRICE_TARGETS"])
+        df_targets = filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"])
         targets = calculate_price_targets(df_targets, price, overall)
 
         if targets:
@@ -2435,7 +2436,7 @@ elif st.session_state.active_view == "📊 Analyse":
 
     # ===== RISIKO =====
     with main_tabs[3]:
-        df_risk = filter_by_days(df_indicators, ANALYSIS_PERIODS["RISK_METRICS"])
+        df_risk = filter_by_days(df_indicators, ANALYSIS_PERIODS["risk"])
         risk = risk_metrics(df_risk)
 
         if risk:
@@ -2467,7 +2468,7 @@ elif st.session_state.active_view == "📊 Analyse":
 
     # ===== MONTE CARLO =====
     with main_tabs[4]:
-        df_mc = filter_by_days(df_indicators, ANALYSIS_PERIODS["MONTE_CARLO"])
+        df_mc = filter_by_days(df_indicators, ANALYSIS_PERIODS["monte_carlo"])
 
         mc_days = st.slider("Dage frem", 30, 365, 252, key="stock_mc_days")
         sims, lp = monte_carlo(df_mc, n_sims=500, days=mc_days)
