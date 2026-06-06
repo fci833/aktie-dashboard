@@ -922,7 +922,7 @@ elif st.session_state.active_view == "🪙 Krypto":
         "⛓️ On-Chain (BTC)",
     ])
 
-          # ===== TAB 1: PRO ANALYSE =====
+                   # ===== TAB 1: PRO ANALYSE =====
     with crypto_tabs[0]:
         st.markdown("### 🎯 Vælg krypto til analyse")
 
@@ -988,12 +988,79 @@ elif st.session_state.active_view == "🪙 Krypto":
 
             if cdata is None:
                 st.error(f"❌ Kunne ikke hente data for **{symbol}**")
-                st.info(
-                    "💡 **Mulige årsager:**\n"
-                    "- Tickeren findes ikke (tjek stavning)\n"
-                    "- CoinGecko er midlertidigt rate-limited (vent 1-2 min)\n"
-                    "- Coin er for ny / ikke listet på CoinGecko eller Binance"
-                )
+
+                col_info, col_actions = st.columns([2, 1])
+                with col_info:
+                    st.info(
+                        "💡 **Mulige årsager:**\n"
+                        "- Tickeren findes ikke (tjek stavning)\n"
+                        "- CoinGecko er midlertidigt rate-limited (vent 1-2 min)\n"
+                        "- Coin er for ny / ikke listet på CoinGecko eller Binance\n"
+                        "- Binance blokerer Streamlit Cloud's IP (geo-restriktion)"
+                    )
+
+                with col_actions:
+                    if st.button("🔄 Ryd cache & prøv igen", use_container_width=True, key="retry_crypto"):
+                        st.cache_data.clear()
+                        st.rerun()
+                    if st.button("🗑️ Nulstil", use_container_width=True, key="reset_crypto"):
+                        st.session_state.pop("crypto_analyzed", None)
+                        st.rerun()
+
+                # Test direkte API-kald
+                with st.expander("🔧 Test API'er direkte (diagnose)"):
+                    test_cols = st.columns(2)
+                    if test_cols[0].button("🧪 Test Binance", use_container_width=True):
+                        try:
+                            r = plain_requests.get(
+                                "https://api.binance.com/api/v3/ping",
+                                timeout=5
+                            )
+                            if r.status_code == 200:
+                                st.success("✅ Binance API svarer")
+                                # Test også et faktisk kald
+                                r2 = plain_requests.get(
+                                    "https://api.binance.com/api/v3/klines",
+                                    params={"symbol": "BTCUSDT", "interval": "1d", "limit": 5},
+                                    timeout=5
+                                )
+                                if r2.status_code == 200:
+                                    st.success(f"✅ Kan hente BTC data: {len(r2.json())} dage")
+                                else:
+                                    st.error(f"❌ Binance blokerer datakald: {r2.status_code}")
+                                    st.code(r2.text[:500])
+                            else:
+                                st.error(f"❌ Binance returnerer {r.status_code}")
+                                st.code(r.text[:500])
+                        except Exception as e:
+                            st.error(f"❌ Binance fejler: {e}")
+
+                    if test_cols[1].button("🧪 Test CoinGecko", use_container_width=True):
+                        try:
+                            r = plain_requests.get(
+                                "https://api.coingecko.com/api/v3/ping",
+                                timeout=5
+                            )
+                            if r.status_code == 200:
+                                st.success("✅ CoinGecko API svarer")
+                                # Test bitcoin endpoint
+                                r2 = plain_requests.get(
+                                    "https://api.coingecko.com/api/v3/coins/bitcoin",
+                                    timeout=10
+                                )
+                                if r2.status_code == 200:
+                                    st.success("✅ Kan hente Bitcoin data")
+                                elif r2.status_code == 429:
+                                    st.warning("⚠️ CoinGecko er rate-limited")
+                                else:
+                                    st.error(f"❌ Status: {r2.status_code}")
+                            elif r.status_code == 429:
+                                st.warning("⚠️ CoinGecko er rate-limited - vent 1-2 minutter")
+                            else:
+                                st.error(f"❌ CoinGecko returnerer {r.status_code}")
+                        except Exception as e:
+                            st.error(f"❌ CoinGecko fejler: {e}")
+
             else:
                 info = cdata["info"]
                 hist = cdata["hist"]
@@ -1469,7 +1536,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                 if info.get("description"):
                     with st.expander("ℹ️ Om denne krypto"):
                         st.write(info["description"])
-
     # ===== TAB 2: SCREENER =====
     with crypto_tabs[1]:
         st.markdown("### 🔎 Krypto-screener")
