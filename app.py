@@ -2133,48 +2133,41 @@ elif st.session_state.active_view == "📊 Analyse":
                                 debug_info[k] = str(v)[:100]
                         st.json(debug_info)
 
-                    # Robust key-håndtering
-                    strategy_final = (
-                        sim.get("strategy_final")
-                        or sim.get("final_value")
-                        or sim.get("portfolio_final")
-                        or sim.get("strategy_end_value")
-                        or sim.get("final")
+                                       # Helper: prøv flere keys, returnér første der ikke er None
+                    def first_not_none(d, *keys):
+                        for k in keys:
+                            v = d.get(k)
+                            if v is not None:
+                                return v
+                        return None
+
+                    # Robust key-håndtering (sikker mod pandas Series)
+                    strategy_final = first_not_none(
+                        sim,
+                        "strategy_final", "final_value", "portfolio_final",
+                        "strategy_end_value", "final"
                     )
-                    strategy_return = (
-                        sim.get("strategy_return")
-                        or sim.get("total_return")
-                        or sim.get("return_pct")
-                        or sim.get("strategy_pct")
+                    strategy_return = first_not_none(
+                        sim,
+                        "strategy_return", "total_return", "return_pct", "strategy_pct"
                     )
-                    bh_final = (
-                        sim.get("bh_final")
-                        or sim.get("buyhold_final")
-                        or sim.get("benchmark_final")
-                        or sim.get("buy_hold_final")
-                        or sim.get("bh_end_value")
+                    bh_final = first_not_none(
+                        sim,
+                        "bh_final", "buyhold_final", "benchmark_final",
+                        "buy_hold_final", "bh_end_value"
                     )
-                    bh_return = (
-                        sim.get("bh_return")
-                        or sim.get("buyhold_return")
-                        or sim.get("benchmark_return")
-                        or sim.get("buy_hold_return")
-                        or sim.get("bh_pct")
+                    bh_return = first_not_none(
+                        sim,
+                        "bh_return", "buyhold_return", "benchmark_return",
+                        "buy_hold_return", "bh_pct"
                     )
 
                     # Outperformance KUN hvis vi har begge tal
-                    outperf = None
-                    if sim.get("outperformance") is not None:
-                        outperf = sim.get("outperformance")
-                    elif strategy_return is not None and bh_return is not None:
+                    outperf = sim.get("outperformance")
+                    if outperf is None and strategy_return is not None and bh_return is not None:
                         outperf = strategy_return - bh_return
 
-                    n_trades = (
-                        sim.get("n_trades")
-                        or sim.get("num_trades")
-                        or sim.get("trades")
-                        or 0
-                    )
+                    n_trades = first_not_none(sim, "n_trades", "num_trades", "trades") or 0
 
                     if strategy_final is not None:
                         sm = st.columns(4)
@@ -2192,7 +2185,6 @@ elif st.session_state.active_view == "📊 Analyse":
                         else:
                             sm[1].metric("📈 Buy & Hold", "N/A")
 
-                        # Vis KUN outperformance hvis vi har gyldigt sammenligningsgrundlag
                         if outperf is not None and bh_final is not None:
                             sm[2].metric(
                                 "🎯 Outperformance",
@@ -2204,20 +2196,17 @@ elif st.session_state.active_view == "📊 Analyse":
 
                         sm[3].metric("📊 Antal trades", f"{n_trades}")
 
-                        # Graf
-                        dates = sim.get("dates") or sim.get("date_index") or sim.get("timestamps")
-                        strategy_values = (
-                            sim.get("strategy_values")
-                            or sim.get("portfolio_values")
-                            or sim.get("equity_curve")
-                            or sim.get("strategy_equity")
+                        # Graf - sikker mod pandas Series
+                        dates = first_not_none(sim, "dates", "date_index", "timestamps")
+                        strategy_values = first_not_none(
+                            sim,
+                            "strategy_values", "portfolio_values",
+                            "equity_curve", "strategy_equity"
                         )
-                        bh_values = (
-                            sim.get("bh_values")
-                            or sim.get("buyhold_values")
-                            or sim.get("benchmark_values")
-                            or sim.get("buy_hold_values")
-                            or sim.get("bh_equity")
+                        bh_values = first_not_none(
+                            sim,
+                            "bh_values", "buyhold_values", "benchmark_values",
+                            "buy_hold_values", "bh_equity"
                         )
 
                         if dates is not None and strategy_values is not None:
