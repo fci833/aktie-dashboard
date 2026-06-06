@@ -2107,12 +2107,35 @@ elif st.session_state.active_view == "📊 Analyse":
                     make_price_box("Pris (DKK)", price * fx, "DKK", change_pct),
                     unsafe_allow_html=True
                 )
-    with pcols[2]:
+      with pcols[2]:
         low_52 = info.get("fiftyTwoWeekLow")
         high_52 = info.get("fiftyTwoWeekHigh")
         if low_52 is not None and high_52 is not None:
+            # Beregn position i ranget
+            if price and high_52 > low_52:
+                pos_pct = ((price - low_52) / (high_52 - low_52)) * 100
+            else:
+                pos_pct = 50
+
+            # Farve baseret på position
+            if pos_pct < 30:
+                pos_color = "#16a34a"
+                pos_label = "Tæt på lav"
+            elif pos_pct > 80:
+                pos_color = "#ef4444"
+                pos_label = "Tæt på top"
+            else:
+                pos_color = "#eab308"
+                pos_label = "Mellem"
+
             st.markdown(
-                make_range_box("52-uger", low_52, high_52, currency),
+                f"<div style='background:{pos_color}22;padding:0.6rem;border-radius:8px;"
+                f"border-left:4px solid {pos_color}'>"
+                f"<small style='color:#888'>52-UGER RANGE</small>"
+                f"<div style='font-size:1.1rem;font-weight:bold;margin:0.2rem 0'>"
+                f"{low_52:.2f} - {high_52:.2f} {currency}</div>"
+                f"<small>{pos_pct:.0f}% i range · {pos_label}</small>"
+                f"</div>",
                 unsafe_allow_html=True
             )
         else:
