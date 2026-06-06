@@ -2797,68 +2797,7 @@ elif st.session_state.active_view == "📊 Analyse":
         if info.get("longBusinessSummary"):
             with st.expander("ℹ️ Om virksomheden"):
                 st.write(info["longBusinessSummary"][:2000])
-    # ===== DETALJER =====
-    with main_tabs[6]:
-        det_cols = st.columns(2)
-
-        with det_cols[0]:
-            st.markdown("#### 📊 Fundamentale nøgletal")
-            fund_data = []
-            for label, key, fmt in [
-                ("Market Cap", "marketCap", "currency_b"),
-                ("P/E (TTM)", "trailingPE", "ratio"),
-                ("Forward P/E", "forwardPE", "ratio"),
-                ("PEG", "pegRatio", "ratio"),
-                ("P/B", "priceToBook", "ratio"),
-                ("ROE", "returnOnEquity", "percent"),
-                ("Profit margin", "profitMargins", "percent"),
-                ("Debt/Equity", "debtToEquity", "ratio"),
-                ("EPS Growth", "earningsGrowth", "percent"),
-                ("Revenue Growth", "revenueGrowth", "percent"),
-                ("Dividend %", "dividendYield", "percent"),
-                ("Payout ratio", "payoutRatio", "percent"),
-                ("Beta", "beta", "ratio"),
-            ]:
-                v = info.get(key)
-                if v is None:
-                    formatted = "-"
-                elif fmt == "currency_b":
-                    formatted = f"${v/1e9:.2f}B" if v >= 1e9 else f"${v/1e6:.0f}M"
-                elif fmt == "percent":
-                    formatted = f"{v*100:.2f}%" if abs(v) < 5 else f"{v:.2f}%"
-                elif fmt == "ratio":
-                    formatted = f"{v:.2f}"
-                else:
-                    formatted = str(v)
-                fund_data.append({"Metric": label, "Værdi": formatted})
-
-            st.dataframe(pd.DataFrame(fund_data), use_container_width=True, hide_index=True)
-
-        with det_cols[1]:
-            st.markdown("#### 📍 Position vs ranges")
-            pos_data = []
-            for label, key in [
-                ("52w høj", "fiftyTwoWeekHigh"),
-                ("52w lav", "fiftyTwoWeekLow"),
-                ("Dagshigh", "dayHigh"),
-                ("Dagslow", "dayLow"),
-                ("Volume", "volume"),
-                ("Avg volume", "averageVolume"),
-            ]:
-                v = info.get(key)
-                if v is None:
-                    formatted = "-"
-                elif "olume" in key:
-                    formatted = f"{v:,.0f}"
-                else:
-                    formatted = f"{v:.2f} {currency}"
-                pos_data.append({"Metric": label, "Værdi": formatted})
-
-            st.dataframe(pd.DataFrame(pos_data), use_container_width=True, hide_index=True)
-
-        if info.get("longBusinessSummary"):
-            with st.expander("ℹ️ Om virksomheden"):
-                st.write(info["longBusinessSummary"][:2000])
+    
     # ===== KURSMÅL =====
     with main_tabs[2]:
         df_targets = filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"])
