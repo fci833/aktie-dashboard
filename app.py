@@ -2107,7 +2107,7 @@ elif st.session_state.active_view == "📊 Analyse":
                     make_price_box("Pris (DKK)", price * fx, "DKK", change_pct),
                     unsafe_allow_html=True
                 )
-      with pcols[2]:
+    with pcols[2]:
         low_52 = info.get("fiftyTwoWeekLow")
         high_52 = info.get("fiftyTwoWeekHigh")
         if low_52 is not None and high_52 is not None:
