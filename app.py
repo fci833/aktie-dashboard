@@ -1,4 +1,4 @@
-"""Aktie Dashboard - Hovedapp med Krypto"""
+"""Aktie Dashboard - Hovedapp med Krypto + Daily Brief"""
 import time
 import numpy as np
 import pandas as pd
@@ -42,6 +42,13 @@ from crypto_analysis import (
     crypto_backtest,
 )
 
+# 🏠 DAILY BRIEF
+from daily_brief import (
+    get_market_pulse, analyze_watchlist,
+    get_recent_rating_changes, get_top_opportunities,
+    calculate_position_size,
+)
+
 import warnings
 warnings.filterwarnings("ignore")
 import requests as plain_requests
@@ -66,7 +73,7 @@ if "current_ticker" not in st.session_state:
 if "screener_results" not in st.session_state:
     st.session_state.screener_results = None
 if "active_view" not in st.session_state:
-    st.session_state.active_view = "📊 Analyse"
+    st.session_state.active_view = "🏠 Hjem"
 
 
 # ============ DIAGNOSE ============
@@ -160,7 +167,7 @@ with st.sidebar:
     st.caption("✅ Twelve Data" if TWELVE_KEY else "⚠️ Twelve Data (no key)")
     st.caption("✅ Finnhub" if FINNHUB_KEY else "⚠️ Finnhub (no key)")
     st.caption("✅ CoinGecko (krypto)")
-    st.caption("✅ Binance (krypto)")
+    st.caption("✅ Yahoo (krypto)")
     if st.session_state.last_source != "?":
         st.success(f"Sidst: **{st.session_state.last_source}**")
 
@@ -207,7 +214,7 @@ with st.sidebar:
 
 # ============ NAVIGATION ============
 
-view_options = ["📊 Analyse", "🔎 Screener", "🪙 Krypto", "🔍 Søg ticker", "🔧 Diagnose"]
+view_options = ["🏠 Hjem", "📊 Analyse", "🔎 Screener", "🪙 Krypto", "🔍 Søg ticker", "🔧 Diagnose"]
 selected_view = st.radio(
     "Navigation",
     view_options,
@@ -223,9 +230,318 @@ if selected_view != st.session_state.active_view:
 st.markdown("---")
 
 
+# ============ HJEM (DAILY BRIEF) ============
+
+if st.session_state.active_view == "🏠 Hjem":
+    today = datetime.now()
+    weekday_dk = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"][today.weekday()]
+    month_dk = ["januar", "februar", "marts", "april", "maj", "juni",
+                "juli", "august", "september", "oktober", "november", "december"][today.month - 1]
+
+    st.markdown(
+        f"<h2 style='margin-bottom:0'>☀️ God morgen!</h2>"
+        f"<p style='color:#888;margin-top:0'>{weekday_dk} {today.day}. {month_dk} {today.year} · "
+        f"Klokken {today.strftime('%H:%M')}</p>",
+        unsafe_allow_html=True
+    )
+
+    refresh_col1, refresh_col2 = st.columns([5, 1])
+    with refresh_col2:
+        if st.button("🔄 Opdater", use_container_width=True, key="refresh_home"):
+            st.cache_data.clear()
+            st.rerun()
+
+    st.markdown("---")
+
+    # ============ MARKET PULSE ============
+    st.markdown("### 📊 Market Pulse")
+
+    with st.spinner("Henter markedsdata..."):
+        pulse = get_market_pulse()
+
+    st.markdown(
+        f"<div style='background:{pulse['regime_color']}22;padding:0.8rem 1.2rem;"
+        f"border-radius:10px;border-left:5px solid {pulse['regime_color']};margin-bottom:1rem'>"
+        f"<b>Markedsregime:</b> {pulse['regime']}</div>",
+        unsafe_allow_html=True
+    )
+
+    pulse_cols = st.columns(5)
+
+    spy = pulse["stocks"].get("S&P 500", {})
+    if spy:
+        change = spy["change_%"]
+        emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
+        pulse_cols[0].metric(
+            f"{emoji} S&P 500",
+            f"${spy['price']:,.0f}",
+            f"{change:+.2f}%"
+        )
+    else:
+        pulse_cols[0].metric("S&P 500", "N/A")
+
+    nasdaq = pulse["stocks"].get("Nasdaq 100", {})
+    if nasdaq:
+        change = nasdaq["change_%"]
+        emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
+        pulse_cols[1].metric(
+            f"{emoji} Nasdaq 100",
+            f"${nasdaq['price']:,.0f}",
+            f"{change:+.2f}%"
+        )
+    else:
+        pulse_cols[1].metric("Nasdaq 100", "N/A")
+
+    vix = pulse["stocks"].get("VIX", {})
+    if vix:
+        v = vix["price"]
+        emoji = "🟢" if v < 15 else "🟡" if v < 25 else "🔴"
+        label = "Lav frygt" if v < 15 else "Normal" if v < 25 else "HØJ FRYGT"
+        pulse_cols[2].metric(f"{emoji} VIX (frygt)", f"{v:.1f}", label)
+    else:
+        pulse_cols[2].metric("VIX", "N/A")
+
+    crypto = pulse.get("crypto", {})
+    if crypto:
+        change = crypto.get("change_24h", 0)
+        emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
+        pulse_cols[3].metric(
+            f"{emoji} Krypto MC",
+            f"${crypto['total_mc_t']:.2f}T",
+            f"{change:+.2f}%"
+        )
+    else:
+        pulse_cols[3].metric("Krypto", "N/A")
+
+    fg = pulse.get("fear_greed", {})
+    if fg:
+        v = fg["value"]
+        emoji = "🔴" if v < 25 else "🟢" if v > 75 else "🟡"
+        pulse_cols[4].metric(f"{emoji} Krypto F&G", f"{v}/100", fg["label"])
+    else:
+        pulse_cols[4].metric("F&G", "N/A")
+
+    st.markdown("---")
+
+    # ============ DAGENS HANDLINGER ============
+    st.markdown("### 🎯 Dagens Handlinger")
+
+    action_tabs = st.tabs([
+        "🟢 KØB-muligheder",
+        "👁️ Min Watchlist",
+        "🔄 Rating-ændringer",
+    ])
+
+    # ===== KØB-MULIGHEDER =====
+    with action_tabs[0]:
+        opps = get_top_opportunities(min_score=70, n_max=10)
+
+        if opps is None:
+            st.info(
+                "💡 **Ingen screener-snapshots fundet endnu.**\n\n"
+                "👉 Gå til **🔎 Screener** → kør en screener → så vises top-muligheder her automatisk!"
+            )
+        elif opps["buys"].empty:
+            st.warning("Ingen aktier i seneste snapshot har score ≥ 70")
+        else:
+            st.caption(
+                f"📊 Fra seneste screening: **{opps['universe']}** · "
+                f"{opps['snapshot_ts'][:10]}"
+            )
+
+            for idx, (_, row) in enumerate(opps["buys"].iterrows()):
+                cols = st.columns([1, 3, 1, 1, 1, 1])
+
+                score = row.get("overall", 0)
+                score_color = "#16a34a" if score >= 75 else "#22c55e" if score >= 65 else "#eab308"
+                cols[0].markdown(
+                    f"<div style='background:{score_color};color:white;padding:0.4rem;"
+                    f"border-radius:8px;text-align:center;font-weight:bold'>"
+                    f"{score:.0f}</div>",
+                    unsafe_allow_html=True
+                )
+
+                cols[1].markdown(f"**{row['ticker']}**")
+                cols[1].caption(str(row.get("name", ""))[:50])
+
+                price = row.get("price", 0)
+                change = row.get("change_%", 0)
+                cols[2].metric("Pris", f"{price:.2f}", f"{change:+.2f}%", label_visibility="collapsed")
+
+                rec = row.get("recommendation", "")
+                cols[3].markdown(f"<div style='text-align:center;font-weight:bold'>{rec}</div>",
+                                unsafe_allow_html=True)
+
+                cols[4].caption(str(row.get("sector", "?"))[:15])
+
+                if cols[5].button("📊 Åbn", key=f"home_buy_{row['ticker']}_{idx}", use_container_width=True):
+                    goto_analysis(row["ticker"])
+
+                st.markdown("<hr style='margin:0.3rem 0;opacity:0.2'>", unsafe_allow_html=True)
+
+    # ===== MIN WATCHLIST =====
+    with action_tabs[1]:
+        if not st.session_state.watchlist:
+            st.info(
+                "💡 **Din watchlist er tom.**\n\n"
+                "👉 Hver gang du analyserer en aktie/krypto, tilføjes den automatisk her."
+            )
+        else:
+            st.caption(f"📋 {len(st.session_state.watchlist)} tickers i watchlist")
+
+            with st.spinner(f"Analyserer {len(st.session_state.watchlist)} tickers..."):
+                wdf = analyze_watchlist(st.session_state.watchlist, max_workers=4)
+
+            if wdf.empty:
+                st.warning("Kunne ikke analysere watchlist (data-fejl?)")
+            else:
+                buy_df = wdf[wdf["score"] >= 60]
+                hold_df = wdf[(wdf["score"] >= 40) & (wdf["score"] < 60)]
+                sell_df = wdf[wdf["score"] < 40]
+
+                wsum_cols = st.columns(3)
+                wsum_cols[0].metric("🟢 KØB-signaler", len(buy_df))
+                wsum_cols[1].metric("🟡 HOLD", len(hold_df))
+                wsum_cols[2].metric("🔴 SÆLG-signaler", len(sell_df))
+
+                if not buy_df.empty:
+                    st.markdown("#### 🟢 KØB i din watchlist")
+                    for idx, (_, row) in enumerate(buy_df.iterrows()):
+                        cols = st.columns([1, 3, 1, 1, 1])
+                        cols[0].markdown(
+                            f"<div style='background:#16a34a;color:white;padding:0.4rem;"
+                            f"border-radius:8px;text-align:center;font-weight:bold'>"
+                            f"{row['score']:.0f}</div>",
+                            unsafe_allow_html=True
+                        )
+                        cols[1].markdown(f"**{row['ticker']}** {row['type']}")
+                        cols[1].caption(str(row['name'])[:50])
+                        cols[2].metric("Pris", f"{row['price']:.2f}", f"{row['change_%']:+.2f}%",
+                                       label_visibility="collapsed")
+                        cols[3].markdown(f"<div style='text-align:center'>{row['recommendation']}</div>",
+                                        unsafe_allow_html=True)
+                        if cols[4].button("📊", key=f"wbuy_{row['ticker']}_{idx}", use_container_width=True):
+                            goto_analysis(row["ticker"])
+
+                if not sell_df.empty:
+                    with st.expander(f"🔴 SÆLG-signaler ({len(sell_df)})"):
+                        for idx, (_, row) in enumerate(sell_df.iterrows()):
+                            cols = st.columns([1, 3, 1, 1, 1])
+                            cols[0].markdown(
+                                f"<div style='background:#ef4444;color:white;padding:0.4rem;"
+                                f"border-radius:8px;text-align:center;font-weight:bold'>"
+                                f"{row['score']:.0f}</div>",
+                                unsafe_allow_html=True
+                            )
+                            cols[1].markdown(f"**{row['ticker']}**")
+                            cols[1].caption(str(row['name'])[:40])
+                            cols[2].metric("Pris", f"{row['price']:.2f}", f"{row['change_%']:+.2f}%",
+                                           label_visibility="collapsed")
+                            cols[3].markdown(f"<div style='text-align:center'>{row['recommendation']}</div>",
+                                            unsafe_allow_html=True)
+                            if cols[4].button("📊", key=f"wsell_{row['ticker']}_{idx}", use_container_width=True):
+                                goto_analysis(row["ticker"])
+
+                if not hold_df.empty:
+                    with st.expander(f"🟡 HOLD ({len(hold_df)})"):
+                        for idx, (_, row) in enumerate(hold_df.iterrows()):
+                            cols = st.columns([1, 3, 1, 1, 1])
+                            cols[0].markdown(f"**{row['score']:.0f}**")
+                            cols[1].markdown(f"**{row['ticker']}**")
+                            cols[1].caption(str(row['name'])[:40])
+                            cols[2].metric("Pris", f"{row['price']:.2f}", f"{row['change_%']:+.2f}%",
+                                           label_visibility="collapsed")
+                            cols[3].markdown(f"<div style='text-align:center'>{row['recommendation']}</div>",
+                                            unsafe_allow_html=True)
+                            if cols[4].button("📊", key=f"whold_{row['ticker']}_{idx}", use_container_width=True):
+                                goto_analysis(row["ticker"])
+
+    # ===== RATING-ÆNDRINGER =====
+    with action_tabs[2]:
+        changes = get_recent_rating_changes()
+
+        if changes is None:
+            st.info(
+                "💡 **For få snapshots til at vise ændringer.**\n\n"
+                "👉 Kør screeneren minimum 2 gange (forskellige dage) for at se rating-ændringer her."
+            )
+        else:
+            st.caption(
+                f"🔄 Sammenligning: {changes['ts_prev'][:10]} → {changes['ts_now'][:10]}"
+            )
+
+            up_count = len(changes["upgraded"])
+            down_count = len(changes["downgraded"])
+
+            cc = st.columns(2)
+            cc[0].metric("📈 Opgraderet", up_count)
+            cc[1].metric("📉 Nedgraderet", down_count)
+
+            if up_count == 0 and down_count == 0:
+                st.success("✅ Ingen rating-ændringer siden sidst")
+            else:
+                if up_count > 0:
+                    st.markdown("#### 📈 Opgraderet (køb-vinduer åbner)")
+                    up_disp = changes["upgraded"][[
+                        c for c in ["ticker", "name", "recommendation_prev", "recommendation_now",
+                                    "score_change", "price_change_%"]
+                        if c in changes["upgraded"].columns
+                    ]].rename(columns={
+                        "recommendation_prev": "Var",
+                        "recommendation_now": "Nu",
+                        "score_change": "Score Δ",
+                        "price_change_%": "Pris Δ%",
+                    })
+                    for col in ["Score Δ", "Pris Δ%"]:
+                        if col in up_disp.columns:
+                            up_disp[col] = pd.to_numeric(up_disp[col], errors="coerce").round(2)
+                    st.dataframe(up_disp, use_container_width=True, hide_index=True)
+
+                if down_count > 0:
+                    st.markdown("#### 📉 Nedgraderet (overvej salg)")
+                    down_disp = changes["downgraded"][[
+                        c for c in ["ticker", "name", "recommendation_prev", "recommendation_now",
+                                    "score_change", "price_change_%"]
+                        if c in changes["downgraded"].columns
+                    ]].rename(columns={
+                        "recommendation_prev": "Var",
+                        "recommendation_now": "Nu",
+                        "score_change": "Score Δ",
+                        "price_change_%": "Pris Δ%",
+                    })
+                    for col in ["Score Δ", "Pris Δ%"]:
+                        if col in down_disp.columns:
+                            down_disp[col] = pd.to_numeric(down_disp[col], errors="coerce").round(2)
+                    st.dataframe(down_disp, use_container_width=True, hide_index=True)
+
+    # ============ HURTIGE LINKS ============
+    st.markdown("---")
+    st.markdown("### ⚡ Hurtige genveje")
+
+    quick_cols = st.columns(4)
+    if quick_cols[0].button("🔎 Kør screener nu", use_container_width=True, key="qg_screener"):
+        st.session_state.active_view = "🔎 Screener"
+        st.rerun()
+    if quick_cols[1].button("🪙 Krypto-overblik", use_container_width=True, key="qg_crypto"):
+        st.session_state.active_view = "🪙 Krypto"
+        st.rerun()
+    if quick_cols[2].button("🔍 Søg ticker", use_container_width=True, key="qg_search"):
+        st.session_state.active_view = "🔍 Søg ticker"
+        st.rerun()
+    if quick_cols[3].button("📊 Detaljeret analyse", use_container_width=True, key="qg_analysis"):
+        st.session_state.active_view = "📊 Analyse"
+        st.rerun()
+
+    st.markdown("---")
+    st.caption(
+        "⚠️ **Ikke finansiel rådgivning.** Dashboard er et analyseværktøj. "
+        "Lav altid din egen research før investering. Past performance is not indicative of future results."
+    )
+
+
 # ============ SØGE-VIEW ============
 
-if st.session_state.active_view == "🔍 Søg ticker":
+elif st.session_state.active_view == "🔍 Søg ticker":
     st.subheader("🔍 Find ticker for et firma")
     query = st.text_input("Firmanavn", value="", key="search_query",
                           placeholder="novo nordisk")
@@ -355,7 +671,6 @@ elif st.session_state.active_view == "🔎 Screener":
             st.session_state.screener_results = None
             st.rerun()
 
-        # Vis resultater
         if st.session_state.screener_results:
             res = st.session_state.screener_results
             df_all = res["all"]
@@ -419,7 +734,6 @@ elif st.session_state.active_view == "🔎 Screener":
                     ):
                         goto_analysis(row["ticker"])
 
-                # Kategorier
                 st.markdown("---")
                 st.markdown("### 🎯 Købsmuligheder pr. kategori")
                 categories = categorize_opportunities(df_buys)
@@ -439,7 +753,6 @@ elif st.session_state.active_view == "🔎 Screener":
                             st.dataframe(cat_d, use_container_width=True,
                                          hide_index=True)
 
-                # Score-distribution scatter
                 st.markdown("---")
                 st.markdown("### 📈 Score-distribution")
                 fig = px.scatter(
@@ -846,53 +1159,36 @@ elif st.session_state.active_view == "🔎 Screener":
                 st.rerun()
 
 
-# ============ KRYPTO-VIEW (ULTIMATIV) ============
+# ============ KRYPTO-VIEW ============
 
 elif st.session_state.active_view == "🪙 Krypto":
     st.subheader("🪙 Krypto Dashboard - Pro Edition")
     st.caption("Real-time data · Multi-faktor scoring · Risk management · Backtest")
 
-    # ===== GLOBAL OVERVIEW =====
     global_data = fetch_global_crypto_market()
     fg_df = fetch_fear_greed()
 
     if global_data:
         gc = st.columns(5)
-
-        # Total Market Cap
         mc = global_data.get('total_market_cap_usd') or 0
         mc_change = global_data.get('market_cap_change_24h') or 0
         if mc > 0:
-            gc[0].metric(
-                "💰 Total Market Cap",
-                f"${mc/1e12:.2f}T",
-                f"{mc_change:+.2f}%"
-            )
+            gc[0].metric("💰 Total Market Cap", f"${mc/1e12:.2f}T", f"{mc_change:+.2f}%")
         else:
             gc[0].metric("💰 Total Market Cap", "N/A")
 
-        # 24h Volume
         vol = global_data.get('total_volume_usd') or 0
         if vol > 0:
             gc[1].metric("📊 24h Volume", f"${vol/1e9:.1f}B")
         else:
             gc[1].metric("📊 24h Volume", "N/A")
 
-        # BTC Dominance
         btc_dom = global_data.get('btc_dominance') or 0
-        gc[2].metric(
-            "👑 BTC Dominance",
-            f"{btc_dom:.1f}%" if btc_dom else "N/A"
-        )
+        gc[2].metric("👑 BTC Dominance", f"{btc_dom:.1f}%" if btc_dom else "N/A")
 
-        # ETH Dominance
         eth_dom = global_data.get('eth_dominance') or 0
-        gc[3].metric(
-            "⚡ ETH Dominance",
-            f"{eth_dom:.1f}%" if eth_dom else "N/A"
-        )
+        gc[3].metric("⚡ ETH Dominance", f"{eth_dom:.1f}%" if eth_dom else "N/A")
 
-        # Fear & Greed
         if fg_df is not None and not fg_df.empty:
             try:
                 fg_value = int(fg_df["value"].iloc[-1])
@@ -912,7 +1208,6 @@ elif st.session_state.active_view == "🪙 Krypto":
 
     st.markdown("---")
 
-
     crypto_tabs = st.tabs([
         "🎯 Pro Analyse",
         "🔎 Screener",
@@ -922,11 +1217,10 @@ elif st.session_state.active_view == "🪙 Krypto":
         "⛓️ On-Chain (BTC)",
     ])
 
-                   # ===== TAB 1: PRO ANALYSE =====
+    # ===== TAB 1: PRO ANALYSE =====
     with crypto_tabs[0]:
         st.markdown("### 🎯 Vælg krypto til analyse")
 
-        # To måder at vælge: dropdown ELLER manuel indtastning
         input_method = st.radio(
             "Vælg metode:",
             ["📋 Vælg fra liste", "✏️ Skriv ticker selv"],
@@ -969,7 +1263,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                 else:
                     st.warning("⚠️ Indtast venligst en ticker")
 
-        # Hurtige knapper for populære coins
         st.markdown("##### 🔥 Populære coins (klik for instant analyse):")
         popular_extra = ["BTC", "ETH", "SOL", "DOGE", "SHIB", "PEPE", "BONK", "WIF", "FLOKI", "AVAX"]
         pop_cols = st.columns(len(popular_extra))
@@ -995,8 +1288,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         "💡 **Mulige årsager:**\n"
                         "- Tickeren findes ikke (tjek stavning)\n"
                         "- CoinGecko er midlertidigt rate-limited (vent 1-2 min)\n"
-                        "- Coin er for ny / ikke listet på CoinGecko eller Binance\n"
-                        "- Binance blokerer Streamlit Cloud's IP (geo-restriktion)"
+                        "- Coin er for ny / ikke listet"
                     )
 
                 with col_actions:
@@ -1007,60 +1299,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                         st.session_state.pop("crypto_analyzed", None)
                         st.rerun()
 
-                # Test direkte API-kald
-                with st.expander("🔧 Test API'er direkte (diagnose)"):
-                    test_cols = st.columns(2)
-                    if test_cols[0].button("🧪 Test Binance", use_container_width=True):
-                        try:
-                            r = plain_requests.get(
-                                "https://api.binance.com/api/v3/ping",
-                                timeout=5
-                            )
-                            if r.status_code == 200:
-                                st.success("✅ Binance API svarer")
-                                # Test også et faktisk kald
-                                r2 = plain_requests.get(
-                                    "https://api.binance.com/api/v3/klines",
-                                    params={"symbol": "BTCUSDT", "interval": "1d", "limit": 5},
-                                    timeout=5
-                                )
-                                if r2.status_code == 200:
-                                    st.success(f"✅ Kan hente BTC data: {len(r2.json())} dage")
-                                else:
-                                    st.error(f"❌ Binance blokerer datakald: {r2.status_code}")
-                                    st.code(r2.text[:500])
-                            else:
-                                st.error(f"❌ Binance returnerer {r.status_code}")
-                                st.code(r.text[:500])
-                        except Exception as e:
-                            st.error(f"❌ Binance fejler: {e}")
-
-                    if test_cols[1].button("🧪 Test CoinGecko", use_container_width=True):
-                        try:
-                            r = plain_requests.get(
-                                "https://api.coingecko.com/api/v3/ping",
-                                timeout=5
-                            )
-                            if r.status_code == 200:
-                                st.success("✅ CoinGecko API svarer")
-                                # Test bitcoin endpoint
-                                r2 = plain_requests.get(
-                                    "https://api.coingecko.com/api/v3/coins/bitcoin",
-                                    timeout=10
-                                )
-                                if r2.status_code == 200:
-                                    st.success("✅ Kan hente Bitcoin data")
-                                elif r2.status_code == 429:
-                                    st.warning("⚠️ CoinGecko er rate-limited")
-                                else:
-                                    st.error(f"❌ Status: {r2.status_code}")
-                            elif r.status_code == 429:
-                                st.warning("⚠️ CoinGecko er rate-limited - vent 1-2 minutter")
-                            else:
-                                st.error(f"❌ CoinGecko returnerer {r.status_code}")
-                        except Exception as e:
-                            st.error(f"❌ CoinGecko fejler: {e}")
-
             else:
                 info = cdata["info"]
                 hist = cdata["hist"]
@@ -1068,7 +1306,6 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                 st.success(f"✅ Data fra: **{cdata['source']}** · {len(hist)} dage")
 
-                # Brug category fra CRYPTO_UNIVERSE hvis det findes, ellers fra info
                 category = (
                     CRYPTO_UNIVERSE[symbol]["category"]
                     if symbol in CRYPTO_UNIVERSE
@@ -1081,7 +1318,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     f"📅 {hist.index[0].date()} → {hist.index[-1].date()} · 💱 USD"
                 )
 
-                # Key metrics
                 change_24h = info.get("change_24h", 0) or 0
                 k = st.columns(7)
                 k[0].metric(
@@ -1103,7 +1339,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                 if info.get("change_1y") is not None:
                     k[6].metric("1y", f"{info['change_1y']:+.1f}%")
 
-                # Scores
                 with st.spinner("Beregner multi-faktor scores..."):
                     scores = crypto_overall_score(info, hist)
 
@@ -1126,7 +1361,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                 sc[3].metric("💬 Sentiment", f"{scores['sentiment']:.0f}/100", "20% vægt")
                 sc[4].metric("👨‍💻 Developer", f"{scores['developer']:.0f}/100", "15% vægt")
 
-                # Kursmål
                 st.markdown("---")
                 st.markdown("### 💰 Kursniveauer & Risk Management")
                 st.caption("Baseret på ATR, Bollinger Bands og 90/365 dages high/low")
@@ -1197,7 +1431,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"ATR: ${targets['atr']:.4f}"
                     )
 
-                # BTC Halving (kun BTC)
                 if symbol == "BTC":
                     halv = btc_halving_analysis(symbol)
                     if halv:
@@ -1211,7 +1444,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                         hc[3].metric("📊 Cycle progress", f"{halv['cycle_progress']:.0f}%")
                         st.info(f"**{halv['phase']}** — {halv['outlook']}")
 
-                # Avancerede tabs
                 st.markdown("---")
                 pro_tabs = st.tabs([
                     "📊 Charts",
@@ -1223,7 +1455,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     "🔍 Score breakdown"
                 ])
 
-                # Charts
                 with pro_tabs[0]:
                     df_ind = crypto_indicators(hist)
                     fig = make_subplots(
@@ -1291,7 +1522,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
-                # Tekniske detaljer
                 with pro_tabs[1]:
                     df_ind = crypto_indicators(hist)
                     last = df_ind.iloc[-1]
@@ -1316,7 +1546,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     cc2[2].metric("SMA200",
                                   f"${last['SMA200']:.4f}" if not pd.isna(last.get("SMA200")) else "-")
 
-                # Risiko
                 with pro_tabs[2]:
                     risk = crypto_risk_metrics(hist)
                     if risk:
@@ -1345,7 +1574,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     else:
                         st.warning("Ikke nok data til risk metrics")
 
-                # Monte Carlo
                 with pro_tabs[3]:
                     st.caption("🎲 500 simulationer · Student-t (fat tails)")
 
@@ -1398,7 +1626,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     else:
                         st.warning("Ikke nok data til Monte Carlo")
 
-                # Backtest
                 with pro_tabs[4]:
                     st.caption("🎯 Walk-forward backtest af model-anbefalinger")
 
@@ -1463,7 +1690,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                             else:
                                 st.warning(f"⚠️ Ingen/negativ korrelation: {corr:.3f}")
 
-                # BTC Korrelation
                 with pro_tabs[5]:
                     if symbol == "BTC":
                         st.info("Dette er BTC — sammenligning med sig selv ikke meningsfuld")
@@ -1509,7 +1735,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                         else:
                             st.error("Kunne ikke hente BTC-data")
 
-                # Score breakdown
                 with pro_tabs[6]:
                     detail_subtabs = st.tabs([
                         "📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"
@@ -1536,6 +1761,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 if info.get("description"):
                     with st.expander("ℹ️ Om denne krypto"):
                         st.write(info["description"])
+
     # ===== TAB 2: SCREENER =====
     with crypto_tabs[1]:
         st.markdown("### 🔎 Krypto-screener")
@@ -1799,7 +2025,6 @@ elif st.session_state.active_view == "📊 Analyse":
         st.info("👆 Indtast en ticker, eller brug **🔍 Søg ticker** fanen")
         st.stop()
 
-    # Auto-redirect til krypto-view hvis det er en krypto-ticker
     if is_crypto(ticker):
         norm = normalize_crypto_ticker(ticker)
         if norm in CRYPTO_UNIVERSE:
@@ -1823,468 +2048,548 @@ elif st.session_state.active_view == "📊 Analyse":
     else:
         st.success(f"✅ Data hentet fra: **{data['source']}**")
 
-    st.markdown(
+        st.markdown(
         "<div style='background:#0099ff15;padding:0.6rem 1rem;border-radius:8px;"
         "border-left:4px solid #0099ff;margin:0.5rem 0'>"
         f"📅 <b>Chart:</b> {period} · "
-        "ℹ️ <b>Beregninger:</b> Tekniske=12mdr · Kursmål=6mdr · Risk=3år · Monte Carlo=2år"
+        "ℹ️ <b>Beregninger:</b> Tekniske=12mdr · Kursmål=6mdr · Risk=3år · MC=2år"
         "</div>",
         unsafe_allow_html=True,
     )
 
     info = data["info"]
-    hist_full = data["hist"]
-    hist_chart = filter_chart_period(hist_full, period)
-    hist_technical = filter_by_days(hist_full, ANALYSIS_PERIODS["technical"])
-    hist_targets = filter_by_days(hist_full, ANALYSIS_PERIODS["targets"])
-    hist_risk = filter_by_days(hist_full, ANALYSIS_PERIODS["risk"])
-    hist_mc = filter_by_days(hist_full, ANALYSIS_PERIODS["monte_carlo"])
+    hist = data["hist"]
 
-    if len(hist_full) < 200:
-        st.warning(f"⚠️ Kun {len(hist_full)} dage data - SMA200 unøjagtig")
-
-    df_full = get_indicators(hist_full)
-    df_chart_filtered = df_full.loc[df_full.index.isin(hist_chart.index)]
-    df_technical = df_full.tail(len(hist_technical))
-    df_targets = df_full.tail(len(hist_targets))
-
+    # Tilføj til watchlist
     if ticker not in st.session_state.watchlist:
         st.session_state.watchlist.append(ticker)
 
-    navn = info.get("longName") or ticker
-    pris = info.get("currentPrice") or hist_full["Close"].iloc[-1]
-    valuta = info.get("currency", "USD")
-    prev = info.get("previousClose",
-                    hist_full["Close"].iloc[-2] if len(hist_full) > 1 else pris)
-    change_pct = (pris / prev - 1) * 100 if prev else 0
+    # Header
+    h1, h2 = st.columns([3, 1])
+    with h1:
+        st.markdown(f"## {info.get('longName', ticker)} ({ticker})")
+        st.caption(
+            f"🏢 {info.get('sector', '?')} · "
+            f"🌍 {info.get('country', '?')} · "
+            f"💱 {info.get('currency', 'USD')}"
+        )
+    with h2:
+        if st.button("🗑️ Fjern fra watchlist", use_container_width=True):
+            if ticker in st.session_state.watchlist:
+                st.session_state.watchlist.remove(ticker)
+                st.success(f"Fjernet {ticker}")
+                time.sleep(1)
+                st.rerun()
 
-    first_date = hist_full.index[0].strftime("%Y-%m-%d")
-    last_date = hist_full.index[-1].strftime("%Y-%m-%d")
+    # Pris-bokse
+    price = info.get("currentPrice")
+    prev = info.get("previousClose")
+    if price is None and not hist.empty:
+        price = float(hist["Close"].iloc[-1])
+    if prev is None and len(hist) >= 2:
+        prev = float(hist["Close"].iloc[-2])
 
-    st.markdown(f"## {navn} ({ticker})")
-    st.caption(
-        f"🏢 {info.get('sector','?')} · 🌍 {info.get('country','?')} · "
-        f"💱 {valuta} · 📅 {first_date} → {last_date} ({len(hist_full)} dage)"
-    )
+    change_pct = ((price / prev - 1) * 100) if (price and prev) else 0
+    currency = info.get("currency", "USD")
 
-    k = st.columns(6)
-    k[0].metric("Pris", f"{pris:,.2f} {valuta}", f"{change_pct:+.2f}%")
-    if show_secondary and valuta != "DKK":
-        k[0].caption(f"≈ {pris*get_fx_rate(valuta,'DKK'):,.2f} DKK")
-    mc = info.get("marketCap")
-    try:
-        k[1].metric("Market cap", f"{float(mc)/1e9:,.1f}B {valuta}" if mc else "-")
-    except Exception:
-        k[1].metric("Market cap", "-")
-    k[2].metric("P/E", f"{info.get('trailingPE'):.1f}" if info.get("trailingPE") else "-")
-    k[3].metric("Fwd P/E", f"{info.get('forwardPE'):.1f}" if info.get("forwardPE") else "-")
-    k[4].metric("Yield",
-                f"{info.get('dividendYield')*100:.2f}%" if info.get("dividendYield") else "-")
-    k[5].metric("Beta", f"{info.get('beta'):.2f}" if info.get("beta") else "-")
+    pcols = st.columns(4)
+    with pcols[0]:
+        st.markdown(make_price_box("Pris nu", price, currency, change_pct),
+                    unsafe_allow_html=True)
+    with pcols[1]:
+        if show_secondary and currency != "DKK":
+            fx = get_fx_rate(currency, "DKK")
+            if price and fx:
+                st.markdown(
+                    make_price_box("Pris (DKK)", price * fx, "DKK", change_pct),
+                    unsafe_allow_html=True
+                )
+    with pcols[2]:
+        st.markdown(
+            make_range_box("52-uger", info.get("fiftyTwoWeekLow"),
+                            info.get("fiftyTwoWeekHigh"), currency),
+            unsafe_allow_html=True
+        )
+    with pcols[3]:
+        if info.get("marketCap"):
+            mc = info["marketCap"]
+            mc_str = f"{mc/1e12:.2f}T" if mc >= 1e12 else f"{mc/1e9:.2f}B" if mc >= 1e9 else f"{mc/1e6:.0f}M"
+            st.metric("Market Cap", f"${mc_str}")
 
-    f_score, f_det = fundamental_score(info)
-    t_score, t_det = technical_score(df_technical)
+    # Beregn scores
+    df_indicators = get_indicators(hist)
+    df_technical = filter_by_days(df_indicators, ANALYSIS_PERIODS["TECHNICAL"])
+
+    f_score, f_details = fundamental_score(info)
+    t_score, t_details = technical_score(df_technical)
     overall = f_score * 0.6 + t_score * 0.4
-    f_a, f_c = recommendation(f_score)
-    t_a, t_c = recommendation(t_score)
-    o_a, o_c = recommendation(overall)
-
-    fair_default = dcf_valuation(info, 0.10, 0.10, 0.025)
-    targets = calculate_price_targets(df_targets, pris, fair_default)
+    rec, color = recommendation(overall)
 
     st.markdown("---")
-    r1, r2, r3 = st.columns(3)
-    r1.markdown(make_recommendation_card(
-        "🏛️ LANGSIGTET", "📅 12+ måneder · Fundamentale + DCF",
-        f_a, f_c, f_score), unsafe_allow_html=True)
-    r2.markdown(make_recommendation_card(
-        "⚡ KORTSIGTET", "📅 1-3 måneder · Tekniske signaler",
-        t_a, t_c, t_score), unsafe_allow_html=True)
-    r3.markdown(make_recommendation_card(
-        "🎯 SAMLET", "⚖️ Vægtet 60% lang / 40% kort",
-        o_a, o_c, overall), unsafe_allow_html=True)
 
-    st.markdown("### 💰 Anbefalede kursniveauer")
-    st.caption(f"Baseret på 6-måneders volatilitet · {valuta}"
-               f"{' + DKK' if show_secondary and valuta != 'DKK' else ''}")
-    pt = st.columns(5)
-    buy_low_pct = (targets["buy_low"] / pris - 1) * 100
-    buy_high_pct = (targets["buy_high"] / pris - 1) * 100
-    stop_pct = (targets["stop_loss"] / pris - 1) * 100
-    target_short_pct = (targets["target_short"] / pris - 1) * 100
-    target_long_pct = (targets["target_long"] / pris - 1) * 100
-    pt[0].markdown(make_range_box("🟢 KØB ZONE", targets["buy_low"], targets["buy_high"],
-                                  valuta, "#16a34a",
-                                  f"{buy_low_pct:+.1f}% til {buy_high_pct:+.1f}%",
-                                  show_secondary), unsafe_allow_html=True)
-    pt[1].markdown(make_price_box("📍 AKTUEL", pris, valuta, "#0099ff",
-                                  f"{change_pct:+.2f}% i dag",
-                                  show_secondary), unsafe_allow_html=True)
-    pt[2].markdown(make_price_box("🛑 STOP LOSS", targets["stop_loss"], valuta,
-                                  "#ef4444", f"{stop_pct:+.1f}% (2x ATR)",
-                                  show_secondary), unsafe_allow_html=True)
-    pt[3].markdown(make_price_box("🎯 KORT MÅL (1-3m)", targets["target_short"], valuta,
-                                  "#eab308", f"{target_short_pct:+.1f}% (BB upper)",
-                                  show_secondary), unsafe_allow_html=True)
-    pt[4].markdown(make_price_box("🚀 LANG MÅL (12m+)", targets["target_long"], valuta,
-                                  "#22c55e",
-                                  f"{target_long_pct:+.1f}% {'(DCF)' if fair_default else '(+20%)'}",
-                                  show_secondary), unsafe_allow_html=True)
+    # Anbefaling card
+    rec_cols = st.columns([2, 1, 1, 1])
+    with rec_cols[0]:
+        st.markdown(make_recommendation_card(rec, color, overall),
+                    unsafe_allow_html=True)
+    rec_cols[1].metric("📊 Fundamental", f"{f_score:.0f}/100", "60% vægt")
+    rec_cols[2].metric("🔧 Teknisk", f"{t_score:.0f}/100", "40% vægt")
+    rec_cols[3].metric("Samlet score", f"{overall:.0f}/100")
 
-    if show_secondary and valuta != "DKK":
-        rate = get_fx_rate(valuta, "DKK")
-        st.caption(
-            f"📊 52-uger: Low {targets['week52_low']:.2f} {valuta} "
-            f"(≈{targets['week52_low']*rate:.2f} DKK) · "
-            f"High {targets['week52_high']:.2f} {valuta} "
-            f"(≈{targets['week52_high']*rate:.2f} DKK) · ATR: {targets['atr']:.2f}"
+    # Position sizing kalkulator
+    st.markdown("---")
+    with st.expander("📐 Position Sizing Calculator", expanded=False):
+        st.caption("Beregn hvor mange aktier du skal købe baseret på din risk tolerance")
+
+        ps_cols = st.columns(4)
+        portfolio_val = ps_cols[0].number_input(
+            "💼 Din portefølje (DKK)", min_value=10000,
+            value=100000, step=10000, key="ps_portfolio"
         )
-    else:
-        st.caption(
-            f"📊 52-uger: Low {targets['week52_low']:.2f} · "
-            f"High {targets['week52_high']:.2f} {valuta} · "
-            f"Daglig ATR: {targets['atr']:.2f}"
+        risk_pct = ps_cols[1].slider(
+            "⚠️ Risk pr. trade (%)", 0.5, 5.0, 2.0, 0.5, key="ps_risk"
         )
 
-    sub_tabs = st.tabs([
-        "📊 Charts", "📋 Fundamentals", "🔧 Teknisk",
-        "💎 DCF", "📉 Risiko", "🎲 Monte Carlo", "🎯 Backtest"
+        # Beregn stop-loss baseret på targets eller default
+        targets_data = calculate_price_targets(
+            filter_by_days(df_indicators, ANALYSIS_PERIODS["PRICE_TARGETS"]),
+            price, overall
+        )
+        default_stop = targets_data.get("stop_loss", price * 0.92) if targets_data else price * 0.92
+
+        stop_loss_input = ps_cols[2].number_input(
+            f"🛑 Stop-loss ({currency})",
+            min_value=0.01,
+            value=float(default_stop),
+            step=0.5,
+            key="ps_stop"
+        )
+
+        # Konverter pris til DKK hvis nødvendigt
+        if currency != "DKK":
+            fx_to_dkk = get_fx_rate(currency, "DKK")
+            price_dkk = price * fx_to_dkk
+            stop_dkk = stop_loss_input * fx_to_dkk
+        else:
+            price_dkk = price
+            stop_dkk = stop_loss_input
+
+        sizing = calculate_position_size(price_dkk, stop_dkk, portfolio_val, risk_pct)
+
+        if sizing:
+            ps_cols[3].metric(
+                "📦 Antal aktier",
+                f"{sizing['shares']:,}",
+                f"{sizing['position_pct']:.1f}% af port."
+            )
+
+            ps_summary = st.columns(3)
+            ps_summary[0].metric(
+                "💰 Position-værdi",
+                f"{sizing['position_value']:,.0f} DKK"
+            )
+            ps_summary[1].metric(
+                "⚠️ Max tab",
+                f"{sizing['risk_amount']:,.0f} DKK",
+                f"-{risk_pct}%"
+            )
+            ps_summary[2].metric(
+                "📉 Risk pr. aktie",
+                f"{sizing['risk_per_share']:.2f} DKK"
+            )
+
+            if rec in ["KØB", "STÆRKT KØB"]:
+                st.success(
+                    f"✅ **Anbefaling:** Køb **{sizing['shares']:,} aktier** "
+                    f"@ {price:.2f} {currency} = {sizing['position_value']:,.0f} DKK "
+                    f"({sizing['position_pct']:.1f}% af din portefølje)"
+                )
+            elif rec == "HOLD":
+                st.info("ℹ️ Modellen siger HOLD - vurdér selv om du vil tage positionen")
+            else:
+                st.warning("⚠️ Modellen anbefaler IKKE køb lige nu")
+        else:
+            st.warning("Kunne ikke beregne position size (tjek input)")
+
+    # Tabs
+    st.markdown("---")
+    main_tabs = st.tabs([
+        "📊 Charts", "🔧 Indikatorer", "💰 Kursmål",
+        "📉 Risiko", "🎲 Monte Carlo", "🎯 Backtest",
+        "📋 Detaljer"
     ])
 
-    # Charts
-    with sub_tabs[0]:
-        df_plot = df_chart_filtered
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                            row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.05)
-        fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot["Open"],
-                                     high=df_plot["High"], low=df_plot["Low"],
-                                     close=df_plot["Close"], name="Pris"), 1, 1)
-        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["SMA50"],
-                                 name="SMA50", line=dict(color="orange")), 1, 1)
-        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["SMA200"],
-                                 name="SMA200", line=dict(color="purple")), 1, 1)
-        fig.add_hline(y=targets["buy_high"], line_dash="dot", line_color="#16a34a",
-                      annotation_text="Køb", row=1, col=1)
-        fig.add_hline(y=targets["stop_loss"], line_dash="dot", line_color="#ef4444",
-                      annotation_text="Stop", row=1, col=1)
-        fig.add_hline(y=targets["target_long"], line_dash="dot", line_color="#22c55e",
-                      annotation_text="Mål", row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["RSI"],
-                                 name="RSI", line=dict(color="#00d4aa")), 2, 1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["MACD"],
-                                 name="MACD", line=dict(color="#0099ff")), 3, 1)
-        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["MACD_signal"],
-                                 name="Signal", line=dict(color="orange")), 3, 1)
-        fig.update_layout(height=800, xaxis_rangeslider_visible=False,
-                          template="plotly_dark", title=f"{navn} - Visning: {period}")
+    # ===== CHARTS =====
+    with main_tabs[0]:
+        df_chart = filter_chart_period(df_indicators, period)
+        fig = make_subplots(
+            rows=3, cols=1, shared_xaxes=True,
+            row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.05,
+            subplot_titles=("Pris + SMA + Bollinger", "RSI", "MACD")
+        )
+        fig.add_trace(go.Candlestick(
+            x=df_chart.index, open=df_chart["Open"], high=df_chart["High"],
+            low=df_chart["Low"], close=df_chart["Close"], name="Pris"
+        ), 1, 1)
+        if "SMA50" in df_chart.columns:
+            fig.add_trace(go.Scatter(
+                x=df_chart.index, y=df_chart["SMA50"],
+                name="SMA50", line=dict(color="orange")
+            ), 1, 1)
+        if "SMA200" in df_chart.columns:
+            fig.add_trace(go.Scatter(
+                x=df_chart.index, y=df_chart["SMA200"],
+                name="SMA200", line=dict(color="purple")
+            ), 1, 1)
+        if "BB_upper" in df_chart.columns:
+            fig.add_trace(go.Scatter(
+                x=df_chart.index, y=df_chart["BB_upper"],
+                name="BB Upper",
+                line=dict(color="rgba(255,255,255,0.3)", dash="dot")
+            ), 1, 1)
+            fig.add_trace(go.Scatter(
+                x=df_chart.index, y=df_chart["BB_lower"],
+                name="BB Lower",
+                line=dict(color="rgba(255,255,255,0.3)", dash="dot"),
+                fill="tonexty", fillcolor="rgba(255,255,255,0.05)"
+            ), 1, 1)
+        if "RSI" in df_chart.columns:
+            fig.add_trace(go.Scatter(
+                x=df_chart.index, y=df_chart["RSI"],
+                name="RSI", line=dict(color="#00d4aa")
+            ), 2, 1)
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+        if "MACD" in df_chart.columns:
+            fig.add_trace(go.Scatter(
+                x=df_chart.index, y=df_chart["MACD"],
+                name="MACD", line=dict(color="#0099ff")
+            ), 3, 1)
+            fig.add_trace(go.Scatter(
+                x=df_chart.index, y=df_chart["MACD_signal"],
+                name="Signal", line=dict(color="orange")
+            ), 3, 1)
+
+        fig.update_layout(
+            height=800, xaxis_rangeslider_visible=False,
+            template="plotly_dark",
+            title=f"{ticker} - Teknisk analyse ({period})"
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-    # Fundamentals
-    with sub_tabs[1]:
-        st.caption("🏛️ Fundamentale data (TTM)")
-        df_f = pd.DataFrame(f_det)
-        if not df_f.empty:
-            fig_f = px.bar(df_f, x="impact", y="label", orientation="h",
-                           color="impact", color_continuous_scale="RdYlGn")
-            fig_f.update_layout(height=500, template="plotly_dark", showlegend=False)
-            st.plotly_chart(fig_f, use_container_width=True)
-            st.dataframe(df_f, use_container_width=True, hide_index=True)
+    # ===== INDIKATORER =====
+    with main_tabs[1]:
+        if not df_technical.empty:
+            last = df_technical.iloc[-1]
+            ic = st.columns(4)
+            ic[0].metric("RSI",
+                          f"{last['RSI']:.1f}" if not pd.isna(last.get("RSI")) else "-")
+            ic[1].metric("MACD",
+                          f"{last['MACD']:.2f}" if not pd.isna(last.get("MACD")) else "-")
+            ic[2].metric("ATR",
+                          f"{last['ATR']:.2f}" if not pd.isna(last.get("ATR")) else "-")
+            if not pd.isna(last.get("BB_upper")):
+                ic[3].metric(
+                    "BB Width",
+                    f"{((last['BB_upper']-last['BB_lower'])/last['Close']*100):.1f}%"
+                )
+
+            ic2 = st.columns(3)
+            ic2[0].metric("SMA20",
+                           f"{last['SMA20']:.2f}" if not pd.isna(last.get("SMA20")) else "-")
+            ic2[1].metric("SMA50",
+                           f"{last['SMA50']:.2f}" if not pd.isna(last.get("SMA50")) else "-")
+            ic2[2].metric("SMA200",
+                           f"{last['SMA200']:.2f}" if not pd.isna(last.get("SMA200")) else "-")
+
+            st.markdown("---")
+            st.markdown("#### 📊 Score breakdown")
+
+            sb_tabs = st.tabs(["📊 Fundamental", "🔧 Teknisk"])
+            with sb_tabs[0]:
+                if f_details:
+                    df_f = pd.DataFrame(f_details)
+                    fig_f = px.bar(
+                        df_f, x="impact", y="label", orientation="h",
+                        color="impact", color_continuous_scale="RdYlGn"
+                    )
+                    fig_f.update_layout(template="plotly_dark", height=400, showlegend=False)
+                    st.plotly_chart(fig_f, use_container_width=True)
+                    st.dataframe(df_f, use_container_width=True, hide_index=True)
+            with sb_tabs[1]:
+                if t_details:
+                    df_t = pd.DataFrame(t_details)
+                    fig_t = px.bar(
+                        df_t, x="impact", y="label", orientation="h",
+                        color="impact", color_continuous_scale="RdYlGn"
+                    )
+                    fig_t.update_layout(template="plotly_dark", height=400, showlegend=False)
+                    st.plotly_chart(fig_t, use_container_width=True)
+                    st.dataframe(df_t, use_container_width=True, hide_index=True)
+
+    # ===== KURSMÅL =====
+    with main_tabs[2]:
+        df_targets = filter_by_days(df_indicators, ANALYSIS_PERIODS["PRICE_TARGETS"])
+        targets = calculate_price_targets(df_targets, price, overall)
+
+        if targets:
+            st.markdown("### 💰 Kursniveauer (6 mdr basis)")
+
+            buy_low_pct = (targets["buy_low"] / price - 1) * 100
+            buy_high_pct = (targets["buy_high"] / price - 1) * 100
+            stop_pct = (targets["stop_loss"] / price - 1) * 100
+            short_pct = (targets["target_short"] / price - 1) * 100
+            long_pct = (targets["target_long"] / price - 1) * 100
+
+            tg = st.columns(5)
+            tg[0].markdown(
+                f"<div style='background:#16a34a22;padding:0.8rem;border-radius:10px;"
+                f"border-left:4px solid #16a34a;text-align:center'>"
+                f"<small>🟢 KØB ZONE</small>"
+                f"<h4 style='margin:0.3rem 0'>{targets['buy_low']:.2f} - {targets['buy_high']:.2f}</h4>"
+                f"<small>{buy_low_pct:+.1f}% til {buy_high_pct:+.1f}%</small>"
+                f"</div>", unsafe_allow_html=True
+            )
+            tg[1].markdown(
+                f"<div style='background:#0099ff22;padding:0.8rem;border-radius:10px;"
+                f"border-left:4px solid #0099ff;text-align:center'>"
+                f"<small>📍 NUVÆRENDE</small>"
+                f"<h4 style='margin:0.3rem 0'>{price:.2f} {currency}</h4>"
+                f"<small>{change_pct:+.2f}%</small>"
+                f"</div>", unsafe_allow_html=True
+            )
+            tg[2].markdown(
+                f"<div style='background:#ef444422;padding:0.8rem;border-radius:10px;"
+                f"border-left:4px solid #ef4444;text-align:center'>"
+                f"<small>🛑 STOP LOSS</small>"
+                f"<h4 style='margin:0.3rem 0'>{targets['stop_loss']:.2f}</h4>"
+                f"<small>{stop_pct:+.1f}%</small>"
+                f"</div>", unsafe_allow_html=True
+            )
+            tg[3].markdown(
+                f"<div style='background:#eab30822;padding:0.8rem;border-radius:10px;"
+                f"border-left:4px solid #eab308;text-align:center'>"
+                f"<small>🎯 KORT (1-3m)</small>"
+                f"<h4 style='margin:0.3rem 0'>{targets['target_short']:.2f}</h4>"
+                f"<small>{short_pct:+.1f}%</small>"
+                f"</div>", unsafe_allow_html=True
+            )
+            tg[4].markdown(
+                f"<div style='background:#22c55e22;padding:0.8rem;border-radius:10px;"
+                f"border-left:4px solid #22c55e;text-align:center'>"
+                f"<small>🚀 LANG (6-12m)</small>"
+                f"<h4 style='margin:0.3rem 0'>{targets['target_long']:.2f}</h4>"
+                f"<small>{long_pct:+.1f}%</small>"
+                f"</div>", unsafe_allow_html=True
+            )
+
+        # DCF
+        st.markdown("---")
+        st.markdown("### 💎 DCF Værdiansættelse")
+        dcf = dcf_valuation(info)
+        if dcf:
+            dc = st.columns(4)
+            dc[0].metric("Fair value", f"{dcf['fair_value']:.2f} {currency}")
+            dc[1].metric("Nuværende", f"{price:.2f} {currency}")
+            upside = (dcf["fair_value"] / price - 1) * 100
+            dc[2].metric("Upside", f"{upside:+.1f}%")
+            dc[3].metric("FCF brugt", f"{dcf['fcf_used']/1e9:.1f}B")
+            st.caption(
+                f"⚙️ Antagelser: Vækst {dcf['growth_rate']*100:.0f}% (5y), "
+                f"Terminal {dcf['terminal_growth']*100:.0f}%, "
+                f"Discount {dcf['discount_rate']*100:.0f}%"
+            )
         else:
-            st.info(f"Ingen fundamentale data fra **{data['source']}**")
+            st.info("DCF kræver Free Cash Flow data (ikke tilgængelig)")
 
-    # Teknisk
-    with sub_tabs[2]:
-        st.caption("⚡ Tekniske signaler (12 måneder)")
-        df_t = pd.DataFrame(t_det)
-        if not df_t.empty:
-            fig_t = px.bar(df_t, x="impact", y="label", orientation="h",
-                           color="impact", color_continuous_scale="RdYlGn")
-            fig_t.update_layout(height=400, template="plotly_dark", showlegend=False)
-            st.plotly_chart(fig_t, use_container_width=True)
-        last = df_technical.iloc[-1]
-        cc = st.columns(4)
-        cc[0].metric("RSI", f"{last['RSI']:.1f}" if not np.isnan(last["RSI"]) else "-")
-        cc[1].metric("MACD", f"{last['MACD']:.3f}" if not np.isnan(last["MACD"]) else "-")
-        cc[2].metric("ADX", f"{last['ADX']:.1f}" if not np.isnan(last["ADX"]) else "-")
-        cc[3].metric("ATR", f"{last['ATR']:.2f}" if not np.isnan(last["ATR"]) else "-")
+    # ===== RISIKO =====
+    with main_tabs[3]:
+        df_risk = filter_by_days(df_indicators, ANALYSIS_PERIODS["RISK_METRICS"])
+        risk = risk_metrics(df_risk)
 
-    # DCF
-    with sub_tabs[3]:
-        c = st.columns(3)
-        cg = c[0].slider("Vækstrate", 0.0, 0.30, 0.10, 0.01)
-        cdr = c[1].slider("Diskontering", 0.05, 0.20, 0.10, 0.01)
-        ct = c[2].slider("Terminal vækst", 0.01, 0.05, 0.025, 0.005)
-        fair = dcf_valuation(info, cg, cdr, ct)
-        if fair:
-            up = (fair / pris - 1) * 100
-            d = st.columns(3)
-            d[0].metric(f"Aktuel pris ({valuta})", f"{pris:.2f}")
-            d[1].metric(f"DCF fair value ({valuta})", f"{fair:.2f}")
-            d[2].metric("Upside", f"{up:+.1f}%")
-            if show_secondary and valuta != "DKK":
-                rate = get_fx_rate(valuta, "DKK")
-                st.caption(f"💱 I DKK: Pris {pris*rate:.2f} → Fair value {fair*rate:.2f}")
+        if risk:
+            st.caption("📉 Risk metrics (3 års data)")
+            rc = st.columns(4)
+            rc[0].metric("Ann. afkast", f"{risk['ann_r']*100:.1f}%")
+            rc[1].metric("Ann. volatilitet", f"{risk['ann_v']*100:.1f}%")
+            rc[2].metric("Sharpe", f"{risk['sharpe']:.2f}")
+            rc[3].metric("Sortino", f"{risk['sortino']:.2f}")
+
+            rc2 = st.columns(3)
+            rc2[0].metric("Max Drawdown", f"{risk['max_dd']*100:.1f}%")
+            rc2[1].metric("VaR 95% (1d)", f"{risk['var95']*100:.2f}%")
+            if "calmar" in risk:
+                rc2[2].metric("Calmar", f"{risk['calmar']:.2f}")
+
+            fig_dd = go.Figure(go.Scatter(
+                x=risk["dd_series"].index,
+                y=risk["dd_series"] * 100,
+                fill="tozeroy", line=dict(color="#ef4444")
+            ))
+            fig_dd.update_layout(
+                template="plotly_dark", height=350,
+                title="Drawdown %"
+            )
+            st.plotly_chart(fig_dd, use_container_width=True)
         else:
-            st.warning("Ikke nok FCF-data til DCF")
+            st.warning("Ikke nok data til risk metrics")
 
-    # Risiko
-    with sub_tabs[4]:
-        st.caption("📉 Risk metrics (3 år)")
-        risk = risk_metrics(hist_risk)
-        c = st.columns(4)
-        c[0].metric("Ann. afkast", f"{risk['ann_r']*100:.2f}%")
-        c[1].metric("Ann. volatilitet", f"{risk['ann_v']*100:.2f}%")
-        c[2].metric("Sharpe", f"{risk['sharpe']:.2f}")
-        c[3].metric("Sortino", f"{risk['sortino']:.2f}")
-        c2 = st.columns(2)
-        c2[0].metric("Max drawdown", f"{risk['max_dd']*100:.2f}%")
-        c2[1].metric("VaR 95%", f"{risk['var95']*100:.2f}%")
-        fig_dd = go.Figure(go.Scatter(x=risk["dd_series"].index,
-                                      y=risk["dd_series"] * 100,
-                                      fill="tozeroy", line=dict(color="#ef4444")))
-        fig_dd.update_layout(template="plotly_dark", height=350,
-                             title="Drawdown % (3 år)")
-        st.plotly_chart(fig_dd, use_container_width=True)
+    # ===== MONTE CARLO =====
+    with main_tabs[4]:
+        df_mc = filter_by_days(df_indicators, ANALYSIS_PERIODS["MONTE_CARLO"])
 
-    # Monte Carlo
-    with sub_tabs[5]:
-        st.caption("🎲 Monte Carlo: 300 simulationer (2 års volatilitet)")
-        sims, lp = monte_carlo(hist_mc)
-        final = sims[:, -1]
-        p5, p50, p95 = np.percentile(final, [5, 50, 95])
-        c = st.columns(4)
-        c[0].metric(f"Start ({valuta})", f"{lp:.2f}")
-        c[1].metric("5% (worst)", f"{p5:.2f}", f"{(p5/lp-1)*100:+.1f}%")
-        c[2].metric("Median (12m)", f"{p50:.2f}", f"{(p50/lp-1)*100:+.1f}%")
-        c[3].metric("95% (best)", f"{p95:.2f}", f"{(p95/lp-1)*100:+.1f}%")
-        fig_m = go.Figure()
-        for i in range(min(100, len(sims))):
-            fig_m.add_trace(go.Scatter(y=sims[i],
-                                        line=dict(width=0.5, color="rgba(0,212,170,0.15)"),
-                                        showlegend=False))
-        fig_m.add_trace(go.Scatter(y=np.percentile(sims, 50, axis=0),
-                                    name="Median",
-                                    line=dict(color="#00d4aa", width=3)))
-        fig_m.update_layout(template="plotly_dark", height=500,
-                            title="Monte Carlo - 252 dage frem")
-        st.plotly_chart(fig_m, use_container_width=True)
+        mc_days = st.slider("Dage frem", 30, 365, 252, key="stock_mc_days")
+        sims, lp = monte_carlo(df_mc, n_sims=500, days=mc_days)
 
-               # Backtest
-    with sub_tabs[6]:
-        st.markdown("## 🎯 Backtest - Validerer modellens anbefalinger historisk")
-        st.caption(
-            "Walk-forward analyse: For hvert tidspunkt i fortiden beregnes scoren "
-            "BASERET PÅ DATA OP TIL DET PUNKT, og vi sammenligner med hvad der "
-            "faktisk skete bagefter."
+        if sims is not None:
+            final = sims[:, -1]
+            p5, p25, p50, p75, p95 = np.percentile(final, [5, 25, 50, 75, 95])
+
+            mc_cols = st.columns(5)
+            mc_cols[0].metric("5%", f"{p5:.2f}", f"{(p5/lp-1)*100:+.0f}%")
+            mc_cols[1].metric("25%", f"{p25:.2f}", f"{(p25/lp-1)*100:+.0f}%")
+            mc_cols[2].metric(f"Median", f"{p50:.2f}", f"{(p50/lp-1)*100:+.0f}%")
+            mc_cols[3].metric("75%", f"{p75:.2f}", f"{(p75/lp-1)*100:+.0f}%")
+            mc_cols[4].metric("95%", f"{p95:.2f}", f"{(p95/lp-1)*100:+.0f}%")
+
+            fig_m = go.Figure()
+            for i in range(min(150, len(sims))):
+                fig_m.add_trace(go.Scatter(
+                    y=sims[i],
+                    line=dict(width=0.5, color="rgba(0,212,170,0.1)"),
+                    showlegend=False
+                ))
+            fig_m.add_trace(go.Scatter(
+                y=np.percentile(sims, 50, axis=0),
+                name="Median", line=dict(color="#00d4aa", width=3)
+            ))
+            fig_m.add_trace(go.Scatter(
+                y=np.percentile(sims, 5, axis=0),
+                name="5%", line=dict(color="#ef4444", width=2, dash="dash")
+            ))
+            fig_m.add_trace(go.Scatter(
+                y=np.percentile(sims, 95, axis=0),
+                name="95%", line=dict(color="#22c55e", width=2, dash="dash")
+            ))
+            fig_m.update_layout(
+                template="plotly_dark", height=500,
+                title=f"Monte Carlo - {mc_days} dage frem"
+            )
+            st.plotly_chart(fig_m, use_container_width=True)
+
+    # ===== BACKTEST =====
+    with main_tabs[5]:
+        st.caption("🎯 Walk-forward backtest af model-anbefalinger")
+
+        bc1, bc2 = st.columns(2)
+        holding = bc1.selectbox(
+            "Holding periode (dage)",
+            [30, 60, 90, 180, 365], index=1, key="stock_hold"
+        )
+        freq = bc2.selectbox(
+            "Sample frekvens", [7, 14, 30], index=1, key="stock_freq"
         )
 
-        bt_col1, bt_col2, bt_col3 = st.columns(3)
-        holding_days = bt_col1.selectbox("⏱️ Holding periode", [30, 60, 90, 180, 252], index=2)
-        sample_freq = bt_col2.selectbox("📊 Sample frekvens", [1, 5, 10, 20], index=1)
-        buy_threshold = bt_col3.slider("🟢 KØB tærskel (score)", 50, 80, 60)
-
-        if st.button("🚀 Kør backtest", type="primary"):
-            with st.spinner("Kører walk-forward backtest..."):
-                bt = run_backtest(hist_full, holding_days=holding_days, sample_freq=sample_freq)
-                sim = simulate_strategy(hist_full, buy_threshold=buy_threshold, sell_threshold=30, sample_freq=sample_freq)
+        if st.button("🚀 Kør backtest", type="primary", key="btn_stock_bt"):
+            with st.spinner("Kører walk-forward..."):
+                bt = run_backtest(hist, info, holding_days=holding,
+                                   sample_freq=freq)
 
             if bt is None:
-                st.error(f"❌ Ikke nok historisk data ({len(hist_full)} dage). Backtest kræver mindst {250 + holding_days} dage.")
+                st.error(f"Ikke nok data ({len(hist)} dage)")
             else:
-                st.markdown("### 📊 Hit-rate per anbefaling")
-                st.caption(
-                    f"Baseret på {bt['n_trades']} samples fra "
-                    f"{bt['start_date'].strftime('%Y-%m-%d')} til "
-                    f"{bt['end_date'].strftime('%Y-%m-%d')} · "
-                    f"Holding: {bt['holding_days']} dage"
+                st.markdown(
+                    f"📊 **{bt['n_trades']} samples** · "
+                    f"{bt['start_date'].date()} → {bt['end_date'].date()}"
                 )
 
                 rows = []
-                for rec_label in ["STÆRKT KØB", "KØB", "HOLD", "SÆLG", "STÆRKT SÆLG"]:
-                    s = bt["stats"].get(rec_label)
+                for rec_lbl in ["KØB", "HOLD", "SÆLG"]:
+                    s = bt["stats"].get(rec_lbl)
                     if s:
                         rows.append({
-                            "Anbefaling": rec_label,
-                            "Antal signaler": s["count"],
+                            "Anbefaling": rec_lbl, "Antal": s["count"],
                             "Hit rate": f"{s['win_rate']:.1f}%",
                             "Gns. afkast": f"{s['avg_return']:+.2f}%",
                             "Median": f"{s['median_return']:+.2f}%",
-                            "Bedst": f"{s['best']:+.2f}%",
-                            "Værst": f"{s['worst']:+.2f}%",
                         })
-                    else:
-                        rows.append({
-                            "Anbefaling": rec_label,
-                            "Antal signaler": 0,
-                            "Hit rate": "-",
-                            "Gns. afkast": "-",
-                            "Median": "-",
-                            "Bedst": "-",
-                            "Værst": "-",
-                        })
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                st.markdown(f"📈 **Buy & Hold over samme periode:** {bt['buy_hold_return']:+.2f}%")
+                st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                             hide_index=True)
+                st.markdown(f"📈 **Buy & Hold:** {bt['buy_hold_return']:+.2f}%")
 
-                valid_stats = {k: v for k, v in bt["stats"].items() if v is not None}
-                if valid_stats:
-                    fig_hr = go.Figure()
-                    fig_hr.add_trace(go.Bar(
-                        x=list(valid_stats.keys()),
-                        y=[v["avg_return"] for v in valid_stats.values()],
-                        text=[f"n={v['count']}<br>Hit={v['win_rate']:.0f}%" for v in valid_stats.values()],
-                        textposition="auto",
-                        marker_color=["#16a34a" if v["avg_return"] > 0 else "#ef4444" for v in valid_stats.values()],
-                    ))
-                    fig_hr.update_layout(
-                        template="plotly_dark",
-                        height=400,
-                        title=f"Gennemsnitligt {bt['holding_days']}-dages afkast pr. anbefaling",
-                        yaxis_title="Afkast %",
-                    )
-                    st.plotly_chart(fig_hr, use_container_width=True)
-
-                st.markdown("---")
-                st.markdown("### 🔬 Korrelation: Score vs faktisk afkast")
-                st.caption("Hvis modellen virker, skal høj score → højt afkast.")
-
-                fig_corr = px.scatter(
+                fig_bt = px.scatter(
                     bt["results"], x="score", y="return_pct",
                     color="recommendation",
                     color_discrete_map={
-                        "STÆRKT KØB": "#16a34a",
-                        "KØB": "#22c55e",
-                        "HOLD": "#eab308",
-                        "SÆLG": "#ef4444",
-                        "STÆRKT SÆLG": "#b91c1c",
+                        "KØB": "#22c55e", "HOLD": "#eab308", "SÆLG": "#ef4444"
                     },
-                    title=f"Score vs {holding_days}-dages afkast",
-                    labels={"score": "Model score", "return_pct": "Faktisk afkast %"},
-                    hover_data=["date"],
+                    title=f"Score vs {holding}-dages afkast"
                 )
-                fig_corr.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
-                fig_corr.add_vline(x=50, line_dash="dash", line_color="white", opacity=0.3)
-                fig_corr.update_layout(template="plotly_dark", height=500)
-                st.plotly_chart(fig_corr, use_container_width=True)
+                fig_bt.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
+                fig_bt.update_layout(template="plotly_dark", height=400)
+                st.plotly_chart(fig_bt, use_container_width=True)
 
-                correlation = bt["results"]["score"].corr(bt["results"]["return_pct"])
-                if correlation > 0.3:
-                    st.success(f"✅ Stærk positiv korrelation: {correlation:.3f} - modellen virker!")
-                elif correlation > 0.1:
-                    st.info(f"➖ Svag positiv korrelation: {correlation:.3f} - modellen har værdi")
-                elif correlation > -0.1:
-                    st.warning(f"⚠️ Ingen korrelation: {correlation:.3f} - modellen er ikke bedre end tilfældigt")
+    # ===== DETALJER =====
+    with main_tabs[6]:
+        det_cols = st.columns(2)
+
+        with det_cols[0]:
+            st.markdown("#### 📊 Fundamentale nøgletal")
+            fund_data = []
+            for label, key, fmt in [
+                ("Market Cap", "marketCap", "currency_b"),
+                ("P/E (TTM)", "trailingPE", "ratio"),
+                ("Forward P/E", "forwardPE", "ratio"),
+                ("PEG", "pegRatio", "ratio"),
+                ("P/B", "priceToBook", "ratio"),
+                ("ROE", "returnOnEquity", "percent"),
+                ("Profit margin", "profitMargins", "percent"),
+                ("Debt/Equity", "debtToEquity", "ratio"),
+                ("EPS Growth", "earningsGrowth", "percent"),
+                ("Revenue Growth", "revenueGrowth", "percent"),
+                ("Dividend %", "dividendYield", "percent"),
+                ("Payout ratio", "payoutRatio", "percent"),
+                ("Beta", "beta", "ratio"),
+            ]:
+                v = info.get(key)
+                if v is None:
+                    formatted = "-"
+                elif fmt == "currency_b":
+                    formatted = f"${v/1e9:.2f}B" if v >= 1e9 else f"${v/1e6:.0f}M"
+                elif fmt == "percent":
+                    formatted = f"{v*100:.2f}%" if abs(v) < 5 else f"{v:.2f}%"
+                elif fmt == "ratio":
+                    formatted = f"{v:.2f}"
                 else:
-                    st.error(f"❌ Negativ korrelation: {correlation:.3f} - modellen forudsiger forkert!")
+                    formatted = str(v)
+                fund_data.append({"Metric": label, "Værdi": formatted})
 
-                               # ============ STRATEGI-SIMULATION ============
-                if sim:
-                    st.markdown("---")
-                    st.markdown("### 💼 Strategi-simulation")
-                    st.caption(f"Køb når score ≥ {buy_threshold}, sælg når score ≤ 30. Start: $10.000")
+            st.dataframe(pd.DataFrame(fund_data), use_container_width=True,
+                         hide_index=True)
 
-                    # Hent værdier direkte fra sim
-                    strategy_final = sim.get("final_value")
-                    strategy_return = sim.get("strategy_return")
-                    bh_return = sim.get("buy_hold_return")
-                    outperf = sim.get("outperformance")
-                    n_trades = sim.get("n_trades", 0)
-                    initial_cash = sim.get("initial_cash", 10000)
+        with det_cols[1]:
+            st.markdown("#### 📍 Position vs ranges")
+            pos_data = []
+            for label, key in [
+                ("52w høj", "fiftyTwoWeekHigh"),
+                ("52w lav", "fiftyTwoWeekLow"),
+                ("Dagshigh", "dayHigh"),
+                ("Dagslow", "dayLow"),
+                ("Volume", "volume"),
+                ("Avg volume", "averageVolume"),
+            ]:
+                v = info.get(key)
+                if v is None:
+                    formatted = "-"
+                elif "olume" in key:
+                    formatted = f"{v:,.0f}"
+                else:
+                    formatted = f"{v:.2f} {currency}"
+                pos_data.append({"Metric": label, "Værdi": formatted})
 
-                    # Beregn bh_final fra bh_return
-                    bh_final = initial_cash * (1 + bh_return / 100) if bh_return is not None else None
+            st.dataframe(pd.DataFrame(pos_data), use_container_width=True,
+                         hide_index=True)
 
-                    if strategy_final is not None:
-                        sm = st.columns(4)
-                        sm[0].metric(
-                            "💰 Slutværdi (strategi)",
-                            f"${strategy_final:,.0f}",
-                            f"{strategy_return:+.1f}%" if strategy_return is not None else None
-                        )
-                        if bh_final is not None:
-                            sm[1].metric(
-                                "📈 Buy & Hold",
-                                f"${bh_final:,.0f}",
-                                f"{bh_return:+.1f}%" if bh_return is not None else None
-                            )
-                        else:
-                            sm[1].metric("📈 Buy & Hold", "N/A")
-
-                        if outperf is not None:
-                            sm[2].metric(
-                                "🎯 Outperformance",
-                                f"{outperf:+.1f}%",
-                                delta_color="normal" if outperf > 0 else "inverse"
-                            )
-                        else:
-                            sm[2].metric("🎯 Outperformance", "N/A")
-
-                        sm[3].metric("📊 Antal trades", f"{n_trades}")
-
-                        # Graf fra equity_curve DataFrame
-                        eq = sim.get("equity_curve")
-                        if eq is not None and isinstance(eq, pd.DataFrame) and not eq.empty:
-                            fig_sim = go.Figure()
-                            fig_sim.add_trace(go.Scatter(
-                                x=eq["date"], y=eq["strategy"],
-                                name="Strategi (model)",
-                                line=dict(color="#00d4aa", width=3)
-                            ))
-                            if "buy_hold" in eq.columns:
-                                fig_sim.add_trace(go.Scatter(
-                                    x=eq["date"], y=eq["buy_hold"],
-                                    name="Buy & Hold",
-                                    line=dict(color="#0099ff", width=2, dash="dash")
-                                ))
-                            fig_sim.update_layout(
-                                template="plotly_dark", height=450,
-                                title="Portefølje-værdi over tid (start $10.000)",
-                                yaxis_title="Værdi ($)"
-                            )
-                            st.plotly_chart(fig_sim, use_container_width=True)
-
-                            # Vis trades-tabel
-                            trades_df = sim.get("trades")
-                            if trades_df is not None and isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
-                                with st.expander(f"📋 Vis alle {n_trades} trades"):
-                                    trades_display = trades_df.copy()
-                                    if "date" in trades_display.columns:
-                                        trades_display["date"] = pd.to_datetime(
-                                            trades_display["date"]
-                                        ).dt.strftime("%Y-%m-%d")
-                                    if "price" in trades_display.columns:
-                                        trades_display["price"] = trades_display["price"].round(2)
-                                    if "score" in trades_display.columns:
-                                        trades_display["score"] = trades_display["score"].round(1)
-                                    trades_display.columns = [
-                                        c.capitalize() for c in trades_display.columns
-                                    ]
-                                    st.dataframe(
-                                        trades_display,
-                                        use_container_width=True,
-                                        hide_index=True
-                                    )
-                    else:
-                        st.warning(
-                            f"⚠️ Ingen handler i perioden — der var ingen score ≥ {buy_threshold} "
-                            "(køb-signal) eller ≤ 30 (sælg-signal). Prøv at sænke køb-tærsklen "
-                            "eller test en anden aktie."
-                        )
-
-                # ============ ALLE BACKTEST-SAMPLES ============
-                with st.expander("📅 Vis alle backtest-samples"):
-                    display_df = bt["results"][[
-                        "date", "score", "recommendation",
-                        "entry_price", "exit_price", "return_pct"
-                    ]].copy()
-                    display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
-                    display_df["score"] = display_df["score"].round(1)
-                    display_df["entry_price"] = display_df["entry_price"].round(2)
-                    display_df["exit_price"] = display_df["exit_price"].round(2)
-                    display_df["return_pct"] = display_df["return_pct"].round(2)
-                    display_df.columns = [
-                        "Dato", "Score", "Anbefaling",
-                        "Entry pris", "Exit pris", "Afkast %"
-                    ]
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+        if info.get("longBusinessSummary"):
+            with st.expander("ℹ️ Om virksomheden"):
+                st.write(info["longBusinessSummary"][:2000])
