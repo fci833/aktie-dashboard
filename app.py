@@ -2444,7 +2444,7 @@ elif st.session_state.active_view == "📊 Analyse":
 
         targets = calculate_price_targets(df_targets, price, fv_for_targets)
 
-            if targets:
+        if targets:
             st.markdown("### 💰 Kursniveauer (6 mdr basis)")
 
             buy_low_pct = (targets["buy_low"] / price - 1) * 100
