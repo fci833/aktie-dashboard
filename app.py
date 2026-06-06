@@ -252,8 +252,6 @@ if st.session_state.active_view == "🏠 Hjem":
             st.rerun()
 
     st.markdown("---")
-
-    # ============ MARKET PULSE ============
     st.markdown("### 📊 Market Pulse")
 
     with st.spinner("Henter markedsdata..."):
@@ -272,11 +270,7 @@ if st.session_state.active_view == "🏠 Hjem":
     if spy:
         change = spy["change_%"]
         emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
-        pulse_cols[0].metric(
-            f"{emoji} S&P 500",
-            f"${spy['price']:,.0f}",
-            f"{change:+.2f}%"
-        )
+        pulse_cols[0].metric(f"{emoji} S&P 500", f"${spy['price']:,.0f}", f"{change:+.2f}%")
     else:
         pulse_cols[0].metric("S&P 500", "N/A")
 
@@ -284,11 +278,7 @@ if st.session_state.active_view == "🏠 Hjem":
     if nasdaq:
         change = nasdaq["change_%"]
         emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
-        pulse_cols[1].metric(
-            f"{emoji} Nasdaq 100",
-            f"${nasdaq['price']:,.0f}",
-            f"{change:+.2f}%"
-        )
+        pulse_cols[1].metric(f"{emoji} Nasdaq 100", f"${nasdaq['price']:,.0f}", f"{change:+.2f}%")
     else:
         pulse_cols[1].metric("Nasdaq 100", "N/A")
 
@@ -305,11 +295,7 @@ if st.session_state.active_view == "🏠 Hjem":
     if crypto:
         change = crypto.get("change_24h", 0)
         emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
-        pulse_cols[3].metric(
-            f"{emoji} Krypto MC",
-            f"${crypto['total_mc_t']:.2f}T",
-            f"{change:+.2f}%"
-        )
+        pulse_cols[3].metric(f"{emoji} Krypto MC", f"${crypto['total_mc_t']:.2f}T", f"{change:+.2f}%")
     else:
         pulse_cols[3].metric("Krypto", "N/A")
 
@@ -322,20 +308,12 @@ if st.session_state.active_view == "🏠 Hjem":
         pulse_cols[4].metric("F&G", "N/A")
 
     st.markdown("---")
-
-    # ============ DAGENS HANDLINGER ============
     st.markdown("### 🎯 Dagens Handlinger")
 
-    action_tabs = st.tabs([
-        "🟢 KØB-muligheder",
-        "👁️ Min Watchlist",
-        "🔄 Rating-ændringer",
-    ])
+    action_tabs = st.tabs(["🟢 KØB-muligheder", "👁️ Min Watchlist", "🔄 Rating-ændringer"])
 
-    # ===== KØB-MULIGHEDER =====
     with action_tabs[0]:
         opps = get_top_opportunities(min_score=70, n_max=10)
-
         if opps is None:
             st.info(
                 "💡 **Ingen screener-snapshots fundet endnu.**\n\n"
@@ -344,42 +322,29 @@ if st.session_state.active_view == "🏠 Hjem":
         elif opps["buys"].empty:
             st.warning("Ingen aktier i seneste snapshot har score ≥ 70")
         else:
-            st.caption(
-                f"📊 Fra seneste screening: **{opps['universe']}** · "
-                f"{opps['snapshot_ts'][:10]}"
-            )
-
+            st.caption(f"📊 Fra seneste screening: **{opps['universe']}** · {opps['snapshot_ts'][:10]}")
             for idx, (_, row) in enumerate(opps["buys"].iterrows()):
                 cols = st.columns([1, 3, 1, 1, 1, 1])
-
                 score = row.get("overall", 0)
                 score_color = "#16a34a" if score >= 75 else "#22c55e" if score >= 65 else "#eab308"
                 cols[0].markdown(
                     f"<div style='background:{score_color};color:white;padding:0.4rem;"
-                    f"border-radius:8px;text-align:center;font-weight:bold'>"
-                    f"{score:.0f}</div>",
+                    f"border-radius:8px;text-align:center;font-weight:bold'>{score:.0f}</div>",
                     unsafe_allow_html=True
                 )
-
                 cols[1].markdown(f"**{row['ticker']}**")
                 cols[1].caption(str(row.get("name", ""))[:50])
-
                 price = row.get("price", 0)
                 change = row.get("change_%", 0)
                 cols[2].metric("Pris", f"{price:.2f}", f"{change:+.2f}%", label_visibility="collapsed")
-
                 rec = row.get("recommendation", "")
                 cols[3].markdown(f"<div style='text-align:center;font-weight:bold'>{rec}</div>",
                                 unsafe_allow_html=True)
-
                 cols[4].caption(str(row.get("sector", "?"))[:15])
-
                 if cols[5].button("📊 Åbn", key=f"home_buy_{row['ticker']}_{idx}", use_container_width=True):
                     goto_analysis(row["ticker"])
-
                 st.markdown("<hr style='margin:0.3rem 0;opacity:0.2'>", unsafe_allow_html=True)
 
-    # ===== MIN WATCHLIST =====
     with action_tabs[1]:
         if not st.session_state.watchlist:
             st.info(
@@ -388,10 +353,8 @@ if st.session_state.active_view == "🏠 Hjem":
             )
         else:
             st.caption(f"📋 {len(st.session_state.watchlist)} tickers i watchlist")
-
             with st.spinner(f"Analyserer {len(st.session_state.watchlist)} tickers..."):
                 wdf = analyze_watchlist(st.session_state.watchlist, max_workers=4)
-
             if wdf.empty:
                 st.warning("Kunne ikke analysere watchlist (data-fejl?)")
             else:
@@ -410,8 +373,7 @@ if st.session_state.active_view == "🏠 Hjem":
                         cols = st.columns([1, 3, 1, 1, 1])
                         cols[0].markdown(
                             f"<div style='background:#16a34a;color:white;padding:0.4rem;"
-                            f"border-radius:8px;text-align:center;font-weight:bold'>"
-                            f"{row['score']:.0f}</div>",
+                            f"border-radius:8px;text-align:center;font-weight:bold'>{row['score']:.0f}</div>",
                             unsafe_allow_html=True
                         )
                         cols[1].markdown(f"**{row['ticker']}** {row['type']}")
@@ -429,8 +391,7 @@ if st.session_state.active_view == "🏠 Hjem":
                             cols = st.columns([1, 3, 1, 1, 1])
                             cols[0].markdown(
                                 f"<div style='background:#ef4444;color:white;padding:0.4rem;"
-                                f"border-radius:8px;text-align:center;font-weight:bold'>"
-                                f"{row['score']:.0f}</div>",
+                                f"border-radius:8px;text-align:center;font-weight:bold'>{row['score']:.0f}</div>",
                                 unsafe_allow_html=True
                             )
                             cols[1].markdown(f"**{row['ticker']}**")
@@ -456,23 +417,17 @@ if st.session_state.active_view == "🏠 Hjem":
                             if cols[4].button("📊", key=f"whold_{row['ticker']}_{idx}", use_container_width=True):
                                 goto_analysis(row["ticker"])
 
-    # ===== RATING-ÆNDRINGER =====
     with action_tabs[2]:
         changes = get_recent_rating_changes()
-
         if changes is None:
             st.info(
                 "💡 **For få snapshots til at vise ændringer.**\n\n"
                 "👉 Kør screeneren minimum 2 gange (forskellige dage) for at se rating-ændringer her."
             )
         else:
-            st.caption(
-                f"🔄 Sammenligning: {changes['ts_prev'][:10]} → {changes['ts_now'][:10]}"
-            )
-
+            st.caption(f"🔄 Sammenligning: {changes['ts_prev'][:10]} → {changes['ts_now'][:10]}")
             up_count = len(changes["upgraded"])
             down_count = len(changes["downgraded"])
-
             cc = st.columns(2)
             cc[0].metric("📈 Opgraderet", up_count)
             cc[1].metric("📉 Nedgraderet", down_count)
@@ -487,10 +442,8 @@ if st.session_state.active_view == "🏠 Hjem":
                                     "score_change", "price_change_%"]
                         if c in changes["upgraded"].columns
                     ]].rename(columns={
-                        "recommendation_prev": "Var",
-                        "recommendation_now": "Nu",
-                        "score_change": "Score Δ",
-                        "price_change_%": "Pris Δ%",
+                        "recommendation_prev": "Var", "recommendation_now": "Nu",
+                        "score_change": "Score Δ", "price_change_%": "Pris Δ%",
                     })
                     for col in ["Score Δ", "Pris Δ%"]:
                         if col in up_disp.columns:
@@ -504,20 +457,16 @@ if st.session_state.active_view == "🏠 Hjem":
                                     "score_change", "price_change_%"]
                         if c in changes["downgraded"].columns
                     ]].rename(columns={
-                        "recommendation_prev": "Var",
-                        "recommendation_now": "Nu",
-                        "score_change": "Score Δ",
-                        "price_change_%": "Pris Δ%",
+                        "recommendation_prev": "Var", "recommendation_now": "Nu",
+                        "score_change": "Score Δ", "price_change_%": "Pris Δ%",
                     })
                     for col in ["Score Δ", "Pris Δ%"]:
                         if col in down_disp.columns:
                             down_disp[col] = pd.to_numeric(down_disp[col], errors="coerce").round(2)
                     st.dataframe(down_disp, use_container_width=True, hide_index=True)
 
-    # ============ HURTIGE LINKS ============
     st.markdown("---")
     st.markdown("### ⚡ Hurtige genveje")
-
     quick_cols = st.columns(4)
     if quick_cols[0].button("🔎 Kør screener nu", use_container_width=True, key="qg_screener"):
         st.session_state.active_view = "🔎 Screener"
@@ -543,8 +492,7 @@ if st.session_state.active_view == "🏠 Hjem":
 
 elif st.session_state.active_view == "🔍 Søg ticker":
     st.subheader("🔍 Find ticker for et firma")
-    query = st.text_input("Firmanavn", value="", key="search_query",
-                          placeholder="novo nordisk")
+    query = st.text_input("Firmanavn", value="", key="search_query", placeholder="novo nordisk")
     if query and len(query) >= 2:
         with st.spinner("Søger..."):
             results = search_tickers(query)
@@ -574,8 +522,7 @@ elif st.session_state.active_view == "🔍 Søg ticker":
 
 elif st.session_state.active_view == "🔧 Diagnose":
     st.subheader("🔧 Diagnose - Test datakilder")
-    diag_ticker = st.text_input("Test ticker", value="AAPL",
-                                key="diag_ticker").strip().upper()
+    diag_ticker = st.text_input("Test ticker", value="AAPL", key="diag_ticker").strip().upper()
     if st.button("🔍 Kør diagnose", type="primary"):
         with st.spinner(f"Tester for {diag_ticker}..."):
             results = run_diagnostics(diag_ticker)
@@ -588,17 +535,11 @@ elif st.session_state.active_view == "🔧 Diagnose":
 
 elif st.session_state.active_view == "🔎 Screener":
     st.subheader("🔎 Markedsscreener")
-    st.caption(
-        "Find gode købsmuligheder · Sammenlign over tid · "
-        "Sektoranalyse · Hot stocks"
-    )
+    st.caption("Find gode købsmuligheder · Sammenlign over tid · Sektoranalyse · Hot stocks")
 
     sc_modes = st.tabs([
-        "🚀 Kør screener",
-        "📊 Sektor-breakdown",
-        "🔔 Sammenlign",
-        "🔥 Hot stocks",
-        "📜 Historik",
+        "🚀 Kør screener", "📊 Sektor-breakdown", "🔔 Sammenlign",
+        "🔥 Hot stocks", "📜 Historik",
     ])
 
     # ===== MODE 1: KØR SCREENER =====
@@ -615,35 +556,25 @@ elif st.session_state.active_view == "🔎 Screener":
         if universe_name == "✏️ Custom liste":
             custom_text = st.text_area(
                 "Tickers (én per linje eller komma-separeret)",
-                value="AAPL\nMSFT\nGOOGL\nNVDA\nTSLA",
-                height=150,
+                value="AAPL\nMSFT\nGOOGL\nNVDA\nTSLA", height=150,
             )
-            tickers = [
-                t.strip().upper() for t in
-                custom_text.replace(",", "\n").split("\n") if t.strip()
-            ]
+            tickers = [t.strip().upper() for t in custom_text.replace(",", "\n").split("\n") if t.strip()]
         else:
             tickers = SCREENER_UNIVERSES[universe_name]
 
-        st.info(
-            f"📋 **{len(tickers)} tickers** · "
-            f"Estimeret tid: ~{len(tickers)*2/max_workers:.0f}s"
-        )
+        st.info(f"📋 **{len(tickers)} tickers** · Estimeret tid: ~{len(tickers)*2/max_workers:.0f}s")
 
         col_run, col_snapshot, col_clear = st.columns([2, 1, 1])
 
-        if col_run.button("🚀 Kør screener", type="primary",
-                          use_container_width=True):
+        if col_run.button("🚀 Kør screener", type="primary", use_container_width=True):
             progress = st.progress(0, text="Starter...")
 
             def update_progress(done, total, ticker):
-                progress.progress(done / total,
-                                  text=f"Analyseret {done}/{total}: {ticker}")
+                progress.progress(done / total, text=f"Analyseret {done}/{total}: {ticker}")
 
             with st.spinner("Scanner marked..."):
                 df_all, df_buys = run_screener(
-                    tickers, min_score=min_score,
-                    max_workers=max_workers,
+                    tickers, min_score=min_score, max_workers=max_workers,
                     progress_callback=update_progress,
                 )
             progress.empty()
@@ -678,10 +609,7 @@ elif st.session_state.active_view == "🔎 Screener":
 
             st.markdown("---")
             st.markdown(f"### 📊 Resultater: **{res['universe']}**")
-            st.caption(
-                f"⏱️ {res['timestamp'].strftime('%Y-%m-%d %H:%M:%S')} · "
-                f"Min. score: {res['min_score']}"
-            )
+            st.caption(f"⏱️ {res['timestamp'].strftime('%Y-%m-%d %H:%M:%S')} · Min. score: {res['min_score']}")
 
             sm1, sm2, sm3, sm4 = st.columns(4)
             sm1.metric("📋 Total scannet", len(df_all))
@@ -691,9 +619,7 @@ elif st.session_state.active_view == "🔎 Screener":
                 sm4.metric("🏆 Topscore", f"{df_buys['overall'].max():.1f}")
 
             if df_buys.empty:
-                st.warning(
-                    f"⚠️ Ingen aktier opfylder min. score {res['min_score']}."
-                )
+                st.warning(f"⚠️ Ingen aktier opfylder min. score {res['min_score']}.")
             else:
                 st.markdown("### 🏆 Top købsmuligheder")
                 top_display = df_buys.head(15).copy()
@@ -711,9 +637,7 @@ elif st.session_state.active_view == "🔎 Screener":
                 for col in ["Pris", "Ændr %", "Score", "RSI", "vs SMA200%",
                             "vs 52w-H%", "P/E", "Div%", "DCF↑%"]:
                     if col in top_display.columns:
-                        top_display[col] = pd.to_numeric(
-                            top_display[col], errors="coerce"
-                        ).round(2)
+                        top_display[col] = pd.to_numeric(top_display[col], errors="coerce").round(2)
 
                 st.dataframe(
                     top_display, use_container_width=True, hide_index=True,
@@ -739,26 +663,20 @@ elif st.session_state.active_view == "🔎 Screener":
                 categories = categorize_opportunities(df_buys)
                 if categories:
                     for cat_name, cat_df in categories.items():
-                        with st.expander(
-                            f"{cat_name} ({len(cat_df)} aktier)"
-                        ):
+                        with st.expander(f"{cat_name} ({len(cat_df)} aktier)"):
                             cat_d = cat_df[
                                 [c for c in display_cols if c in cat_df.columns]
                             ].rename(columns=display_cols)
                             for col in ["Pris", "Ændr %", "Score", "RSI"]:
                                 if col in cat_d.columns:
-                                    cat_d[col] = pd.to_numeric(
-                                        cat_d[col], errors="coerce"
-                                    ).round(2)
-                            st.dataframe(cat_d, use_container_width=True,
-                                         hide_index=True)
+                                    cat_d[col] = pd.to_numeric(cat_d[col], errors="coerce").round(2)
+                            st.dataframe(cat_d, use_container_width=True, hide_index=True)
 
                 st.markdown("---")
                 st.markdown("### 📈 Score-distribution")
                 fig = px.scatter(
                     df_all[df_all["status"] == "✅"],
-                    x="f_score", y="t_score",
-                    size="overall", color="overall",
+                    x="f_score", y="t_score", size="overall", color="overall",
                     hover_data=["ticker", "name", "recommendation"],
                     color_continuous_scale="RdYlGn",
                     title="Fundamental vs Teknisk score",
@@ -772,8 +690,7 @@ elif st.session_state.active_view == "🔎 Screener":
                 csv = df_buys.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     "📥 Download købsmuligheder (CSV)", csv,
-                    f"screener_{res['timestamp'].strftime('%Y%m%d_%H%M')}.csv",
-                    "text/csv",
+                    f"screener_{res['timestamp'].strftime('%Y%m%d_%H%M')}.csv", "text/csv",
                 )
         else:
             st.info("👆 Vælg et univers og tryk **🚀 Kør screener**")
@@ -781,9 +698,7 @@ elif st.session_state.active_view == "🔎 Screener":
     # ===== MODE 2: SEKTOR-BREAKDOWN =====
     with sc_modes[1]:
         st.markdown("### 📊 Sektor-breakdown")
-        st.caption(
-            "Grupperer screening-resultater per sektor og viser bedste pr. sektor"
-        )
+        st.caption("Grupperer screening-resultater per sektor og viser bedste pr. sektor")
 
         if not st.session_state.screener_results:
             st.info("👈 Kør først en screener i fanen **🚀 Kør screener**")
@@ -792,14 +707,12 @@ elif st.session_state.active_view == "🔎 Screener":
             sectors = sector_breakdown(df_all)
 
             if not sectors:
-                st.warning("⚠️ Ingen sektor-info tilgængelig "
-                           "(fungerer bedst med Yahoo+Finnhub data)")
+                st.warning("⚠️ Ingen sektor-info tilgængelig (fungerer bedst med Yahoo+Finnhub data)")
             else:
                 st.markdown("#### 🏆 Sektor-rangering")
                 rank_df = pd.DataFrame([
                     {
-                        "Sektor": name,
-                        "Antal aktier": s["count"],
+                        "Sektor": name, "Antal aktier": s["count"],
                         "Gns. score": round(s["avg_score"], 1),
                         "Bedste score": round(s["best_score"], 1),
                         "Top pick": s["top_pick"]["ticker"],
@@ -812,8 +725,7 @@ elif st.session_state.active_view == "🔎 Screener":
                     rank_df, use_container_width=True, hide_index=True,
                     column_config={
                         "Gns. score": st.column_config.ProgressColumn(
-                            "Gns. score", min_value=0, max_value=100,
-                            format="%.0f"
+                            "Gns. score", min_value=0, max_value=100, format="%.0f"
                         ),
                     },
                 )
@@ -822,8 +734,7 @@ elif st.session_state.active_view == "🔎 Screener":
                     rank_df.sort_values("Gns. score", ascending=True),
                     x="Gns. score", y="Sektor", orientation="h",
                     color="Gns. score", color_continuous_scale="RdYlGn",
-                    title="Gennemsnitlig score per sektor",
-                    text="Antal aktier",
+                    title="Gennemsnitlig score per sektor", text="Antal aktier",
                 )
                 fig_sec.update_layout(template="plotly_dark", height=500)
                 st.plotly_chart(fig_sec, use_container_width=True)
@@ -831,10 +742,7 @@ elif st.session_state.active_view == "🔎 Screener":
                 st.markdown("---")
                 st.markdown("#### 🔍 Top 3 pr. sektor")
                 for name, s in sectors.items():
-                    with st.expander(
-                        f"**{name}** · {s['count']} aktier · "
-                        f"gns. {s['avg_score']:.1f}"
-                    ):
+                    with st.expander(f"**{name}** · {s['count']} aktier · gns. {s['avg_score']:.1f}"):
                         top3 = s["all_stocks"].head(3)
                         for _, row in top3.iterrows():
                             cols = st.columns([1, 2, 1, 1, 1, 1])
@@ -852,22 +760,14 @@ elif st.session_state.active_view == "🔎 Screener":
     # ===== MODE 3: SAMMENLIGN =====
     with sc_modes[2]:
         st.markdown("### 🔔 Sammenlign med tidligere snapshots")
-        st.caption(
-            "Find aktier der har ændret rating, fået højere/lavere score "
-            "siden sidst"
-        )
+        st.caption("Find aktier der har ændret rating, fået højere/lavere score siden sidst")
 
         all_snaps = list_snapshots()
         if len(all_snaps) < 2:
-            st.warning(
-                f"⚠️ Du har kun {len(all_snaps)} snapshot(s). "
-                "Du skal have mindst 2 for at sammenligne."
-            )
+            st.warning(f"⚠️ Du har kun {len(all_snaps)} snapshot(s). Du skal have mindst 2 for at sammenligne.")
         else:
             unique_universes = list(set(s["universe"] for s in all_snaps))
-            sel_universe = st.selectbox(
-                "🌍 Univers", unique_universes, key="cmp_universe"
-            )
+            sel_universe = st.selectbox("🌍 Univers", unique_universes, key="cmp_universe")
             uni_snaps = [s for s in all_snaps if s["universe"] == sel_universe]
 
             if len(uni_snaps) < 2:
@@ -875,121 +775,85 @@ elif st.session_state.active_view == "🔎 Screener":
             else:
                 cmp1, cmp2 = st.columns(2)
                 snap_now_idx = cmp1.selectbox(
-                    "📅 NU (senest)",
-                    range(len(uni_snaps)),
+                    "📅 NU (senest)", range(len(uni_snaps)),
                     format_func=lambda i: uni_snaps[i]["filename"],
                     index=0, key="cmp_now",
                 )
                 snap_prev_idx = cmp2.selectbox(
-                    "📅 FØR (sammenlign med)",
-                    range(len(uni_snaps)),
+                    "📅 FØR (sammenlign med)", range(len(uni_snaps)),
                     format_func=lambda i: uni_snaps[i]["filename"],
                     index=min(1, len(uni_snaps)-1), key="cmp_prev",
                 )
 
                 if st.button("🔍 Sammenlign", type="primary"):
-                    df_now, ts_now, _ = load_snapshot(
-                        uni_snaps[snap_now_idx]["file"]
-                    )
-                    df_prev, ts_prev, _ = load_snapshot(
-                        uni_snaps[snap_prev_idx]["file"]
-                    )
+                    df_now, ts_now, _ = load_snapshot(uni_snaps[snap_now_idx]["file"])
+                    df_prev, ts_prev, _ = load_snapshot(uni_snaps[snap_prev_idx]["file"])
                     cmp = compare_snapshots(df_now, df_prev)
 
                     if cmp.empty:
                         st.error("Kunne ikke sammenligne")
                     else:
-                        st.success(f"✅ Sammenlignet "
-                                   f"{ts_prev[:10]} → {ts_now[:10]}")
+                        st.success(f"✅ Sammenlignet {ts_prev[:10]} → {ts_now[:10]}")
 
                         if "rating_changed" in cmp.columns:
                             changed = cmp[cmp["rating_changed"] == True].copy()
-
                             st.markdown("#### 🚨 Rating-ændringer")
                             if changed.empty:
                                 st.info("Ingen aktier har ændret rating")
                             else:
-                                rec_order = ["STÆRKT KØB", "KØB", "HOLD",
-                                             "SÆLG", "STÆRKT SÆLG"]
-                                changed["was_idx"] = changed[
-                                    "recommendation_prev"
-                                ].apply(
-                                    lambda x: rec_order.index(x)
-                                    if x in rec_order else 99
+                                rec_order = ["STÆRKT KØB", "KØB", "HOLD", "SÆLG", "STÆRKT SÆLG"]
+                                changed["was_idx"] = changed["recommendation_prev"].apply(
+                                    lambda x: rec_order.index(x) if x in rec_order else 99
                                 )
-                                changed["now_idx"] = changed[
-                                    "recommendation_now"
-                                ].apply(
-                                    lambda x: rec_order.index(x)
-                                    if x in rec_order else 99
+                                changed["now_idx"] = changed["recommendation_now"].apply(
+                                    lambda x: rec_order.index(x) if x in rec_order else 99
                                 )
-
-                                upgraded = changed[
-                                    changed["now_idx"] < changed["was_idx"]
-                                ]
-                                downgraded = changed[
-                                    changed["now_idx"] > changed["was_idx"]
-                                ]
+                                upgraded = changed[changed["now_idx"] < changed["was_idx"]]
+                                downgraded = changed[changed["now_idx"] > changed["was_idx"]]
 
                                 if not upgraded.empty:
                                     st.markdown("##### 🟢 Opgraderet")
                                     st.dataframe(
                                         upgraded[[
-                                            "ticker", "name",
-                                            "recommendation_prev",
-                                            "recommendation_now",
+                                            "ticker", "name", "recommendation_prev", "recommendation_now",
                                             "score_change", "price_change_%"
                                         ]].rename(columns={
-                                            "recommendation_prev": "Var",
-                                            "recommendation_now": "Nu",
-                                            "score_change": "Score Δ",
-                                            "price_change_%": "Pris Δ%",
+                                            "recommendation_prev": "Var", "recommendation_now": "Nu",
+                                            "score_change": "Score Δ", "price_change_%": "Pris Δ%",
                                         }).round(2),
-                                        use_container_width=True,
-                                        hide_index=True,
+                                        use_container_width=True, hide_index=True,
                                     )
 
                                 if not downgraded.empty:
                                     st.markdown("##### 🔴 Nedgraderet")
                                     st.dataframe(
                                         downgraded[[
-                                            "ticker", "name",
-                                            "recommendation_prev",
-                                            "recommendation_now",
+                                            "ticker", "name", "recommendation_prev", "recommendation_now",
                                             "score_change", "price_change_%"
                                         ]].rename(columns={
-                                            "recommendation_prev": "Var",
-                                            "recommendation_now": "Nu",
-                                            "score_change": "Score Δ",
-                                            "price_change_%": "Pris Δ%",
+                                            "recommendation_prev": "Var", "recommendation_now": "Nu",
+                                            "score_change": "Score Δ", "price_change_%": "Pris Δ%",
                                         }).round(2),
-                                        use_container_width=True,
-                                        hide_index=True,
+                                        use_container_width=True, hide_index=True,
                                     )
 
                         st.markdown("#### 📈 Største score-stigninger")
                         if "score_change" in cmp.columns:
-                            risers = cmp.dropna(subset=["score_change"]).nlargest(
-                                10, "score_change"
-                            )
+                            risers = cmp.dropna(subset=["score_change"]).nlargest(10, "score_change")
                             st.dataframe(
                                 risers[[
-                                    "ticker", "name", "overall_now",
-                                    "overall_prev", "score_change",
-                                    "price_change_%"
+                                    "ticker", "name", "overall_now", "overall_prev",
+                                    "score_change", "price_change_%"
                                 ]].round(2),
                                 use_container_width=True, hide_index=True,
                             )
 
                             st.markdown("#### 📉 Største score-fald")
-                            fallers = cmp.dropna(subset=["score_change"]).nsmallest(
-                                10, "score_change"
-                            )
+                            fallers = cmp.dropna(subset=["score_change"]).nsmallest(10, "score_change")
                             st.dataframe(
                                 fallers[[
-                                    "ticker", "name", "overall_now",
-                                    "overall_prev", "score_change",
-                                    "price_change_%"
+                                    "ticker", "name", "overall_now", "overall_prev",
+                                    "score_change", "price_change_%"
                                 ]].round(2),
                                 use_container_width=True, hide_index=True,
                             )
@@ -1004,36 +868,24 @@ elif st.session_state.active_view == "🔎 Screener":
             st.warning("⚠️ Du har brug for mindst 2 snapshots.")
         else:
             unique_universes = list(set(s["universe"] for s in all_snaps))
-            hot_universe = st.selectbox(
-                "🌍 Univers", unique_universes, key="hot_universe"
-            )
+            hot_universe = st.selectbox("🌍 Univers", unique_universes, key="hot_universe")
 
             hcol1, hcol2 = st.columns(2)
-            n_days = hcol1.slider("📅 Antal snapshots tilbage", 2, 20, 5,
-                                  key="hot_n_days")
-            min_change = hcol2.slider("📊 Min. score-ændring", 1, 30, 5,
-                                      key="hot_min_change")
+            n_days = hcol1.slider("📅 Antal snapshots tilbage", 2, 20, 5, key="hot_n_days")
+            min_change = hcol2.slider("📊 Min. score-ændring", 1, 30, 5, key="hot_min_change")
 
             if st.button("🔥 Find hot stocks", type="primary"):
-                hot = get_hot_stocks(
-                    hot_universe, n_days=n_days, min_change=min_change
-                )
-
+                hot = get_hot_stocks(hot_universe, n_days=n_days, min_change=min_change)
                 risers = hot.get("risers") if isinstance(hot, dict) else None
                 fallers = hot.get("fallers") if isinstance(hot, dict) else None
-
                 risers_empty = risers is None or risers.empty
                 fallers_empty = fallers is None or fallers.empty
 
                 if not isinstance(hot, dict) or (risers_empty and fallers_empty):
-                    st.warning(
-                        "Ingen aktier opfylder kriterierne. "
-                        "Prøv at sænke min. ændring."
-                    )
+                    st.warning("Ingen aktier opfylder kriterierne. Prøv at sænke min. ændring.")
                 else:
                     st.caption(
-                        f"📅 Fra {hot['oldest_ts'][:10]} → "
-                        f"{hot['latest_ts'][:10]} "
+                        f"📅 Fra {hot['oldest_ts'][:10]} → {hot['latest_ts'][:10]} "
                         f"({hot['n_snapshots']} snapshots)"
                     )
 
@@ -1041,27 +893,19 @@ elif st.session_state.active_view == "🔎 Screener":
                         st.markdown("#### 🚀 Stigende score (risers)")
                         risers_disp = hot["risers"][[
                             c for c in [
-                                "ticker", "name", "overall_now",
-                                "overall_old", "score_change",
-                                "recommendation", "price_change_%"
+                                "ticker", "name", "overall_now", "overall_old",
+                                "score_change", "recommendation", "price_change_%"
                             ] if c in hot["risers"].columns
                         ]].copy()
-                        for col in ["overall_now", "overall_old",
-                                    "score_change", "price_change_%"]:
+                        for col in ["overall_now", "overall_old", "score_change", "price_change_%"]:
                             if col in risers_disp.columns:
-                                risers_disp[col] = pd.to_numeric(
-                                    risers_disp[col], errors="coerce"
-                                ).round(2)
-                        st.dataframe(
-                            risers_disp, use_container_width=True,
-                            hide_index=True,
-                        )
+                                risers_disp[col] = pd.to_numeric(risers_disp[col], errors="coerce").round(2)
+                        st.dataframe(risers_disp, use_container_width=True, hide_index=True)
 
                         fig_hot = px.bar(
                             hot["risers"].head(15),
                             x="score_change", y="ticker", orientation="h",
-                            color="score_change",
-                            color_continuous_scale="Greens",
+                            color="score_change", color_continuous_scale="Greens",
                             title="Top 15 score-stigninger",
                         )
                         fig_hot.update_layout(template="plotly_dark", height=500)
@@ -1072,26 +916,17 @@ elif st.session_state.active_view == "🔎 Screener":
                         for i, (_, row) in enumerate(hot["risers"].head(8).iterrows()):
                             if hot_cols[i % 4].button(
                                 f"📊 {row['ticker']} (+{row['score_change']:.0f})",
-                                key=f"hot_{row['ticker']}",
-                                use_container_width=True,
+                                key=f"hot_{row['ticker']}", use_container_width=True,
                             ):
                                 goto_analysis(row["ticker"])
 
                     if not fallers_empty:
-                        with st.expander(
-                            f"📉 Faldende score ({len(fallers)} aktier)"
-                        ):
+                        with st.expander(f"📉 Faldende score ({len(fallers)} aktier)"):
                             fallers_disp = fallers.copy()
-                            for col in ["overall_now", "overall_old",
-                                        "score_change", "price_change_%"]:
+                            for col in ["overall_now", "overall_old", "score_change", "price_change_%"]:
                                 if col in fallers_disp.columns:
-                                    fallers_disp[col] = pd.to_numeric(
-                                        fallers_disp[col], errors="coerce"
-                                    ).round(2)
-                            st.dataframe(
-                                fallers_disp, use_container_width=True,
-                                hide_index=True,
-                            )
+                                    fallers_disp[col] = pd.to_numeric(fallers_disp[col], errors="coerce").round(2)
+                            st.dataframe(fallers_disp, use_container_width=True, hide_index=True)
 
     # ===== MODE 5: HISTORIK =====
     with sc_modes[4]:
@@ -1103,13 +938,10 @@ elif st.session_state.active_view == "🔎 Screener":
             st.info("Ingen snapshots gemt endnu.")
         else:
             st.success(f"✅ {len(all_snaps)} snapshots gemt")
-
             snap_df = pd.DataFrame([
                 {
-                    "Filnavn": s["filename"],
-                    "Univers": s["universe"],
-                    "Tidspunkt": s["timestamp"][:19],
-                    "Antal tickers": s["n_tickers"],
+                    "Filnavn": s["filename"], "Univers": s["universe"],
+                    "Tidspunkt": s["timestamp"][:19], "Antal tickers": s["n_tickers"],
                 }
                 for s in all_snaps
             ])
@@ -1135,29 +967,22 @@ elif st.session_state.active_view == "🔎 Screener":
                     fig_track.update_layout(
                         title=f"Score-udvikling for {track_ticker}",
                         yaxis_title="Score (0-100)",
-                        template="plotly_dark", height=400,
-                        yaxis_range=[0, 100],
+                        template="plotly_dark", height=400, yaxis_range=[0, 100],
                     )
-                    fig_track.add_hline(y=60, line_dash="dash",
-                                        line_color="green", opacity=0.4)
-                    fig_track.add_hline(y=30, line_dash="dash",
-                                        line_color="red", opacity=0.4)
+                    fig_track.add_hline(y=60, line_dash="dash", line_color="green", opacity=0.4)
+                    fig_track.add_hline(y=30, line_dash="dash", line_color="red", opacity=0.4)
                     st.plotly_chart(fig_track, use_container_width=True)
-
-                    st.dataframe(hist_df, use_container_width=True,
-                                 hide_index=True)
+                    st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
             st.markdown("---")
             st.markdown("#### 🧹 Vedligeholdelse")
             cl1, cl2 = st.columns(2)
-            cleanup_days = cl1.slider("Slet snapshots ældre end (dage)",
-                                       7, 365, 60, key="cleanup_days")
+            cleanup_days = cl1.slider("Slet snapshots ældre end (dage)", 7, 365, 60, key="cleanup_days")
             if cl2.button("🗑️ Ryd op", use_container_width=True):
                 deleted = cleanup_old_snapshots(cleanup_days)
                 st.success(f"Slettet {deleted} gamle snapshots")
                 time.sleep(1)
                 st.rerun()
-
 
 # ============ KRYPTO-VIEW ============
 
@@ -1202,19 +1027,14 @@ elif st.session_state.active_view == "🪙 Krypto":
     else:
         st.info(
             "⏳ Globale markedsdata kan ikke hentes lige nu (CoinGecko rate-limit). "
-            "Prøv igen om 1-2 minutter eller fortsæt nedenfor — analysefunktionerne "
-            "virker stadig."
+            "Prøv igen om 1-2 minutter eller fortsæt nedenfor — analysefunktionerne virker stadig."
         )
 
     st.markdown("---")
 
     crypto_tabs = st.tabs([
-        "🎯 Pro Analyse",
-        "🔎 Screener",
-        "🔥 Trending",
-        "📈 Sammenlign",
-        "😱 Sentiment",
-        "⛓️ On-Chain (BTC)",
+        "🎯 Pro Analyse", "🔎 Screener", "🔥 Trending",
+        "📈 Sammenlign", "😱 Sentiment", "⛓️ On-Chain (BTC)",
     ])
 
     # ===== TAB 1: PRO ANALYSE =====
@@ -1224,8 +1044,7 @@ elif st.session_state.active_view == "🪙 Krypto":
         input_method = st.radio(
             "Vælg metode:",
             ["📋 Vælg fra liste", "✏️ Skriv ticker selv"],
-            horizontal=True,
-            key="crypto_input_method"
+            horizontal=True, key="crypto_input_method"
         )
 
         if input_method == "📋 Vælg fra liste":
@@ -1236,25 +1055,18 @@ elif st.session_state.active_view == "🪙 Krypto":
                 format_func=lambda x: f"{x} - {CRYPTO_UNIVERSE[x]['category']}",
                 key="crypto_pro_select",
             )
-
             if ac2.button("🔍 Fuld Analyse", type="primary", use_container_width=True, key="btn_analyze_list"):
                 st.session_state["crypto_analyzed"] = crypto_choice
-
         else:
             ac1, ac2 = st.columns([3, 1])
             custom_ticker = ac1.text_input(
                 "🪙 Skriv krypto-ticker (fx BTC, ETH, DOGE, SHIB, PEPE, WIF, BONK)",
-                value="",
-                key="custom_crypto_ticker",
-                placeholder="DOGE"
+                value="", key="custom_crypto_ticker", placeholder="DOGE"
             ).strip().upper()
-
             st.caption(
                 "💡 **Tips:** Brug standard symboler som BTC, ETH, SOL, ADA, DOGE, "
-                "SHIB, PEPE, AVAX, LINK, WIF, BONK, FLOKI, TRUMP osv. "
-                "Systemet søger automatisk i CoinGecko."
+                "SHIB, PEPE, AVAX, LINK, WIF, BONK, FLOKI, TRUMP osv."
             )
-
             if ac2.button("🔍 Analysér", type="primary", use_container_width=True, key="btn_analyze_custom"):
                 if custom_ticker:
                     norm = normalize_crypto_ticker(custom_ticker)
@@ -1275,13 +1087,11 @@ elif st.session_state.active_view == "🪙 Krypto":
 
         if st.session_state.get("crypto_analyzed"):
             symbol = st.session_state["crypto_analyzed"]
-
             with st.spinner(f"Henter komplet data for {symbol}..."):
                 cdata = fetch_crypto_data(symbol)
 
             if cdata is None:
                 st.error(f"❌ Kunne ikke hente data for **{symbol}**")
-
                 col_info, col_actions = st.columns([2, 1])
                 with col_info:
                     st.info(
@@ -1290,7 +1100,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                         "- CoinGecko er midlertidigt rate-limited (vent 1-2 min)\n"
                         "- Coin er for ny / ikke listet"
                     )
-
                 with col_actions:
                     if st.button("🔄 Ryd cache & prøv igen", use_container_width=True, key="retry_crypto"):
                         st.cache_data.clear()
@@ -1298,7 +1107,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     if st.button("🗑️ Nulstil", use_container_width=True, key="reset_crypto"):
                         st.session_state.pop("crypto_analyzed", None)
                         st.rerun()
-
             else:
                 info = cdata["info"]
                 hist = cdata["hist"]
@@ -1314,8 +1122,7 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                 st.markdown(f"## {info['longName']} ({info['symbol']})")
                 st.caption(
-                    f"🏢 {category} · "
-                    f"📅 {hist.index[0].date()} → {hist.index[-1].date()} · 💱 USD"
+                    f"🏢 {category} · 📅 {hist.index[0].date()} → {hist.index[-1].date()} · 💱 USD"
                 )
 
                 change_24h = info.get("change_24h", 0) or 0
@@ -1330,8 +1137,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 if info.get("marketCapRank"):
                     k[2].metric("Rank", f"#{info['marketCapRank']}")
                 if info.get("ath"):
-                    k[3].metric("ATH", f"${info['ath']:,.2f}",
-                                f"{info.get('ath_change_%', 0):.0f}%")
+                    k[3].metric("ATH", f"${info['ath']:,.2f}", f"{info.get('ath_change_%', 0):.0f}%")
                 if info.get("change_7d") is not None:
                     k[4].metric("7d", f"{info['change_7d']:+.1f}%")
                 if info.get("change_30d") is not None:
@@ -1446,12 +1252,8 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                 st.markdown("---")
                 pro_tabs = st.tabs([
-                    "📊 Charts",
-                    "🔧 Tekniske detaljer",
-                    "📉 Risiko",
-                    "🎲 Monte Carlo",
-                    "🎯 Backtest",
-                    "🔗 BTC Korrelation",
+                    "📊 Charts", "🔧 Tekniske detaljer", "📉 Risiko",
+                    "🎲 Monte Carlo", "🎯 Backtest", "🔗 BTC Korrelation",
                     "🔍 Score breakdown"
                 ])
 
@@ -1526,12 +1328,9 @@ elif st.session_state.active_view == "🪙 Krypto":
                     df_ind = crypto_indicators(hist)
                     last = df_ind.iloc[-1]
                     cc = st.columns(4)
-                    cc[0].metric("RSI",
-                                 f"{last['RSI']:.1f}" if not pd.isna(last.get("RSI")) else "-")
-                    cc[1].metric("MACD",
-                                 f"{last['MACD']:.4f}" if not pd.isna(last.get("MACD")) else "-")
-                    cc[2].metric("ATR",
-                                 f"${last['ATR']:.4f}" if not pd.isna(last.get("ATR")) else "-")
+                    cc[0].metric("RSI", f"{last['RSI']:.1f}" if not pd.isna(last.get("RSI")) else "-")
+                    cc[1].metric("MACD", f"{last['MACD']:.4f}" if not pd.isna(last.get("MACD")) else "-")
+                    cc[2].metric("ATR", f"${last['ATR']:.4f}" if not pd.isna(last.get("ATR")) else "-")
                     if not pd.isna(last.get("BB_upper")):
                         cc[3].metric(
                             "BB Width",
@@ -1539,12 +1338,9 @@ elif st.session_state.active_view == "🪙 Krypto":
                         )
 
                     cc2 = st.columns(3)
-                    cc2[0].metric("SMA20",
-                                  f"${last['SMA20']:.4f}" if not pd.isna(last.get("SMA20")) else "-")
-                    cc2[1].metric("SMA50",
-                                  f"${last['SMA50']:.4f}" if not pd.isna(last.get("SMA50")) else "-")
-                    cc2[2].metric("SMA200",
-                                  f"${last['SMA200']:.4f}" if not pd.isna(last.get("SMA200")) else "-")
+                    cc2[0].metric("SMA20", f"${last['SMA20']:.4f}" if not pd.isna(last.get("SMA20")) else "-")
+                    cc2[1].metric("SMA50", f"${last['SMA50']:.4f}" if not pd.isna(last.get("SMA50")) else "-")
+                    cc2[2].metric("SMA200", f"${last['SMA200']:.4f}" if not pd.isna(last.get("SMA200")) else "-")
 
                 with pro_tabs[2]:
                     risk = crypto_risk_metrics(hist)
@@ -1566,17 +1362,13 @@ elif st.session_state.active_view == "🪙 Krypto":
                             y=risk["dd_series"] * 100,
                             fill="tozeroy", line=dict(color="#ef4444")
                         ))
-                        fig_dd.update_layout(
-                            template="plotly_dark", height=350,
-                            title="Drawdown %"
-                        )
+                        fig_dd.update_layout(template="plotly_dark", height=350, title="Drawdown %")
                         st.plotly_chart(fig_dd, use_container_width=True)
                     else:
                         st.warning("Ikke nok data til risk metrics")
 
                 with pro_tabs[3]:
                     st.caption("🎲 500 simulationer · Student-t (fat tails)")
-
                     mc_days = st.slider("Dage frem", 30, 365, 180, key="mc_days")
                     sims, lp = crypto_monte_carlo(hist, n_sims=500, days=mc_days)
 
@@ -1585,16 +1377,11 @@ elif st.session_state.active_view == "🪙 Krypto":
                         p5, p25, p50, p75, p95 = np.percentile(final, [5, 25, 50, 75, 95])
 
                         mc_cols = st.columns(5)
-                        mc_cols[0].metric("5% (worst)", f"${p5:,.4f}",
-                                           f"{(p5/lp-1)*100:+.0f}%")
-                        mc_cols[1].metric("25%", f"${p25:,.4f}",
-                                           f"{(p25/lp-1)*100:+.0f}%")
-                        mc_cols[2].metric(f"Median ({mc_days}d)", f"${p50:,.4f}",
-                                           f"{(p50/lp-1)*100:+.0f}%")
-                        mc_cols[3].metric("75%", f"${p75:,.4f}",
-                                           f"{(p75/lp-1)*100:+.0f}%")
-                        mc_cols[4].metric("95% (best)", f"${p95:,.4f}",
-                                           f"{(p95/lp-1)*100:+.0f}%")
+                        mc_cols[0].metric("5% (worst)", f"${p5:,.4f}", f"{(p5/lp-1)*100:+.0f}%")
+                        mc_cols[1].metric("25%", f"${p25:,.4f}", f"{(p25/lp-1)*100:+.0f}%")
+                        mc_cols[2].metric(f"Median ({mc_days}d)", f"${p50:,.4f}", f"{(p50/lp-1)*100:+.0f}%")
+                        mc_cols[3].metric("75%", f"${p75:,.4f}", f"{(p75/lp-1)*100:+.0f}%")
+                        mc_cols[4].metric("95% (best)", f"${p95:,.4f}", f"{(p95/lp-1)*100:+.0f}%")
 
                         fig_m = go.Figure()
                         for i in range(min(150, len(sims))):
@@ -1605,8 +1392,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                             ))
                         fig_m.add_trace(go.Scatter(
                             y=np.percentile(sims, 50, axis=0),
-                            name="Median",
-                            line=dict(color="#00d4aa", width=3)
+                            name="Median", line=dict(color="#00d4aa", width=3)
                         ))
                         fig_m.add_trace(go.Scatter(
                             y=np.percentile(sims, 5, axis=0),
@@ -1628,20 +1414,16 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                 with pro_tabs[4]:
                     st.caption("🎯 Walk-forward backtest af model-anbefalinger")
-
                     bc1, bc2 = st.columns(2)
                     holding = bc1.selectbox(
                         "Holding periode (dage)",
                         [14, 30, 60, 90, 180], index=1, key="ct_hold"
                     )
-                    freq = bc2.selectbox(
-                        "Sample frekvens", [3, 7, 14], index=1, key="ct_freq"
-                    )
+                    freq = bc2.selectbox("Sample frekvens", [3, 7, 14], index=1, key="ct_freq")
 
                     if st.button("🚀 Kør krypto-backtest", type="primary", key="btn_crypto_bt"):
                         with st.spinner("Kører walk-forward..."):
-                            bt = crypto_backtest(hist, holding_days=holding,
-                                                  sample_freq=freq)
+                            bt = crypto_backtest(hist, holding_days=holding, sample_freq=freq)
 
                         if bt is None:
                             st.error(f"Ikke nok data ({len(hist)} dage)")
@@ -1663,22 +1445,19 @@ elif st.session_state.active_view == "🪙 Krypto":
                                         "Bedst": f"{s['best']:+.1f}%",
                                         "Værst": f"{s['worst']:+.1f}%",
                                     })
-                            st.dataframe(pd.DataFrame(rows), use_container_width=True,
-                                         hide_index=True)
+                            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
                             st.markdown(f"📈 **Buy & Hold:** {bt['buy_hold_return']:+.2f}%")
 
                             fig_bt = px.scatter(
                                 bt["results"], x="score", y="return_pct",
                                 color="recommendation",
                                 color_discrete_map={
-                                    "KØB": "#22c55e", "HOLD": "#eab308",
-                                    "SÆLG": "#ef4444"
+                                    "KØB": "#22c55e", "HOLD": "#eab308", "SÆLG": "#ef4444"
                                 },
                                 title=f"Score vs {holding}-dages afkast",
                                 labels={"score": "Score", "return_pct": "Afkast %"}
                             )
-                            fig_bt.add_hline(y=0, line_dash="dash",
-                                             line_color="white", opacity=0.3)
+                            fig_bt.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
                             fig_bt.update_layout(template="plotly_dark", height=400)
                             st.plotly_chart(fig_bt, use_container_width=True)
 
@@ -1736,9 +1515,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                             st.error("Kunne ikke hente BTC-data")
 
                 with pro_tabs[6]:
-                    detail_subtabs = st.tabs([
-                        "📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"
-                    ])
+                    detail_subtabs = st.tabs(["📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"])
                     for tab, key in zip(detail_subtabs,
                                          ["market", "technical", "sentiment", "developer"]):
                         with tab:
@@ -1749,12 +1526,9 @@ elif st.session_state.active_view == "🪙 Krypto":
                                     df_d, x="impact", y="label", orientation="h",
                                     color="impact", color_continuous_scale="RdYlGn"
                                 )
-                                fig_d.update_layout(
-                                    template="plotly_dark", height=300, showlegend=False
-                                )
+                                fig_d.update_layout(template="plotly_dark", height=300, showlegend=False)
                                 st.plotly_chart(fig_d, use_container_width=True)
-                                st.dataframe(df_d, use_container_width=True,
-                                             hide_index=True)
+                                st.dataframe(df_d, use_container_width=True, hide_index=True)
                             else:
                                 st.info(f"Ingen {key}-data tilgængelig")
 
@@ -1765,11 +1539,8 @@ elif st.session_state.active_view == "🪙 Krypto":
     # ===== TAB 2: SCREENER =====
     with crypto_tabs[1]:
         st.markdown("### 🔎 Krypto-screener")
-
         sc1, sc2 = st.columns([2, 1])
-        sel_universe = sc1.selectbox(
-            "Univers", list(CRYPTO_UNIVERSES.keys()), key="cs_universe"
-        )
+        sel_universe = sc1.selectbox("Univers", list(CRYPTO_UNIVERSES.keys()), key="cs_universe")
         min_score_c = sc2.slider("Min. score", 30, 90, 55, key="cs_min")
 
         if st.button("🚀 Kør krypto-screener", type="primary"):
@@ -1778,16 +1549,14 @@ elif st.session_state.active_view == "🪙 Krypto":
             progress_c = st.progress(0, text="Starter...")
 
             for i, t in enumerate(tickers_c):
-                progress_c.progress((i+1) / len(tickers_c),
-                                     text=f"Analyserer {t}...")
+                progress_c.progress((i+1) / len(tickers_c), text=f"Analyserer {t}...")
                 try:
                     cdata = fetch_crypto_data(t)
                     if cdata:
                         scores = crypto_overall_score(cdata["info"], cdata["hist"])
                         rec, _ = crypto_recommendation(scores["overall"])
                         results_c.append({
-                            "Symbol": t,
-                            "Navn": cdata["info"]["longName"],
+                            "Symbol": t, "Navn": cdata["info"]["longName"],
                             "Pris ($)": cdata["info"]["currentPrice"],
                             "MC ($B)": (cdata["info"].get("marketCap") or 0) / 1e9,
                             "24h %": cdata["info"].get("change_24h"),
@@ -1808,18 +1577,14 @@ elif st.session_state.active_view == "🪙 Krypto":
 
             if results_c:
                 df_r = pd.DataFrame(results_c)
-                df_filt = df_r[df_r["Overall"] >= min_score_c].sort_values(
-                    "Overall", ascending=False
-                )
-
+                df_filt = df_r[df_r["Overall"] >= min_score_c].sort_values("Overall", ascending=False)
                 st.success(f"✅ {len(df_filt)} kryptos opfylder kriterierne")
 
                 if not df_filt.empty:
                     for col in ["Pris ($)", "MC ($B)", "24h %", "7d %", "30d %",
                                 "Overall", "Marked", "Teknisk", "Sentiment", "Dev"]:
                         if col in df_filt.columns:
-                            df_filt[col] = pd.to_numeric(df_filt[col],
-                                                          errors="coerce").round(2)
+                            df_filt[col] = pd.to_numeric(df_filt[col], errors="coerce").round(2)
 
                     st.dataframe(
                         df_filt, use_container_width=True, hide_index=True,
@@ -1833,8 +1598,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     csv_c = df_filt.to_csv(index=False).encode("utf-8")
                     st.download_button(
                         "📥 Download CSV", csv_c,
-                        f"crypto_screener_{datetime.now().strftime('%Y%m%d')}.csv",
-                        "text/csv"
+                        f"crypto_screener_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv"
                     )
 
     # ===== TAB 3: TRENDING =====
@@ -1877,10 +1641,8 @@ elif st.session_state.active_view == "🪙 Krypto":
     with crypto_tabs[3]:
         st.markdown("### 📈 Sammenlign kryptos")
         selected = st.multiselect(
-            "Vælg kryptos (max 6)",
-            list(CRYPTO_UNIVERSE.keys()),
-            default=["BTC", "ETH", "SOL"],
-            max_selections=6,
+            "Vælg kryptos (max 6)", list(CRYPTO_UNIVERSE.keys()),
+            default=["BTC", "ETH", "SOL"], max_selections=6,
         )
 
         if selected and st.button("📊 Sammenlign", type="primary"):
@@ -1918,20 +1680,17 @@ elif st.session_state.active_view == "🪙 Krypto":
                         "Sentiment": round(scores["sentiment"], 1),
                         "Dev": round(scores["developer"], 1),
                     })
-                st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True,
-                             hide_index=True)
+                st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True, hide_index=True)
 
     # ===== TAB 5: SENTIMENT =====
     with crypto_tabs[4]:
         st.markdown("### 😱 Fear & Greed Index")
-
         if fg_df is not None and not fg_df.empty:
             current = int(fg_df["value"].iloc[-1])
             label = fg_df["value_classification"].iloc[-1]
 
             fig_gauge = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=current,
+                mode="gauge+number", value=current,
                 title={"text": f"Nu: {label}"},
                 gauge={
                     "axis": {"range": [0, 100]},
@@ -1959,8 +1718,7 @@ elif st.session_state.active_view == "🪙 Krypto":
             fig_h.add_hline(y=75, line_dash="dash", line_color="green")
             fig_h.update_layout(
                 template="plotly_dark", height=400,
-                title="Fear & Greed - sidste 30 dage",
-                yaxis_range=[0, 100]
+                title="Fear & Greed - sidste 30 dage", yaxis_range=[0, 100]
             )
             st.plotly_chart(fig_h, use_container_width=True)
 
@@ -2012,8 +1770,7 @@ elif st.session_state.active_view == "📊 Analyse":
     c1, c2 = st.columns([4, 1])
     default_t = st.session_state.current_ticker or "AAPL"
     ticker_input = c1.text_input(
-        "Ticker (fx AAPL, NOVO-B.CO)", value=default_t,
-        key="ticker_input"
+        "Ticker (fx AAPL, NOVO-B.CO)", value=default_t, key="ticker_input"
     ).strip().upper()
     auto_analyze = c2.button("🔍 Analysér", type="primary", use_container_width=True)
 
@@ -2059,11 +1816,9 @@ elif st.session_state.active_view == "📊 Analyse":
     info = data["info"]
     hist = data["hist"]
 
-    # Tilføj til watchlist
     if ticker not in st.session_state.watchlist:
         st.session_state.watchlist.append(ticker)
 
-    # Header
     h1, h2 = st.columns([3, 1])
     with h1:
         st.markdown(f"## {info.get('longName', ticker)} ({ticker})")
@@ -2080,7 +1835,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 time.sleep(1)
                 st.rerun()
 
-    # Pris-bokse
     price = info.get("currentPrice")
     prev = info.get("previousClose")
     if price is None and not hist.empty:
@@ -2206,7 +1960,6 @@ elif st.session_state.active_view == "📊 Analyse":
         else:
             st.metric("Market Cap", "N/A")
 
-    # Beregn scores
     df_indicators = get_indicators(hist)
     df_technical = filter_by_days(df_indicators, ANALYSIS_PERIODS["technical"])
 
@@ -2217,7 +1970,6 @@ elif st.session_state.active_view == "📊 Analyse":
 
     st.markdown("---")
 
-    # Anbefaling card
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
         st.markdown(
@@ -2234,7 +1986,6 @@ elif st.session_state.active_view == "📊 Analyse":
     rec_cols[2].metric("🔧 Teknisk", f"{t_score:.0f}/100", "40% vægt")
     rec_cols[3].metric("Samlet score", f"{overall:.0f}/100")
 
-    # Position sizing kalkulator
     st.markdown("---")
     with st.expander("📐 Position Sizing Calculator", expanded=False):
         st.caption("Beregn hvor mange aktier du skal købe baseret på din risk tolerance")
@@ -2262,10 +2013,8 @@ elif st.session_state.active_view == "📊 Analyse":
 
         stop_loss_input = ps_cols[2].number_input(
             f"🛑 Stop-loss ({currency})",
-            min_value=0.01,
-            value=float(default_stop),
-            step=0.5,
-            key="ps_stop"
+            min_value=0.01, value=float(default_stop),
+            step=0.5, key="ps_stop"
         )
 
         if currency != "DKK":
@@ -2303,7 +2052,6 @@ elif st.session_state.active_view == "📊 Analyse":
         else:
             st.warning("Kunne ikke beregne position size (tjek input)")
 
-    # Tabs
     st.markdown("---")
     main_tabs = st.tabs([
         "📊 Charts", "🔧 Indikatorer", "💰 Kursmål",
@@ -2475,7 +2223,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 f"</div>", unsafe_allow_html=True
             )
 
-        # DCF
         st.markdown("---")
         st.markdown("### 💎 DCF Værdiansættelse")
         st.caption("Beregner fair value baseret på Discounted Cash Flow")
@@ -2546,7 +2293,7 @@ elif st.session_state.active_view == "📊 Analyse":
             st.warning(f"⚠️ DCF kunne ikke beregnes: {str(e)[:100]}")
             st.caption("Dette sker ofte hvis FCF-data mangler eller er negativ")
 
-        # ===== RISIKO =====
+    # ===== RISIKO =====
     with main_tabs[3]:
         df_risk = filter_by_days(df_indicators, ANALYSIS_PERIODS["risk"])
         try:
@@ -2572,10 +2319,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 y=risk["dd_series"] * 100,
                 fill="tozeroy", line=dict(color="#ef4444")
             ))
-            fig_dd.update_layout(
-                template="plotly_dark", height=350,
-                title="Drawdown %"
-            )
+            fig_dd.update_layout(template="plotly_dark", height=350, title="Drawdown %")
             st.plotly_chart(fig_dd, use_container_width=True)
         else:
             st.warning("Ikke nok data til risk metrics")
@@ -2793,491 +2537,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 pos_data.append({"Metric": label, "Værdi": formatted})
 
             st.dataframe(pd.DataFrame(pos_data), use_container_width=True, hide_index=True)
-
-        if info.get("longBusinessSummary"):
-            with st.expander("ℹ️ Om virksomheden"):
-                st.write(info["longBusinessSummary"][:2000])
-    
-    # ===== KURSMÅL =====
-    with main_tabs[2]:
-        df_targets = filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"])
-        # Beregn DCF til fair value
-        try:
-            fv_for_targets = dcf_valuation(info, 0.10, 0.10, 0.025)
-        except Exception:
-            fv_for_targets = None
-        targets = calculate_price_targets(df_targets, price, fv_for_targets)
-
-        if targets:
-            st.markdown("### 💰 Kursniveauer (6 mdr basis)")
-
-            buy_low_pct = (targets["buy_low"] / price - 1) * 100
-            buy_high_pct = (targets["buy_high"] / price - 1) * 100
-            stop_pct = (targets["stop_loss"] / price - 1) * 100
-            short_pct = (targets["target_short"] / price - 1) * 100
-            long_pct = (targets["target_long"] / price - 1) * 100
-
-            tg = st.columns(5)
-            tg[0].markdown(
-                f"<div style='background:#16a34a22;padding:0.8rem;border-radius:10px;"
-                f"border-left:4px solid #16a34a;text-align:center'>"
-                f"<small>🟢 KØB ZONE</small>"
-                f"<h4 style='margin:0.3rem 0'>{targets['buy_low']:.2f} - {targets['buy_high']:.2f}</h4>"
-                f"<small>{buy_low_pct:+.1f}% til {buy_high_pct:+.1f}%</small>"
-                f"</div>", unsafe_allow_html=True
-            )
-            tg[1].markdown(
-                f"<div style='background:#0099ff22;padding:0.8rem;border-radius:10px;"
-                f"border-left:4px solid #0099ff;text-align:center'>"
-                f"<small>📍 NUVÆRENDE</small>"
-                f"<h4 style='margin:0.3rem 0'>{price:.2f} {currency}</h4>"
-                f"<small>{change_pct:+.2f}%</small>"
-                f"</div>", unsafe_allow_html=True
-            )
-            tg[2].markdown(
-                f"<div style='background:#ef444422;padding:0.8rem;border-radius:10px;"
-                f"border-left:4px solid #ef4444;text-align:center'>"
-                f"<small>🛑 STOP LOSS</small>"
-                f"<h4 style='margin:0.3rem 0'>{targets['stop_loss']:.2f}</h4>"
-                f"<small>{stop_pct:+.1f}%</small>"
-                f"</div>", unsafe_allow_html=True
-            )
-            tg[3].markdown(
-                f"<div style='background:#eab30822;padding:0.8rem;border-radius:10px;"
-                f"border-left:4px solid #eab308;text-align:center'>"
-                f"<small>🎯 KORT (1-3m)</small>"
-                f"<h4 style='margin:0.3rem 0'>{targets['target_short']:.2f}</h4>"
-                f"<small>{short_pct:+.1f}%</small>"
-                f"</div>", unsafe_allow_html=True
-            )
-            tg[4].markdown(
-                f"<div style='background:#22c55e22;padding:0.8rem;border-radius:10px;"
-                f"border-left:4px solid #22c55e;text-align:center'>"
-                f"<small>🚀 LANG (6-12m)</small>"
-                f"<h4 style='margin:0.3rem 0'>{targets['target_long']:.2f}</h4>"
-                f"<small>{long_pct:+.1f}%</small>"
-                f"</div>", unsafe_allow_html=True
-            )
-
-               # DCF
-        st.markdown("---")
-        st.markdown("### 💎 DCF Værdiansættelse")
-        st.caption("Beregner fair value baseret på Discounted Cash Flow")
-        
-        # DCF antagelser
-        dcf_cols_input = st.columns(3)
-        growth_rate = dcf_cols_input[0].slider(
-            "🚀 Vækstrate (år 1)", 0.02, 0.25, 0.10, 0.01,
-            format="%.0f%%", key="dcf_growth"
-        )
-        discount_rate = dcf_cols_input[1].slider(
-            "💸 Discount rate (WACC)", 0.05, 0.15, 0.10, 0.01,
-            format="%.0f%%", key="dcf_discount"
-        )
-        terminal_growth = dcf_cols_input[2].slider(
-            "🏁 Terminal vækst", 0.01, 0.05, 0.025, 0.005,
-            format="%.1f%%", key="dcf_terminal"
-        )
-        
-        try:
-            fair_value = dcf_valuation(info, growth_rate, discount_rate, terminal_growth)
-            if fair_value and fair_value > 0:
-                dc = st.columns(4)
-                dc[0].metric("💎 Fair value", f"{fair_value:.2f} {currency}")
-                dc[1].metric("📍 Nuværende", f"{price:.2f} {currency}")
-                upside = (fair_value / price - 1) * 100
-                upside_color = "normal" if abs(upside) < 10 else ("inverse" if upside < 0 else "off")
-                dc[2].metric(
-                    "📊 Upside",
-                    f"{upside:+.1f}%",
-                    "Undervurderet" if upside > 10 else "Overvurderet" if upside < -10 else "Fair"
-                )
-                
-                # Vurdering
-                if upside > 30:
-                    dc[3].markdown(
-                        "<div style='background:#16a34a22;padding:0.6rem;border-radius:8px;"
-                        "text-align:center;border-left:4px solid #16a34a'>"
-                        "<small>🟢 STÆRKT UNDERVURDERET</small></div>",
-                        unsafe_allow_html=True
-                    )
-                elif upside > 10:
-                    dc[3].markdown(
-                        "<div style='background:#22c55e22;padding:0.6rem;border-radius:8px;"
-                        "text-align:center;border-left:4px solid #22c55e'>"
-                        "<small>🟢 UNDERVURDERET</small></div>",
-                        unsafe_allow_html=True
-                    )
-                elif upside > -10:
-                    dc[3].markdown(
-                        "<div style='background:#eab30822;padding:0.6rem;border-radius:8px;"
-                        "text-align:center;border-left:4px solid #eab308'>"
-                        "<small>🟡 FAIR PRICED</small></div>",
-                        unsafe_allow_html=True
-                    )
-                else:
-                    dc[3].markdown(
-                        "<div style='background:#ef444422;padding:0.6rem;border-radius:8px;"
-                        "text-align:center;border-left:4px solid #ef4444'>"
-                        "<small>🔴 OVERVURDERET</small></div>",
-                        unsafe_allow_html=True
-                    )
-                
-                st.caption(
-                    f"⚙️ Antagelser: Vækst **{growth_rate*100:.0f}%** → terminal **{terminal_growth*100:.1f}%** "
-                    f"(10 år) · Discount **{discount_rate*100:.0f}%**"
-                )
-            else:
-                st.info("ℹ️ DCF kræver positiv Free Cash Flow data (ikke tilgængelig for denne aktie)")
-        except Exception as e:
-            st.warning(f"⚠️ DCF kunne ikke beregnes: {str(e)[:100]}")
-            st.caption("Dette sker ofte hvis FCF-data mangler eller er negativ")
-    # ===== RISIKO =====
-    with main_tabs[3]:
-        df_risk = filter_by_days(df_indicators, ANALYSIS_PERIODS["risk"])
-        risk = risk_metrics(df_risk)
-
-            if risk:
-            st.caption("📉 Risk metrics (3 års data)")
-            rc = st.columns(4)
-            rc[0].metric("Ann. afkast", f"{risk['ann_r']*100:.1f}%")
-            rc[1].metric("Ann. volatilitet", f"{risk['ann_v']*100:.1f}%")
-            rc[2].metric("Sharpe", f"{risk['sharpe']:.2f}")
-            rc[3].metric("Sortino", f"{risk['sortino']:.2f}")
-
-            rc2 = st.columns(2)
-            rc2[0].metric("Max Drawdown", f"{risk['max_dd']*100:.1f}%")
-            rc2[1].metric("VaR 95% (1d)", f"{risk['var95']*100:.2f}%")
-
-            fig_dd = go.Figure(go.Scatter(
-                x=risk["dd_series"].index,
-                y=risk["dd_series"] * 100,
-                fill="tozeroy", line=dict(color="#ef4444")
-            ))
-            fig_dd.update_layout(
-                template="plotly_dark", height=350,
-                title="Drawdown %"
-            )
-            st.plotly_chart(fig_dd, use_container_width=True)
-        else:
-            st.warning("Ikke nok data til risk metrics")
-
-    # ===== MONTE CARLO =====
-    with main_tabs[4]:
-        df_mc = filter_by_days(df_indicators, ANALYSIS_PERIODS["monte_carlo"])
-
-        mc_days = st.slider("Dage frem", 30, 365, 252, key="stock_mc_days")
-        sims, lp = monte_carlo(df_mc, n_sims=500, days=mc_days)
-
-        if sims is not None:
-            final = sims[:, -1]
-            p5, p25, p50, p75, p95 = np.percentile(final, [5, 25, 50, 75, 95])
-
-            mc_cols = st.columns(5)
-            mc_cols[0].metric("5%", f"{p5:.2f}", f"{(p5/lp-1)*100:+.0f}%")
-            mc_cols[1].metric("25%", f"{p25:.2f}", f"{(p25/lp-1)*100:+.0f}%")
-            mc_cols[2].metric(f"Median", f"{p50:.2f}", f"{(p50/lp-1)*100:+.0f}%")
-            mc_cols[3].metric("75%", f"{p75:.2f}", f"{(p75/lp-1)*100:+.0f}%")
-            mc_cols[4].metric("95%", f"{p95:.2f}", f"{(p95/lp-1)*100:+.0f}%")
-
-            fig_m = go.Figure()
-            for i in range(min(150, len(sims))):
-                fig_m.add_trace(go.Scatter(
-                    y=sims[i],
-                    line=dict(width=0.5, color="rgba(0,212,170,0.1)"),
-                    showlegend=False    # ===== MONTE CARLO =====
-    with main_tabs[4]:
-        st.caption("🎲 Simulerer fremtidige prisbaner baseret på historisk afkast & volatilitet")
-        
-        df_mc = filter_by_days(df_indicators, ANALYSIS_PERIODS["monte_carlo"])
-
-        mc_cols_input = st.columns(2)
-        mc_days = mc_cols_input[0].slider("📅 Dage frem", 30, 365, 252, key="stock_mc_days")
-        mc_sims = mc_cols_input[1].slider("🎲 Antal simulationer", 100, 1000, 500, 100, key="stock_mc_sims")
-
-        try:
-            sims, lp = monte_carlo(df_mc, days=mc_days, sims=mc_sims)
-        except Exception as e:
-            st.warning(f"⚠️ Monte Carlo fejlede: {str(e)[:100]}")
-            sims, lp = None, None
-
-        if sims is not None and lp is not None:
-            final = sims[:, -1]
-            p5, p25, p50, p75, p95 = np.percentile(final, [5, 25, 50, 75, 95])
-
-            mc_cols = st.columns(5)
-            mc_cols[0].metric(
-                "5% (worst case)",
-                f"{p5:.2f} {currency}",
-                f"{(p5/lp-1)*100:+.0f}%"
-            )
-            mc_cols[1].metric(
-                "25%",
-                f"{p25:.2f} {currency}",
-                f"{(p25/lp-1)*100:+.0f}%"
-            )
-            mc_cols[2].metric(
-                f"📊 Median ({mc_days}d)",
-                f"{p50:.2f} {currency}",
-                f"{(p50/lp-1)*100:+.0f}%"
-            )
-            mc_cols[3].metric(
-                "75%",
-                f"{p75:.2f} {currency}",
-                f"{(p75/lp-1)*100:+.0f}%"
-            )
-            mc_cols[4].metric(
-                "95% (best case)",
-                f"{p95:.2f} {currency}",
-                f"{(p95/lp-1)*100:+.0f}%"
-            )
-
-            # Sandsynlighed for at være i plus
-            prob_positive = (final > lp).sum() / len(final) * 100
-            
-            prob_cols = st.columns(3)
-            prob_cols[0].metric(
-                "📈 Sandsynlighed for plus",
-                f"{prob_positive:.0f}%"
-            )
-            prob_cols[1].metric(
-                "📉 Sandsynlighed for minus",
-                f"{100-prob_positive:.0f}%"
-            )
-            
-            # Forventet afkast (median)
-            expected_return = (p50 / lp - 1) * 100
-            prob_cols[2].metric(
-                "💰 Forventet afkast",
-                f"{expected_return:+.1f}%",
-                f"over {mc_days} dage"
-            )
-
-            # Plot
-            fig_m = go.Figure()
-            
-            # Tegn alle simulationer (gennemsigtige)
-            for i in range(min(150, len(sims))):
-                fig_m.add_trace(go.Scatter(
-                    y=sims[i],
-                    line=dict(width=0.5, color="rgba(0,212,170,0.1)"),
-                    showlegend=False,
-                    hoverinfo="skip"
-                ))
-            
-            # Tegn percentiler
-            fig_m.add_trace(go.Scatter(
-                y=np.percentile(sims, 95, axis=0),
-                name="95% (best case)",
-                line=dict(color="#22c55e", width=2, dash="dash")
-            ))
-            fig_m.add_trace(go.Scatter(
-                y=np.percentile(sims, 50, axis=0),
-                name="Median",
-                line=dict(color="#00d4aa", width=3)
-            ))
-            fig_m.add_trace(go.Scatter(
-                y=np.percentile(sims, 5, axis=0),
-                name="5% (worst case)",
-                line=dict(color="#ef4444", width=2, dash="dash")
-            ))
-            
-            # Nuværende pris linje
-            fig_m.add_hline(
-                y=lp, line_dash="dot", line_color="white",
-                opacity=0.5, annotation_text=f"Nu: {lp:.2f}"
-            )
-            
-            fig_m.update_layout(
-                template="plotly_dark", height=500,
-                title=f"Monte Carlo - {mc_sims} simulationer, {mc_days} dage frem",
-                yaxis_title=f"Pris ({currency})",
-                xaxis_title="Dage frem"
-            )
-            st.plotly_chart(fig_m, use_container_width=True)
-
-            # Histogram af slutpriser
-            with st.expander("📊 Distribution af slutpriser"):
-                fig_hist = go.Figure()
-                fig_hist.add_trace(go.Histogram(
-                    x=final,
-                    nbinsx=50,
-                    marker_color="#00d4aa",
-                    opacity=0.8,
-                    name="Slutpris"
-                ))
-                fig_hist.add_vline(
-                    x=lp, line_dash="dash", line_color="white",
-                    annotation_text=f"Nu: {lp:.2f}"
-                )
-                fig_hist.add_vline(
-                    x=p50, line_dash="dash", line_color="#00d4aa",
-                    annotation_text=f"Median: {p50:.2f}"
-                )
-                fig_hist.update_layout(
-                    template="plotly_dark", height=400,
-                    title=f"Distribution af slutpriser efter {mc_days} dage",
-                    xaxis_title=f"Pris ({currency})",
-                    yaxis_title="Antal simulationer"
-                )
-                st.plotly_chart(fig_hist, use_container_width=True)
-
-                st.markdown("##### 📋 Statistisk oversigt")
-                stats_df = pd.DataFrame([
-                    {"Metric": "Min", "Værdi": f"{final.min():.2f} {currency}",
-                     "% ændring": f"{(final.min()/lp-1)*100:+.1f}%"},
-                    {"Metric": "5% percentil", "Værdi": f"{p5:.2f} {currency}",
-                     "% ændring": f"{(p5/lp-1)*100:+.1f}%"},
-                    {"Metric": "25% percentil", "Værdi": f"{p25:.2f} {currency}",
-                     "% ændring": f"{(p25/lp-1)*100:+.1f}%"},
-                    {"Metric": "Median (50%)", "Værdi": f"{p50:.2f} {currency}",
-                     "% ændring": f"{(p50/lp-1)*100:+.1f}%"},
-                    {"Metric": "75% percentil", "Værdi": f"{p75:.2f} {currency}",
-                     "% ændring": f"{(p75/lp-1)*100:+.1f}%"},
-                    {"Metric": "95% percentil", "Værdi": f"{p95:.2f} {currency}",
-                     "% ændring": f"{(p95/lp-1)*100:+.1f}%"},
-                    {"Metric": "Max", "Værdi": f"{final.max():.2f} {currency}",
-                     "% ændring": f"{(final.max()/lp-1)*100:+.1f}%"},
-                    {"Metric": "Gennemsnit", "Værdi": f"{final.mean():.2f} {currency}",
-                     "% ændring": f"{(final.mean()/lp-1)*100:+.1f}%"},
-                    {"Metric": "Standard afvigelse", "Værdi": f"{final.std():.2f} {currency}",
-                     "% ændring": "-"},
-                ])
-                st.dataframe(stats_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("ℹ️ Ikke nok data til Monte Carlo simulation")
-
-                ))
-            fig_m.add_trace(go.Scatter(
-                y=np.percentile(sims, 50, axis=0),
-                name="Median", line=dict(color="#00d4aa", width=3)
-            ))
-            fig_m.add_trace(go.Scatter(
-                y=np.percentile(sims, 5, axis=0),
-                name="5%", line=dict(color="#ef4444", width=2, dash="dash")
-            ))
-            fig_m.add_trace(go.Scatter(
-                y=np.percentile(sims, 95, axis=0),
-                name="95%", line=dict(color="#22c55e", width=2, dash="dash")
-            ))
-            fig_m.update_layout(
-                template="plotly_dark", height=500,
-                title=f"Monte Carlo - {mc_days} dage frem"
-            )
-            st.plotly_chart(fig_m, use_container_width=True)
-
-    # ===== BACKTEST =====
-    with main_tabs[5]:
-        st.caption("🎯 Walk-forward backtest af model-anbefalinger")
-
-        bc1, bc2 = st.columns(2)
-        holding = bc1.selectbox(
-            "Holding periode (dage)",
-            [30, 60, 90, 180, 365], index=1, key="stock_hold"
-        )
-        freq = bc2.selectbox(
-            "Sample frekvens", [7, 14, 30], index=1, key="stock_freq"
-        )
-
-        if st.button("🚀 Kør backtest", type="primary", key="btn_stock_bt"):
-            with st.spinner("Kører walk-forward..."):
-                bt = run_backtest(hist, info, holding_days=holding,
-                                   sample_freq=freq)
-
-            if bt is None:
-                st.error(f"Ikke nok data ({len(hist)} dage)")
-            else:
-                st.markdown(
-                    f"📊 **{bt['n_trades']} samples** · "
-                    f"{bt['start_date'].date()} → {bt['end_date'].date()}"
-                )
-
-                rows = []
-                for rec_lbl in ["KØB", "HOLD", "SÆLG"]:
-                    s = bt["stats"].get(rec_lbl)
-                    if s:
-                        rows.append({
-                            "Anbefaling": rec_lbl, "Antal": s["count"],
-                            "Hit rate": f"{s['win_rate']:.1f}%",
-                            "Gns. afkast": f"{s['avg_return']:+.2f}%",
-                            "Median": f"{s['median_return']:+.2f}%",
-                        })
-                st.dataframe(pd.DataFrame(rows), use_container_width=True,
-                             hide_index=True)
-                st.markdown(f"📈 **Buy & Hold:** {bt['buy_hold_return']:+.2f}%")
-
-                fig_bt = px.scatter(
-                    bt["results"], x="score", y="return_pct",
-                    color="recommendation",
-                    color_discrete_map={
-                        "KØB": "#22c55e", "HOLD": "#eab308", "SÆLG": "#ef4444"
-                    },
-                    title=f"Score vs {holding}-dages afkast"
-                )
-                fig_bt.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
-                fig_bt.update_layout(template="plotly_dark", height=400)
-                st.plotly_chart(fig_bt, use_container_width=True)
-
-    # ===== DETALJER =====
-    with main_tabs[6]:
-        det_cols = st.columns(2)
-
-        with det_cols[0]:
-            st.markdown("#### 📊 Fundamentale nøgletal")
-            fund_data = []
-            for label, key, fmt in [
-                ("Market Cap", "marketCap", "currency_b"),
-                ("P/E (TTM)", "trailingPE", "ratio"),
-                ("Forward P/E", "forwardPE", "ratio"),
-                ("PEG", "pegRatio", "ratio"),
-                ("P/B", "priceToBook", "ratio"),
-                ("ROE", "returnOnEquity", "percent"),
-                ("Profit margin", "profitMargins", "percent"),
-                ("Debt/Equity", "debtToEquity", "ratio"),
-                ("EPS Growth", "earningsGrowth", "percent"),
-                ("Revenue Growth", "revenueGrowth", "percent"),
-                ("Dividend %", "dividendYield", "percent"),
-                ("Payout ratio", "payoutRatio", "percent"),
-                ("Beta", "beta", "ratio"),
-            ]:
-                v = info.get(key)
-                if v is None:
-                    formatted = "-"
-                elif fmt == "currency_b":
-                    formatted = f"${v/1e9:.2f}B" if v >= 1e9 else f"${v/1e6:.0f}M"
-                elif fmt == "percent":
-                    formatted = f"{v*100:.2f}%" if abs(v) < 5 else f"{v:.2f}%"
-                elif fmt == "ratio":
-                    formatted = f"{v:.2f}"
-                else:
-                    formatted = str(v)
-                fund_data.append({"Metric": label, "Værdi": formatted})
-
-            st.dataframe(pd.DataFrame(fund_data), use_container_width=True,
-                         hide_index=True)
-
-        with det_cols[1]:
-            st.markdown("#### 📍 Position vs ranges")
-            pos_data = []
-            for label, key in [
-                ("52w høj", "fiftyTwoWeekHigh"),
-                ("52w lav", "fiftyTwoWeekLow"),
-                ("Dagshigh", "dayHigh"),
-                ("Dagslow", "dayLow"),
-                ("Volume", "volume"),
-                ("Avg volume", "averageVolume"),
-            ]:
-                v = info.get(key)
-                if v is None:
-                    formatted = "-"
-                elif "olume" in key:
-                    formatted = f"{v:,.0f}"
-                else:
-                    formatted = f"{v:.2f} {currency}"
-                pos_data.append({"Metric": label, "Værdi": formatted})
-
-            st.dataframe(pd.DataFrame(pos_data), use_container_width=True,
-                         hide_index=True)
 
         if info.get("longBusinessSummary"):
             with st.expander("ℹ️ Om virksomheden"):
