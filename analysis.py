@@ -310,13 +310,16 @@ def estimate_days_to_target(current_price, target_price, hist):
 
 
 def generate_action_plan(rec, score, current_price, targets, hist, currency="USD",
-                        f_score=None, t_score=None, dcf_upside=None):
+                        f_score=None, t_score=None, dcf_upside=None,
+                        shares=None, fx_to_dkk=None):
     """
     Genererer en konkret handleplan med:
     - Klare steps
     - Datoer baseret på momentum
     - Risk/reward ratio
     - Konsistens-check (DCF vs anbefaling)
+    - Total investering & forventet gevinst
+    - DKK-konvertering
     """
     today = pd.Timestamp.now()
 
@@ -327,7 +330,16 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
         "risk_reward": None,
         "warnings": [],
         "summary": "",
+        "totals": None,
     }
+
+    # Hjælpefunktion: format pris med DKK
+    def fmt_price(usd_val):
+        s = f"**{usd_val:,.2f} {currency}**"
+        if fx_to_dkk and currency != "DKK":
+            dkk_val = usd_val * fx_to_dkk
+            s += f" _(≈ {dkk_val:,.0f} DKK)_"
+        return s
 
     # === KONSISTENS-CHECK ===
     if dcf_upside is not None:
@@ -364,6 +376,35 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
                 "ratio_long": reward_long / risk if risk > 0 else 0,
             }
 
+    # === TOTALS (hvis vi har shares) ===
+    if shares and shares > 0 and ("KØB" in rec):
+        total_invest_usd = shares * current_price
+        # Hvis 1/3 sælges på short target, 1/3 på long, 1/3 lader vi køre (estimat: long target)
+        shares_per_third = shares / 3
+
+        # Profit ved hvert target
+        profit_short = shares_per_third * (targets["target_short"] - current_price)
+        profit_long = shares_per_third * (targets["target_long"] - current_price)
+        profit_moon = shares_per_third * (targets["target_long"] * 1.15 - current_price)  # +15% over long
+        total_profit_usd = profit_short + profit_long + profit_moon
+
+        # Max tab (hvis stop ramt før gevinst)
+        max_loss_usd = shares * (current_price - targets["stop_loss"])
+
+        plan["totals"] = {
+            "shares": shares,
+            "invest_usd": total_invest_usd,
+            "invest_dkk": total_invest_usd * fx_to_dkk if fx_to_dkk else None,
+            "profit_short_usd": profit_short,
+            "profit_long_usd": profit_long,
+            "profit_moon_usd": profit_moon,
+            "total_profit_usd": total_profit_usd,
+            "total_profit_dkk": total_profit_usd * fx_to_dkk if fx_to_dkk else None,
+            "total_profit_pct": (total_profit_usd / total_invest_usd) * 100,
+            "max_loss_usd": max_loss_usd,
+            "max_loss_dkk": max_loss_usd * fx_to_dkk if fx_to_dkk else None,
+        }
+
     # === DATOER ===
     days_short = estimate_days_to_target(current_price, targets["target_short"], hist)
     days_long = estimate_days_to_target(current_price, targets["target_long"], hist)
@@ -387,7 +428,6 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
 
     # === STEPS PR. ANBEFALING ===
     if "STÆRKT KØB" in rec or "KØB" in rec:
-        # Tjek om R/R er god
         rr = plan["risk_reward"]
         if rr and rr["ratio_short"] < 1.5:
             plan["warnings"].append(
@@ -400,27 +440,31 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
             f"(score: {f_score}/100) og teknisk billede (score: {t_score}/100)."
         )
 
+        # Build steps med shares-info hvis tilgængelig
+        shares_text = f"{shares} aktier" if shares else "din position"
+        third_text = f"{int(shares/3)} aktier" if shares and shares >= 3 else "1/3 af positionen"
+
         plan["steps"] = [
             {
                 "n": 1, "icon": "🟢",
                 "title": "KØB AKTIEN",
-                "main": f"Køb til markedspris omkring **{current_price:.2f} {currency}**",
-                "sub": f"Eller læg limit-ordre i KØB ZONE: **{targets['buy_low']:.2f} - {targets['buy_high']:.2f} {currency}** "
+                "main": f"Køb **{shares_text}** til markedspris omkring {fmt_price(current_price)}",
+                "sub": f"Eller læg limit-ordre i KØB ZONE: {fmt_price(targets['buy_low'])} - {fmt_price(targets['buy_high'])} "
                        f"({(targets['buy_low']/current_price-1)*100:+.1f}% til {(targets['buy_high']/current_price-1)*100:+.1f}%)",
                 "color": "#16a34a",
             },
             {
                 "n": 2, "icon": "🛑",
                 "title": "SÆT STOP-LOSS",
-                "main": f"Stop-loss: **{targets['stop_loss']:.2f} {currency}** "
+                "main": f"Stop-loss: {fmt_price(targets['stop_loss'])} "
                         f"({(targets['stop_loss']/current_price-1)*100:.1f}% — max tab)",
-                "sub": "💡 Brug TRAILING STOP når kursen stiger — så låser du gevinst",
+                "sub": "💡 Brug TRAILING STOP når kursen stiger — så låser du gevinst automatisk (se forklaring nedenfor)",
                 "color": "#ef4444",
             },
             {
                 "n": 3, "icon": "🎯",
                 "title": "TAG GEVINST 1 (Sælg 1/3)",
-                "main": f"Sælg **1/3 af positionen** ved **{targets['target_short']:.2f} {currency}** "
+                "main": f"Sælg **{third_text}** ved {fmt_price(targets['target_short'])} "
                         f"(+{(targets['target_short']/current_price-1)*100:.1f}%)",
                 "sub": f"📅 Forventet: **{date_short}** ({time_short_str})",
                 "color": "#eab308",
@@ -428,7 +472,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
             {
                 "n": 4, "icon": "🚀",
                 "title": "TAG GEVINST 2 (Sælg 1/3)",
-                "main": f"Sælg **endnu 1/3** ved **{targets['target_long']:.2f} {currency}** "
+                "main": f"Sælg **endnu {third_text}** ved {fmt_price(targets['target_long'])} "
                         f"(+{(targets['target_long']/current_price-1)*100:.1f}%)",
                 "sub": f"📅 Forventet: **{date_long}** ({time_long_str})",
                 "color": "#22c55e",
@@ -436,7 +480,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
             {
                 "n": 5, "icon": "🌙",
                 "title": "LAD RESTEN KØRE",
-                "main": "Behold sidste **1/3** med trailing stop og lad winneren løbe",
+                "main": f"Behold sidste **{third_text}** med trailing stop og lad winneren løbe",
                 "sub": "💎 De største gevinster kommer ofte fra de sidste 20% af en position",
                 "color": "#a855f7",
             },
@@ -450,8 +494,8 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
             {
                 "n": 1, "icon": "⏸️",
                 "title": "VENT MED AT KØBE",
-                "main": f"Køb **IKKE** til nuværende pris ({current_price:.2f} {currency})",
-                "sub": f"Vent til prisen falder til KØB ZONE: **{targets['buy_low']:.2f} - {targets['buy_high']:.2f} {currency}**",
+                "main": f"Køb **IKKE** til nuværende pris ({fmt_price(current_price)})",
+                "sub": f"Vent til prisen falder til KØB ZONE: {fmt_price(targets['buy_low'])} - {fmt_price(targets['buy_high'])}",
                 "color": "#eab308",
             },
             {
@@ -486,7 +530,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
                 "n": 2, "icon": "💼",
                 "title": "HVIS DU EJER AKTIEN",
                 "main": "Overvej at tage profit eller skære tab",
-                "sub": f"Stop-loss niveau: {targets['stop_loss']:.2f} {currency} — "
+                "sub": f"Stop-loss niveau: {fmt_price(targets['stop_loss'])} — "
                        f"hvis prisen kommer under, så ud!",
                 "color": "#eab308",
             },
