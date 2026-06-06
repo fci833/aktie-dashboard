@@ -723,3 +723,274 @@ def crypto_backtest(hist, holding_days=30, sample_freq=7, min_history_days=200):
         "buy_hold_return": float(bh_return),
         "holding_days": holding_days,
     }
+def generate_crypto_action_plan(rec, score, current_price, targets, hist, symbol="BTC",
+                                 fx_to_dkk=None, investment_dkk=None,
+                                 market_score=None, technical_score=None,
+                                 sentiment_score=None, dev_score=None):
+    """
+    Krypto-version af action plan med:
+    - 4-target strategi (kort, lang, moon, hodl)
+    - DKK konvertering
+    - Højere volatilitet håndtering
+    """
+    import pandas as pd
+    today = pd.Timestamp.now()
+
+    plan = {
+        "rec": rec, "score": score, "steps": [],
+        "risk_reward": None, "warnings": [], "summary": "",
+        "totals": None,
+    }
+
+    def fmt_price(usd_val):
+        if usd_val < 1:
+            s = f"**${usd_val:,.6f}**"
+        elif usd_val < 100:
+            s = f"**${usd_val:,.4f}**"
+        else:
+            s = f"**${usd_val:,.2f}**"
+        if fx_to_dkk:
+            dkk_val = usd_val * fx_to_dkk
+            if dkk_val < 1:
+                s += f" _(≈ {dkk_val:,.4f} DKK)_"
+            elif dkk_val < 100:
+                s += f" _(≈ {dkk_val:,.2f} DKK)_"
+            else:
+                s += f" _(≈ {dkk_val:,.0f} DKK)_"
+        return s
+
+    # === RISK/REWARD ===
+    if "KØB" in rec or "HOLD" in rec:
+        risk = current_price - targets["stop_loss"]
+        reward_short = targets["target_short"] - current_price
+        reward_long = targets["target_long"] - current_price
+        reward_moon = targets["target_moon"] - current_price
+
+        if risk > 0:
+            plan["risk_reward"] = {
+                "risk_pct": (risk / current_price) * 100,
+                "risk_usd": risk,
+                "reward_short_pct": (reward_short / current_price) * 100,
+                "reward_long_pct": (reward_long / current_price) * 100,
+                "reward_moon_pct": (reward_moon / current_price) * 100,
+                "ratio_short": reward_short / risk if risk > 0 else 0,
+                "ratio_long": reward_long / risk if risk > 0 else 0,
+                "ratio_moon": reward_moon / risk if risk > 0 else 0,
+            }
+
+    # === BEREGN COIN-MÆNGDE FRA INVESTMENT ===
+    coins = None
+    if investment_dkk and fx_to_dkk and current_price > 0:
+        price_dkk = current_price * fx_to_dkk
+        coins = investment_dkk / price_dkk
+
+    # === TOTALS (hvis vi har coins) ===
+    if coins and coins > 0 and "KØB" in rec:
+        total_invest_usd = coins * current_price
+        coins_per_quarter = coins / 4
+
+        profit_short = coins_per_quarter * (targets["target_short"] - current_price)
+        profit_long = coins_per_quarter * (targets["target_long"] - current_price)
+        profit_moon = coins_per_quarter * (targets["target_moon"] - current_price)
+        profit_hodl = coins_per_quarter * (targets["target_moon"] * 1.3 - current_price)
+
+        total_profit_usd = profit_short + profit_long + profit_moon + profit_hodl
+        max_loss_usd = coins * (current_price - targets["stop_loss"])
+
+        plan["totals"] = {
+            "coins": coins,
+            "invest_usd": total_invest_usd,
+            "invest_dkk": total_invest_usd * fx_to_dkk if fx_to_dkk else None,
+            "profit_short_usd": profit_short,
+            "profit_long_usd": profit_long,
+            "profit_moon_usd": profit_moon,
+            "profit_hodl_usd": profit_hodl,
+            "total_profit_usd": total_profit_usd,
+            "total_profit_dkk": total_profit_usd * fx_to_dkk if fx_to_dkk else None,
+            "total_profit_pct": (total_profit_usd / total_invest_usd) * 100,
+            "max_loss_usd": max_loss_usd,
+            "max_loss_dkk": max_loss_usd * fx_to_dkk if fx_to_dkk else None,
+        }
+
+    # === DATOER ===
+    def estimate_crypto_days(target_pct):
+        if hist is None or len(hist) < 30:
+            return None
+        try:
+            mom_30d = (hist["Close"].iloc[-1] / hist["Close"].iloc[-30] - 1)
+            daily_avg = mom_30d / 30
+            if daily_avg <= 0 and target_pct > 0:
+                vol = hist["Close"].pct_change().std()
+                daily_avg = max(0.002, vol * 0.15)
+            if daily_avg <= 0:
+                return None
+            days = target_pct / daily_avg
+            return max(7, min(int(days), 730))
+        except Exception:
+            return None
+
+    pct_short = (targets["target_short"] / current_price - 1)
+    pct_long = (targets["target_long"] / current_price - 1)
+    pct_moon = (targets["target_moon"] / current_price - 1)
+
+    days_short = estimate_crypto_days(pct_short)
+    days_long = estimate_crypto_days(pct_long)
+    days_moon = estimate_crypto_days(pct_moon)
+
+    def date_str(days):
+        if not days:
+            return "-", "estimat"
+        date_obj = today + pd.Timedelta(days=days)
+        date = date_obj.strftime("%d. %b %Y")
+        if days < 60:
+            time_str = f"{days/7:.0f} uger"
+        elif days < 365:
+            time_str = f"{days/30:.0f} mdr"
+        else:
+            time_str = f"{days/365:.1f} år"
+        return date, time_str
+
+    date_short, time_short = date_str(days_short)
+    date_long, time_long = date_str(days_long)
+    date_moon, time_moon = date_str(days_moon)
+
+    # === STEPS ===
+    if "KØB" in rec:
+        rr = plan["risk_reward"]
+        if rr and rr["ratio_short"] < 1.5:
+            plan["warnings"].append(
+                f"⚠️ Risk/Reward er lav ({rr['ratio_short']:.1f}:1 på kort sigt). "
+                f"Krypto bør have R/R min. 2-3:1 pga. høj volatilitet."
+            )
+
+        if hist is not None and len(hist) > 30:
+            try:
+                vol_30d = hist["Close"].pct_change().tail(30).std() * (365 ** 0.5) * 100
+                if vol_30d > 100:
+                    plan["warnings"].append(
+                        f"⚠️ EKSTREM volatilitet ({vol_30d:.0f}% annualiseret). "
+                        f"Kun invester hvad du har råd til at tabe!"
+                    )
+            except Exception:
+                pass
+
+        m = market_score if market_score is not None else 0
+        t = technical_score if technical_score is not None else 0
+        s = sentiment_score if sentiment_score is not None else 0
+        d = dev_score if dev_score is not None else 0
+        plan["summary"] = (
+            f"Modellen anbefaler **KØB** baseret på multi-faktor analyse: "
+            f"Marked {m:.0f}/100 · Teknisk {t:.0f}/100 · "
+            f"Sentiment {s:.0f}/100 · Dev {d:.0f}/100"
+        )
+
+        coins_text = f"{coins:.6f} {symbol}" if coins else f"din {symbol}-position"
+        quarter_text = f"{coins/4:.6f} {symbol}" if coins else f"1/4 af positionen"
+
+        plan["steps"] = [
+            {
+                "n": 1, "icon": "🟢",
+                "title": f"KØB {symbol}",
+                "main": f"Køb **{coins_text}** til markedspris omkring {fmt_price(current_price)}",
+                "sub": f"Eller læg limit-ordre i KØB ZONE: {fmt_price(targets['buy_low'])} - {fmt_price(targets['buy_high'])} "
+                       f"({(targets['buy_low']/current_price-1)*100:+.1f}% til {(targets['buy_high']/current_price-1)*100:+.1f}%)",
+                "color": "#16a34a",
+            },
+            {
+                "n": 2, "icon": "🛑",
+                "title": "SÆT STOP-LOSS",
+                "main": f"Stop-loss: {fmt_price(targets['stop_loss'])} "
+                        f"({(targets['stop_loss']/current_price-1)*100:.1f}% — max tab)",
+                "sub": "💡 Krypto er volatilt → brug TRAILING STOP når kursen stiger med 20%+",
+                "color": "#ef4444",
+            },
+            {
+                "n": 3, "icon": "🎯",
+                "title": "TAG GEVINST 1 (Sælg 1/4)",
+                "main": f"Sælg **{quarter_text}** ved {fmt_price(targets['target_short'])} "
+                        f"(+{(targets['target_short']/current_price-1)*100:.1f}%)",
+                "sub": f"📅 Forventet: **{date_short}** ({time_short})",
+                "color": "#eab308",
+            },
+            {
+                "n": 4, "icon": "🚀",
+                "title": "TAG GEVINST 2 (Sælg 1/4)",
+                "main": f"Sælg **endnu {quarter_text}** ved {fmt_price(targets['target_long'])} "
+                        f"(+{(targets['target_long']/current_price-1)*100:.1f}%)",
+                "sub": f"📅 Forventet: **{date_long}** ({time_long})",
+                "color": "#22c55e",
+            },
+            {
+                "n": 5, "icon": "🌙",
+                "title": "TAG GEVINST 3 (Sælg 1/4)",
+                "main": f"Sælg **endnu {quarter_text}** ved {fmt_price(targets['target_moon'])} "
+                        f"(+{(targets['target_moon']/current_price-1)*100:.1f}%)",
+                "sub": f"📅 Forventet: **{date_moon}** ({time_moon}) · MOON-target!",
+                "color": "#a855f7",
+            },
+            {
+                "n": 6, "icon": "💎",
+                "title": "HODL RESTEN",
+                "main": f"Behold sidste **{quarter_text}** med trailing stop og lad winneren løbe",
+                "sub": "💎 De største gevinster kommer fra de sidste 20% af en bullrun. Tænk 5-10x potential!",
+                "color": "#f59e0b",
+            },
+        ]
+
+    elif "HOLD" in rec:
+        plan["summary"] = (
+            f"Modellen anbefaler **HOLD** — score er {score:.0f}/100 (ikke stærk nok til køb)."
+        )
+        plan["steps"] = [
+            {
+                "n": 1, "icon": "⏸️",
+                "title": "VENT MED AT KØBE",
+                "main": f"Køb **IKKE** til nuværende pris ({fmt_price(current_price)})",
+                "sub": f"Vent til prisen falder til KØB ZONE: {fmt_price(targets['buy_low'])} - {fmt_price(targets['buy_high'])}",
+                "color": "#eab308",
+            },
+            {
+                "n": 2, "icon": "👁️",
+                "title": "OVERVÅG",
+                "main": "Tjek igen om 1-2 uger — krypto-markeder bevæger sig hurtigt",
+                "sub": "🔔 Sæt prisalarm på din exchange (Coinbase/Binance/Kraken) ved købszonen",
+                "color": "#0099ff",
+            },
+            {
+                "n": 3, "icon": "📊",
+                "title": "RE-ANALYSÉR HVIS...",
+                "main": "BTC-dominance ændrer sig markant, eller F&G-index når ekstremer (under 25 = køb)",
+                "sub": "Krypto reagerer kraftigt på Fear & Greed — udnyt frygt!",
+                "color": "#a855f7",
+            },
+        ]
+
+    else:  # SÆLG
+        plan["summary"] = (
+            f"Modellen anbefaler **SÆLG** — score er {score:.0f}/100 (svage signaler)."
+        )
+        plan["steps"] = [
+            {
+                "n": 1, "icon": "🔴",
+                "title": "KØB IKKE NU",
+                "main": "Modellen advarer mod at købe denne krypto",
+                "sub": "Tjek Trending-fanen for bedre muligheder",
+                "color": "#ef4444",
+            },
+            {
+                "n": 2, "icon": "💼",
+                "title": "HVIS DU EJER COINS",
+                "main": f"Overvej at tage profit eller skære tab ved {fmt_price(targets['stop_loss'])}",
+                "sub": "Husk: Krypto kan tabe 50-90% i bear markets",
+                "color": "#eab308",
+            },
+            {
+                "n": 3, "icon": "🔄",
+                "title": "RE-VURDÉR OM 1-2 UGER",
+                "main": "Krypto-cycles er kortere — tjek igen snart",
+                "sub": "Bear markets giver de bedste køb-muligheder!",
+                "color": "#0099ff",
+            },
+        ]
+
+    return plan
