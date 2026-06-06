@@ -2107,22 +2107,81 @@ elif st.session_state.active_view == "📊 Analyse":
                 else:
                     st.error(f"❌ Negativ korrelation: {correlation:.3f} - modellen forudsiger forkert!")
 
-                if sim:
+                               if sim:
                     st.markdown("---")
                     st.markdown("### 💼 Strategi-simulation")
                     st.caption(f"Køb når score ≥ {buy_threshold}, sælg når score ≤ 30. Start: $10.000")
 
-                    sm = st.columns(4)
-                    sm[0].metric("💰 Slutværdi (strategi)", f"${sim['strategy_final']:,.0f}", f"{sim['strategy_return']:+.1f}%")
-                    sm[1].metric("📈 Buy & Hold", f"${sim['bh_final']:,.0f}", f"{sim['bh_return']:+.1f}%")
-                    sm[2].metric("🎯 Outperformance", f"{sim['outperformance']:+.1f}%", delta_color="normal" if sim["outperformance"] > 0 else "inverse")
-                    sm[3].metric("📊 Antal trades", sim["n_trades"])
+                    # Robust key-håndtering - prøv forskellige varianter
+                    strategy_final = sim.get("strategy_final") or sim.get("final_value") or sim.get("portfolio_final")
+                    strategy_return = sim.get("strategy_return") or sim.get("total_return") or sim.get("return_pct")
+                    bh_final = sim.get("bh_final") or sim.get("buyhold_final") or sim.get("benchmark_final")
+                    bh_return = sim.get("bh_return") or sim.get("buyhold_return") or sim.get("benchmark_return")
+                    outperf = sim.get("outperformance")
+                    if outperf is None and strategy_return is not None and bh_return is not None:
+                        outperf = strategy_return - bh_return
+                    n_trades = sim.get("n_trades") or sim.get("num_trades") or sim.get("trades") or 0
 
-                    fig_sim = go.Figure()
-                    fig_sim.add_trace(go.Scatter(x=sim["dates"], y=sim["strategy_values"], name="Strategi (model)", line=dict(color="#00d4aa", width=3)))
-                    fig_sim.add_trace(go.Scatter(x=sim["dates"], y=sim["bh_values"], name="Buy & Hold", line=dict(color="#0099ff", width=2, dash="dash")))
-                    fig_sim.update_layout(template="plotly_dark", height=450, title="Portefølje-værdi over tid (start $10.000)", yaxis_title="Værdi ($)")
-                    st.plotly_chart(fig_sim, use_container_width=True)
+                    if strategy_final is not None:
+                        sm = st.columns(4)
+                        sm[0].metric(
+                            "💰 Slutværdi (strategi)",
+                            f"${strategy_final:,.0f}",
+                            f"{strategy_return:+.1f}%" if strategy_return is not None else None
+                        )
+                        if bh_final is not None:
+                            sm[1].metric(
+                                "📈 Buy & Hold",
+                                f"${bh_final:,.0f}",
+                                f"{bh_return:+.1f}%" if bh_return is not None else None
+                            )
+                        else:
+                            sm[1].metric("📈 Buy & Hold", "N/A")
+
+                        if outperf is not None:
+                            sm[2].metric(
+                                "🎯 Outperformance",
+                                f"{outperf:+.1f}%",
+                                delta_color="normal" if outperf > 0 else "inverse"
+                            )
+                        else:
+                            sm[2].metric("🎯 Outperformance", "N/A")
+
+                        sm[3].metric("📊 Antal trades", f"{n_trades}")
+
+                        # Graf - prøv forskellige key-varianter
+                        dates = sim.get("dates") or sim.get("date_index") or sim.get("timestamps")
+                        strategy_values = sim.get("strategy_values") or sim.get("portfolio_values") or sim.get("equity_curve")
+                        bh_values = sim.get("bh_values") or sim.get("buyhold_values") or sim.get("benchmark_values")
+
+                        if dates is not None and strategy_values is not None:
+                            fig_sim = go.Figure()
+                            fig_sim.add_trace(go.Scatter(
+                                x=dates, y=strategy_values,
+                                name="Strategi (model)",
+                                line=dict(color="#00d4aa", width=3)
+                            ))
+                            if bh_values is not None:
+                                fig_sim.add_trace(go.Scatter(
+                                    x=dates, y=bh_values,
+                                    name="Buy & Hold",
+                                    line=dict(color="#0099ff", width=2, dash="dash")
+                                ))
+                            fig_sim.update_layout(
+                                template="plotly_dark", height=450,
+                                title="Portefølje-værdi over tid (start $10.000)",
+                                yaxis_title="Værdi ($)"
+                            )
+                            st.plotly_chart(fig_sim, use_container_width=True)
+                    else:
+                        st.warning(
+                            f"⚠️ Ingen handler i perioden — der var ingen score ≥ {buy_threshold} (køb-signal) "
+                            "eller ≤ 30 (sælg-signal). Prøv at sænke køb-tærsklen eller test en anden aktie."
+                        )
+
+                        # Debug info så vi kan se hvad sim faktisk indeholder
+                        with st.expander("🔧 Debug: hvad returnerede simulate_strategy?"):
+                            st.json({k: str(v)[:200] for k, v in sim.items()})
 
                 with st.expander("📅 Vis alle backtest-samples"):
                     display_df = bt["results"][["date", "score", "recommendation", "entry_price", "exit_price", "return_pct"]].copy()
