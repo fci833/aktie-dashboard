@@ -2005,7 +2005,7 @@ elif st.session_state.active_view == "📊 Analyse":
                             title="Monte Carlo - 252 dage frem")
         st.plotly_chart(fig_m, use_container_width=True)
 
-            # Backtest
+               # Backtest
     with sub_tabs[6]:
         st.markdown("## 🎯 Backtest - Validerer modellens anbefalinger historisk")
         st.caption(
@@ -2028,7 +2028,12 @@ elif st.session_state.active_view == "📊 Analyse":
                 st.error(f"❌ Ikke nok historisk data ({len(hist_full)} dage). Backtest kræver mindst {250 + holding_days} dage.")
             else:
                 st.markdown("### 📊 Hit-rate per anbefaling")
-                st.caption(f"Baseret på {bt['n_trades']} samples fra {bt['start_date'].strftime('%Y-%m-%d')} til {bt['end_date'].strftime('%Y-%m-%d')} · Holding: {bt['holding_days']} dage")
+                st.caption(
+                    f"Baseret på {bt['n_trades']} samples fra "
+                    f"{bt['start_date'].strftime('%Y-%m-%d')} til "
+                    f"{bt['end_date'].strftime('%Y-%m-%d')} · "
+                    f"Holding: {bt['holding_days']} dage"
+                )
 
                 rows = []
                 for rec_label in ["STÆRKT KØB", "KØB", "HOLD", "SÆLG", "STÆRKT SÆLG"]:
@@ -2107,20 +2112,69 @@ elif st.session_state.active_view == "📊 Analyse":
                 else:
                     st.error(f"❌ Negativ korrelation: {correlation:.3f} - modellen forudsiger forkert!")
 
+                # ============ STRATEGI-SIMULATION ============
                 if sim:
                     st.markdown("---")
                     st.markdown("### 💼 Strategi-simulation")
                     st.caption(f"Køb når score ≥ {buy_threshold}, sælg når score ≤ 30. Start: $10.000")
 
-                    # Robust key-håndtering - prøv forskellige varianter
-                    strategy_final = sim.get("strategy_final") or sim.get("final_value") or sim.get("portfolio_final")
-                    strategy_return = sim.get("strategy_return") or sim.get("total_return") or sim.get("return_pct")
-                    bh_final = sim.get("bh_final") or sim.get("buyhold_final") or sim.get("benchmark_final")
-                    bh_return = sim.get("bh_return") or sim.get("buyhold_return") or sim.get("benchmark_return")
-                    outperf = sim.get("outperformance")
-                    if outperf is None and strategy_return is not None and bh_return is not None:
+                    # 🔧 DEBUG: Vis hvilke keys sim faktisk har
+                    with st.expander("🔧 Debug: alle keys i sim", expanded=False):
+                        st.write("**Tilgængelige keys:**", list(sim.keys()))
+                        debug_info = {}
+                        for k, v in sim.items():
+                            if isinstance(v, (list, tuple)):
+                                debug_info[k] = f"<list, len={len(v)}, første: {str(v[0])[:50] if len(v) > 0 else 'tom'}>"
+                            elif isinstance(v, dict):
+                                debug_info[k] = f"<dict, keys: {list(v.keys())[:5]}>"
+                            elif hasattr(v, "shape"):
+                                debug_info[k] = f"<{type(v).__name__}, shape={v.shape}>"
+                            else:
+                                debug_info[k] = str(v)[:100]
+                        st.json(debug_info)
+
+                    # Robust key-håndtering
+                    strategy_final = (
+                        sim.get("strategy_final")
+                        or sim.get("final_value")
+                        or sim.get("portfolio_final")
+                        or sim.get("strategy_end_value")
+                        or sim.get("final")
+                    )
+                    strategy_return = (
+                        sim.get("strategy_return")
+                        or sim.get("total_return")
+                        or sim.get("return_pct")
+                        or sim.get("strategy_pct")
+                    )
+                    bh_final = (
+                        sim.get("bh_final")
+                        or sim.get("buyhold_final")
+                        or sim.get("benchmark_final")
+                        or sim.get("buy_hold_final")
+                        or sim.get("bh_end_value")
+                    )
+                    bh_return = (
+                        sim.get("bh_return")
+                        or sim.get("buyhold_return")
+                        or sim.get("benchmark_return")
+                        or sim.get("buy_hold_return")
+                        or sim.get("bh_pct")
+                    )
+
+                    # Outperformance KUN hvis vi har begge tal
+                    outperf = None
+                    if sim.get("outperformance") is not None:
+                        outperf = sim.get("outperformance")
+                    elif strategy_return is not None and bh_return is not None:
                         outperf = strategy_return - bh_return
-                    n_trades = sim.get("n_trades") or sim.get("num_trades") or sim.get("trades") or 0
+
+                    n_trades = (
+                        sim.get("n_trades")
+                        or sim.get("num_trades")
+                        or sim.get("trades")
+                        or 0
+                    )
 
                     if strategy_final is not None:
                         sm = st.columns(4)
@@ -2138,7 +2192,8 @@ elif st.session_state.active_view == "📊 Analyse":
                         else:
                             sm[1].metric("📈 Buy & Hold", "N/A")
 
-                        if outperf is not None:
+                        # Vis KUN outperformance hvis vi har gyldigt sammenligningsgrundlag
+                        if outperf is not None and bh_final is not None:
                             sm[2].metric(
                                 "🎯 Outperformance",
                                 f"{outperf:+.1f}%",
@@ -2149,10 +2204,21 @@ elif st.session_state.active_view == "📊 Analyse":
 
                         sm[3].metric("📊 Antal trades", f"{n_trades}")
 
-                        # Graf - prøv forskellige key-varianter
+                        # Graf
                         dates = sim.get("dates") or sim.get("date_index") or sim.get("timestamps")
-                        strategy_values = sim.get("strategy_values") or sim.get("portfolio_values") or sim.get("equity_curve")
-                        bh_values = sim.get("bh_values") or sim.get("buyhold_values") or sim.get("benchmark_values")
+                        strategy_values = (
+                            sim.get("strategy_values")
+                            or sim.get("portfolio_values")
+                            or sim.get("equity_curve")
+                            or sim.get("strategy_equity")
+                        )
+                        bh_values = (
+                            sim.get("bh_values")
+                            or sim.get("buyhold_values")
+                            or sim.get("benchmark_values")
+                            or sim.get("buy_hold_values")
+                            or sim.get("bh_equity")
+                        )
 
                         if dates is not None and strategy_values is not None:
                             fig_sim = go.Figure()
@@ -2175,20 +2241,24 @@ elif st.session_state.active_view == "📊 Analyse":
                             st.plotly_chart(fig_sim, use_container_width=True)
                     else:
                         st.warning(
-                            f"⚠️ Ingen handler i perioden — der var ingen score ≥ {buy_threshold} (køb-signal) "
-                            "eller ≤ 30 (sælg-signal). Prøv at sænke køb-tærsklen eller test en anden aktie."
+                            f"⚠️ Ingen handler i perioden — der var ingen score ≥ {buy_threshold} "
+                            "(køb-signal) eller ≤ 30 (sælg-signal). Prøv at sænke køb-tærsklen "
+                            "eller test en anden aktie."
                         )
 
-                        # Debug info så vi kan se hvad sim faktisk indeholder
-                        with st.expander("🔧 Debug: hvad returnerede simulate_strategy?"):
-                            st.json({k: str(v)[:200] for k, v in sim.items()})
-
+                # ============ ALLE BACKTEST-SAMPLES ============
                 with st.expander("📅 Vis alle backtest-samples"):
-                    display_df = bt["results"][["date", "score", "recommendation", "entry_price", "exit_price", "return_pct"]].copy()
+                    display_df = bt["results"][[
+                        "date", "score", "recommendation",
+                        "entry_price", "exit_price", "return_pct"
+                    ]].copy()
                     display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
                     display_df["score"] = display_df["score"].round(1)
                     display_df["entry_price"] = display_df["entry_price"].round(2)
                     display_df["exit_price"] = display_df["exit_price"].round(2)
                     display_df["return_pct"] = display_df["return_pct"].round(2)
-                    display_df.columns = ["Dato", "Score", "Anbefaling", "Entry pris", "Exit pris", "Afkast %"]
+                    display_df.columns = [
+                        "Dato", "Score", "Anbefaling",
+                        "Entry pris", "Exit pris", "Afkast %"
+                    ]
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
