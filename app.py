@@ -1985,8 +1985,7 @@ elif st.session_state.active_view == "📊 Analyse":
     rec_cols[1].metric("📊 Fundamental", f"{f_score:.0f}/100", "60% vægt")
     rec_cols[2].metric("🔧 Teknisk", f"{t_score:.0f}/100", "40% vægt")
     rec_cols[3].metric("Samlet score", f"{overall:.0f}/100")
-        # ============ NY: SÅDAN HANDLER DU ============
-    from analysis import generate_action_plan
+           # ============ NY: SÅDAN HANDLER DU ============
 
     # Beregn DCF upside til konsistens-check
     try:
@@ -1994,18 +1993,32 @@ elif st.session_state.active_view == "📊 Analyse":
         dcf_upside = ((fv_check / price - 1) * 100) if fv_check and price else None
     except Exception:
         dcf_upside = None
+        fv_check = None
 
     # Beregn targets
     targets_main = calculate_price_targets(
         filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"]),
-        price, fv_check if 'fv_check' in dir() else None
+        price, fv_check
     )
+
+    # Hent FX-kurs hvis ikke DKK
+    fx_for_plan = None
+    if currency != "DKK":
+        fx_for_plan = get_fx_rate(currency, "DKK")
+
+    # Hent shares fra position sizing (hvis brugeren har konfigureret det)
+    shares_for_plan = None
+    try:
+        shares_for_plan = sizing.get("shares") if sizing else None
+    except Exception:
+        shares_for_plan = None
 
     # Generer plan
     plan = generate_action_plan(
         rec=rec, score=overall, current_price=price,
         targets=targets_main, hist=hist, currency=currency,
-        f_score=f_score, t_score=t_score, dcf_upside=dcf_upside
+        f_score=f_score, t_score=t_score, dcf_upside=dcf_upside,
+        shares=shares_for_plan, fx_to_dkk=fx_for_plan
     )
 
     st.markdown("---")
@@ -2016,9 +2029,110 @@ elif st.session_state.active_view == "📊 Analyse":
     for warn in plan["warnings"]:
         st.warning(warn)
 
+    # === STOR INVESTERINGS-OVERSIGT (hvis KØB) ===
+    if plan["totals"]:
+        t = plan["totals"]
+        st.markdown("### 💰 Din investering & forventet gevinst")
+
+        inv_cols = st.columns(4)
+
+        # Total investering
+        invest_str_dkk = f"{t['invest_dkk']:,.0f} DKK" if t['invest_dkk'] else "-"
+        inv_cols[0].markdown(
+            f"<div style='background:#0099ff22;padding:1rem;border-radius:10px;"
+            f"border-left:5px solid #0099ff;text-align:center'>"
+            f"<small style='color:#888'>💵 INVESTERING</small>"
+            f"<h3 style='margin:0.3rem 0'>${t['invest_usd']:,.0f}</h3>"
+            f"<small><b>≈ {invest_str_dkk}</b></small><br>"
+            f"<small>{t['shares']} aktier × {price:.2f} {currency}</small>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+        # Forventet gevinst (hvis alle targets rammes)
+        profit_str_dkk = f"{t['total_profit_dkk']:,.0f} DKK" if t['total_profit_dkk'] else "-"
+        inv_cols[1].markdown(
+            f"<div style='background:#16a34a22;padding:1rem;border-radius:10px;"
+            f"border-left:5px solid #16a34a;text-align:center'>"
+            f"<small style='color:#888'>📈 FORVENTET GEVINST</small>"
+            f"<h3 style='margin:0.3rem 0;color:#16a34a'>+${t['total_profit_usd']:,.0f}</h3>"
+            f"<small><b>≈ +{profit_str_dkk}</b></small><br>"
+            f"<small>+{t['total_profit_pct']:.1f}% afkast</small>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+        # Max tab
+        loss_str_dkk = f"{t['max_loss_dkk']:,.0f} DKK" if t['max_loss_dkk'] else "-"
+        inv_cols[2].markdown(
+            f"<div style='background:#ef444422;padding:1rem;border-radius:10px;"
+            f"border-left:5px solid #ef4444;text-align:center'>"
+            f"<small style='color:#888'>⚠️ MAX TAB</small>"
+            f"<h3 style='margin:0.3rem 0;color:#ef4444'>-${t['max_loss_usd']:,.0f}</h3>"
+            f"<small><b>≈ -{loss_str_dkk}</b></small><br>"
+            f"<small>Hvis stop-loss rammer</small>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+        # Slutværdi
+        end_value_usd = t['invest_usd'] + t['total_profit_usd']
+        end_value_dkk = end_value_usd * fx_for_plan if fx_for_plan else None
+        end_str_dkk = f"{end_value_dkk:,.0f} DKK" if end_value_dkk else "-"
+        inv_cols[3].markdown(
+            f"<div style='background:#a855f722;padding:1rem;border-radius:10px;"
+            f"border-left:5px solid #a855f7;text-align:center'>"
+            f"<small style='color:#888'>🎯 SLUTVÆRDI</small>"
+            f"<h3 style='margin:0.3rem 0;color:#a855f7'>${end_value_usd:,.0f}</h3>"
+            f"<small><b>≈ {end_str_dkk}</b></small><br>"
+            f"<small>Efter alle 3 targets</small>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+        # Profit-breakdown pr. salg
+        with st.expander("📊 Sådan fordeler gevinsten sig (1/3 + 1/3 + 1/3 strategi)"):
+            third_shares = t['shares'] // 3
+            remaining = t['shares'] - 2 * third_shares  # sidste tredjedel = resten
+
+            breakdown_data = []
+            breakdown_data.append({
+                "Salg": "🎯 Target 1 (kort sigt)",
+                "Antal aktier": third_shares,
+                "Pris/aktie": f"{targets_main['target_short']:.2f} {currency}",
+                "Gevinst (USD)": f"+${t['profit_short_usd']:,.0f}",
+                "Gevinst (DKK)": f"+{t['profit_short_usd']*fx_for_plan:,.0f} DKK" if fx_for_plan else "-",
+            })
+            breakdown_data.append({
+                "Salg": "🚀 Target 2 (lang sigt)",
+                "Antal aktier": third_shares,
+                "Pris/aktie": f"{targets_main['target_long']:.2f} {currency}",
+                "Gevinst (USD)": f"+${t['profit_long_usd']:,.0f}",
+                "Gevinst (DKK)": f"+{t['profit_long_usd']*fx_for_plan:,.0f} DKK" if fx_for_plan else "-",
+            })
+            breakdown_data.append({
+                "Salg": "🌙 Target 3 (moon - estimat)",
+                "Antal aktier": remaining,
+                "Pris/aktie": f"{targets_main['target_long']*1.15:.2f} {currency}",
+                "Gevinst (USD)": f"+${t['profit_moon_usd']:,.0f}",
+                "Gevinst (DKK)": f"+{t['profit_moon_usd']*fx_for_plan:,.0f} DKK" if fx_for_plan else "-",
+            })
+            st.dataframe(pd.DataFrame(breakdown_data), use_container_width=True, hide_index=True)
+            st.caption(
+                "💡 **OBS:** Disse tal er **forventede** gevinster hvis alle targets rammes. "
+                "I virkeligheden afhænger det af markedsforhold. Brug altid stop-loss!"
+            )
+    else:
+        if "KØB" in rec:
+            st.info(
+                "💡 **Tip:** Brug **Position Sizing Calculator** ovenfor til at beregne hvor mange aktier "
+                "du skal købe — så får du her vist den **forventede gevinst i DKK**!"
+            )
+
     # Risk/Reward boks (hvis køb)
     if plan["risk_reward"]:
         rr = plan["risk_reward"]
+        st.markdown("### ⚖️ Risk / Reward")
         rr_cols = st.columns(4)
         rr_cols[0].metric(
             "⚠️ Risk", f"-{rr['risk_pct']:.1f}%",
@@ -2058,11 +2172,49 @@ elif st.session_state.active_view == "📊 Analyse":
             unsafe_allow_html=True
         )
 
+    # === HVAD ER TRAILING STOP? ===
+    with st.expander("📚 Hvad er TRAILING STOP? (klik for forklaring)"):
+        st.markdown("""
+        **Trailing stop** = "rullende stop-loss" der **følger med opad** når kursen stiger,
+        men **bevæger sig aldrig nedad**.
+
+        ### 📈 Eksempel:
+        ```
+        Du køber @ 120 USD, stop-loss = 114 USD (-5%)
+
+        ✅ Kurs stiger til 130 USD  →  trailing stop bliver 123 USD (-5% under top)
+        ✅ Kurs stiger til 140 USD  →  trailing stop bliver 133 USD
+        ✅ Kurs stiger til 150 USD  →  trailing stop bliver 142 USD
+        🛑 Kurs falder til 142 USD  →  SOLGT automatisk med +22 USD profit!
+        ```
+
+        ### 🎯 Hvorfor er det smart?
+        1. **Du låser gevinst automatisk** — ingen grund til at sidde og kigge på skærmen
+        2. **Du beskytter mod store fald** — hvis aktien pludselig styrtdykker
+        3. **Du lader vinderne løbe** — trailing stop'et "ruller" med opad
+
+        ### 💼 Hvor sætter man det?
+        De fleste mæglere understøtter trailing stop:
+        - 🇩🇰 **Nordnet** — "Trailing stop" når du opretter ordre
+        - 🇩🇰 **Saxo** — "Trailing stop loss"
+        - 🌍 **eToro** — "Trailing stop loss"
+        - 🌍 **Interactive Brokers** — "TRAIL"
+
+        Du kan typisk sætte det som:
+        - **Procent** (fx 5% under top)
+        - **Beløb** (fx 6 USD under top)
+
+        ### ⚠️ Vigtigt at huske
+        Trailing stops er ikke 100% sikre — i meget volatile markeder kan de "udløses for tidligt"
+        ved kortvarige dyk. Sæt typisk 5-10% afstand for normale aktier.
+        """)
+
     st.caption(
-        "⚠️ Datoer er **estimater** baseret på historisk momentum og volatilitet. "
+        "⚠️ Datoer og gevinster er **estimater** baseret på historisk momentum og volatilitet. "
         "Faktisk timing afhænger af markedsforhold, nyheder og earnings. "
         "Brug altid stop-loss til at beskytte din kapital."
     )
+    # ============ SLUT NY ============
     # ============ SLUT NY ============
 
     st.markdown("---")
