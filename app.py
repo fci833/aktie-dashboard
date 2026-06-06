@@ -2161,8 +2161,25 @@ elif st.session_state.active_view == "📊 Analyse":
     # Anbefaling card
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
-        st.markdown(make_recommendation_card(rec, color, overall),
-                    unsafe_allow_html=True)
+        # Find emoji baseret på anbefaling
+        rec_emoji = {
+            "STÆRKT KØB": "🚀",
+            "KØB": "🟢",
+            "HOLD": "🟡",
+            "SÆLG": "🔴",
+            "STÆRKT SÆLG": "💀",
+        }.get(rec, "📊")
+        
+        st.markdown(
+            f"<div style='background:{color}22;padding:1.2rem;border-radius:12px;"
+            f"border-left:5px solid {color};text-align:center'>"
+            f"<div style='font-size:2rem'>{rec_emoji}</div>"
+            f"<h2 style='color:{color};margin:0.3rem 0'>{rec}</h2>"
+            f"<h1 style='margin:0.3rem 0;font-size:2.5rem'>{overall:.0f}<small style='font-size:1.2rem;color:#888'>/100</small></h1>"
+            f"<small style='color:#888'>Samlet score</small>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
     rec_cols[1].metric("📊 Fundamental", f"{f_score:.0f}/100", "60% vægt")
     rec_cols[2].metric("🔧 Teknisk", f"{t_score:.0f}/100", "40% vægt")
     rec_cols[3].metric("Samlet score", f"{overall:.0f}/100")
