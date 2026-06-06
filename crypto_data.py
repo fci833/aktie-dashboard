@@ -51,10 +51,12 @@ def search_coingecko_id(symbol):
             timeout=10,
         )
         if r.status_code != 200:
+            print(f"[search_coingecko_id] {symbol}: status {r.status_code}")
             return None
         data = r.json()
         coins = data.get("coins", [])
         if not coins:
+            print(f"[search_coingecko_id] {symbol}: ingen resultater")
             return None
 
         symbol_upper = symbol.upper()
@@ -62,20 +64,18 @@ def search_coingecko_id(symbol):
         # Først: prøv exact symbol match, sortér efter market cap rank
         exact_matches = [c for c in coins if c.get("symbol", "").upper() == symbol_upper]
         if exact_matches:
-            exact_matches.sort(
-                key=lambda c: c.get("market_cap_rank") or 999999
-            )
+            exact_matches.sort(key=lambda c: c.get("market_cap_rank") or 999999)
             return exact_matches[0].get("id")
 
         # Ellers: brug første resultat
         return coins[0].get("id")
 
     except Exception as e:
-        print(f"CoinGecko search error for {symbol}: {e}")
+        print(f"[search_coingecko_id] {symbol} fejl: {e}")
         return None
 
 
-# ===== COINGECKO HOVEDFETCH (kun når Binance ikke kan) =====
+# ===== COINGECKO HOVEDFETCH =====
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_coingecko(coin_id):
@@ -96,9 +96,10 @@ def fetch_coingecko(coin_id):
             timeout=15,
         )
         if r.status_code == 429:
+            print(f"[fetch_coingecko] {coin_id}: RATE LIMITED (429)")
             return "RATE_LIMIT"
         if r.status_code != 200:
-            print(f"CoinGecko coin endpoint failed for {coin_id}: {r.status_code}")
+            print(f"[fetch_coingecko] {coin_id}: coin endpoint status {r.status_code}")
             return None
         data = r.json()
 
@@ -110,9 +111,10 @@ def fetch_coingecko(coin_id):
             timeout=15,
         )
         if chart_r.status_code == 429:
+            print(f"[fetch_coingecko] {coin_id}: market_chart RATE LIMITED")
             return "RATE_LIMIT"
         if chart_r.status_code != 200:
-            print(f"CoinGecko market_chart failed for {coin_id}: {chart_r.status_code}")
+            print(f"[fetch_coingecko] {coin_id}: market_chart status {chart_r.status_code}")
             return None
 
         chart_data = chart_r.json()
@@ -120,7 +122,7 @@ def fetch_coingecko(coin_id):
         volumes = chart_data.get("total_volumes", [])
 
         if not prices:
-            print(f"CoinGecko: ingen prices for {coin_id}")
+            print(f"[fetch_coingecko] {coin_id}: ingen prices")
             return None
 
         df_prices = pd.DataFrame(prices, columns=["ts", "Close"])
@@ -144,7 +146,7 @@ def fetch_coingecko(coin_id):
             df["ts"] = pd.to_datetime(df["ts"], unit="ms").dt.normalize()
             df = df.drop_duplicates(subset="ts").set_index("ts")
         else:
-            print(f"CoinGecko: bruger close-prices fallback for {coin_id}")
+            print(f"[fetch_coingecko] {coin_id}: bruger close-prices fallback")
             df = df_prices.copy()
             df["Open"] = df["Close"].shift(1).fillna(df["Close"])
             df["High"] = df["Close"]
@@ -163,6 +165,7 @@ def fetch_coingecko(coin_id):
 
         df = df.dropna(subset=["Close"])
         if df.empty:
+            print(f"[fetch_coingecko] {coin_id}: tom dataframe")
             return None
 
         md = data.get("market_data") or {}
@@ -219,7 +222,7 @@ def fetch_coingecko(coin_id):
         return {"info": info, "hist": df, "source": "CoinGecko"}
 
     except Exception as e:
-        print(f"CoinGecko error for {coin_id}: {e}")
+        print(f"[fetch_coingecko] {coin_id} EXCEPTION: {e}")
         return None
 
 
@@ -235,9 +238,11 @@ def fetch_binance(symbol, interval="1d", limit=500):
             timeout=10,
         )
         if r.status_code != 200:
+            print(f"[fetch_binance] {symbol}: status {r.status_code} - {r.text[:200]}")
             return None
         data = r.json()
         if not data or not isinstance(data, list):
+            print(f"[fetch_binance] {symbol}: tomt eller ugyldigt svar")
             return None
         df = pd.DataFrame(data, columns=[
             "ts", "Open", "High", "Low", "Close", "Volume",
@@ -246,7 +251,8 @@ def fetch_binance(symbol, interval="1d", limit=500):
         df["ts"] = pd.to_datetime(df["ts"], unit="ms").dt.normalize()
         df = df.set_index("ts")[["Open", "High", "Low", "Close", "Volume"]].astype(float)
         return df
-    except Exception:
+    except Exception as e:
+        print(f"[fetch_binance] {symbol} EXCEPTION: {e}")
         return None
 
 
@@ -267,7 +273,7 @@ def fetch_fear_greed():
         df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="s")
         return df.sort_values("timestamp")
     except Exception as e:
-        print(f"Fear & Greed error: {e}")
+        print(f"[fetch_fear_greed] error: {e}")
         return None
 
 
@@ -283,7 +289,7 @@ def fetch_global_crypto_market():
             timeout=10,
         )
         if r.status_code != 200:
-            print(f"Global endpoint failed: {r.status_code}")
+            print(f"[fetch_global_crypto_market] status {r.status_code}")
             return None
         d = r.json().get("data") or {}
 
@@ -296,7 +302,7 @@ def fetch_global_crypto_market():
             "market_cap_change_24h": d.get("market_cap_change_percentage_24h_usd") or 0,
         }
     except Exception as e:
-        print(f"Global market error: {e}")
+        print(f"[fetch_global_crypto_market] error: {e}")
         return None
 
 
@@ -304,8 +310,8 @@ def fetch_global_crypto_market():
 
 def _enrich_binance_with_coingecko(binance_data, coin_id):
     """
-    Tager Binance OHLC og prøver at berige med CoinGecko metadata
-    (market cap, dev score, etc.) — uden at bryde hvis CoinGecko fejler.
+    Tager Binance OHLC og prøver at berige med CoinGecko metadata.
+    Hvis CoinGecko fejler, returneres binance_data uændret.
     """
     try:
         r = requests.get(
@@ -355,7 +361,7 @@ def _enrich_binance_with_coingecko(binance_data, coin_id):
         return binance_data
 
     except Exception as e:
-        print(f"Could not enrich {coin_id}: {e}")
+        print(f"[_enrich_binance_with_coingecko] {coin_id}: {e}")
         return binance_data
 
 
@@ -366,67 +372,110 @@ def fetch_crypto_data(ticker):
     Hovedfunktion - PRIORITERER Binance for hastighed, beriger med CoinGecko.
 
     Strategi:
-    1. Kendt ticker → Binance (hurtigt, ingen rate limit) + berig med CoinGecko metadata
+    1. Kendt ticker → Binance + berig med CoinGecko metadata
     2. Hvis Binance fejler → CoinGecko fuld data (med retries)
-    3. Ukendt ticker → CoinGecko search → Binance hvis muligt, ellers CoinGecko
+    3. Ukendt ticker → CoinGecko search → Binance/CoinGecko
     4. Sidste udvej → Binance med USDT/BUSD/USD-suffix
     """
     if not ticker:
         return None
 
     symbol = normalize_crypto_ticker(ticker)
+    log = []
+    log.append(f"🎯 fetch_crypto_data({ticker}) → normaliseret til '{symbol}'")
 
-    # ----- 1. KENDT TICKER: Prioritér Binance + berig med CoinGecko -----
+    # ----- 1. KENDT TICKER -----
     if symbol in CRYPTO_UNIVERSE:
         config = CRYPTO_UNIVERSE[symbol]
+        log.append(f"✅ {symbol} fundet i CRYPTO_UNIVERSE: binance={config['binance']}, cg={config['cg']}")
 
-        # Step 1a: Prøv Binance først (hurtigt, pålideligt, ingen rate limit)
+        # Step 1a: Binance først
+        log.append(f"🔄 Forsøger Binance: {config['binance']}")
         df = fetch_binance(config["binance"], limit=365)
         if df is not None and not df.empty:
+            log.append(f"✅ Binance OK: {len(df)} dage")
             response = _build_binance_response(df, symbol, config.get("category"))
             response = _enrich_binance_with_coingecko(response, config["cg"])
+            response["debug_log"] = log
             return response
+        else:
+            log.append(f"❌ Binance fejlede for {config['binance']}")
 
-        # Step 1b: Binance fejlede → CoinGecko med retries
+        # Step 1b: CoinGecko fallback
         for attempt in range(3):
+            log.append(f"🔄 CoinGecko forsøg {attempt+1}/3: {config['cg']}")
             data = fetch_coingecko(config["cg"])
             if data and data != "RATE_LIMIT":
+                log.append("✅ CoinGecko OK")
+                data["debug_log"] = log
                 return data
             if data == "RATE_LIMIT":
                 wait_time = (attempt + 1) * 2
-                print(f"Rate limited, venter {wait_time}s før retry...")
+                log.append(f"⚠️ Rate limited, venter {wait_time}s...")
                 time.sleep(wait_time)
             else:
+                log.append("❌ CoinGecko fejlede (ingen data)")
                 break
 
+        # Print log til server
+        print(f"\n=== FETCH FAILED FOR {symbol} (kendt ticker) ===")
+        for line in log:
+            print(f"  {line}")
+        print("="*50)
         return None
 
     # ----- 2. UKENDT TICKER: CoinGecko search -----
+    log.append(f"🔍 {symbol} ikke i CRYPTO_UNIVERSE, søger CoinGecko...")
     coin_id = search_coingecko_id(symbol)
     if coin_id:
-        # Prøv først Binance med USDT (hvis tilgængelig)
+        log.append(f"✅ Fandt CoinGecko ID: {coin_id}")
+
+        # Prøv først Binance
+        log.append(f"🔄 Forsøger Binance: {symbol}USDT")
         df = fetch_binance(f"{symbol}USDT", limit=365)
         if df is not None and not df.empty:
+            log.append(f"✅ Binance OK: {len(df)} dage")
             response = _build_binance_response(df, symbol, "Custom")
             response = _enrich_binance_with_coingecko(response, coin_id)
+            response["debug_log"] = log
             return response
+        else:
+            log.append(f"❌ {symbol}USDT ikke på Binance")
 
-        # Ellers: fuld CoinGecko (med retries)
+        # Ellers: CoinGecko fuld data
         for attempt in range(3):
+            log.append(f"🔄 CoinGecko forsøg {attempt+1}/3: {coin_id}")
             data = fetch_coingecko(coin_id)
             if data and data != "RATE_LIMIT":
+                log.append("✅ CoinGecko OK")
+                data["debug_log"] = log
                 return data
             if data == "RATE_LIMIT":
+                log.append(f"⚠️ Rate limited, venter...")
                 time.sleep((attempt + 1) * 2)
             else:
+                log.append("❌ CoinGecko fejlede")
                 break
+    else:
+        log.append(f"❌ Ingen CoinGecko match for '{symbol}'")
 
     # ----- 3. SIDSTE UDVEJ: Binance med suffix-varianter -----
+    log.append("🔄 Sidste forsøg: Binance med USDT/BUSD/USD suffix")
     for suffix in ["USDT", "BUSD", "USD"]:
         binance_symbol = f"{symbol}{suffix}"
+        log.append(f"  → Forsøger {binance_symbol}")
         df = fetch_binance(binance_symbol, limit=365)
         if df is not None and not df.empty:
-            return _build_binance_response(df, symbol, "Custom")
+            log.append(f"✅ Binance OK med {binance_symbol}")
+            response = _build_binance_response(df, symbol, "Custom")
+            response["debug_log"] = log
+            return response
+
+    # Print log til server
+    print(f"\n=== FETCH FAILED FOR {symbol} ===")
+    for line in log:
+        print(f"  {line}")
+    print("="*50)
 
     return None
 
