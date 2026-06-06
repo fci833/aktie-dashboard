@@ -547,10 +547,37 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
 
 
 def dcf_valuation(info, g, dr, tg, years=10):
-    fcf = safe(info, "freeCashflow")
+    """DCF med fallback: FCF → operating cashflow → net income"""
     shares = safe(info, "sharesOutstanding")
-    if not fcf or not shares or fcf <= 0:
+    if not shares:
         return None
+
+    # Prøv FCF først
+    fcf = safe(info, "freeCashflow")
+
+    # Fallback 1: Operating cashflow - capex (estimat)
+    if not fcf or fcf <= 0:
+        ocf = safe(info, "operatingCashflow")
+        if ocf and ocf > 0:
+            # Antag capex ~25% af OCF (industri-gennemsnit)
+            fcf = ocf * 0.75
+
+    # Fallback 2: Net income (mindre præcist)
+    if not fcf or fcf <= 0:
+        ni = safe(info, "netIncomeToCommon") or safe(info, "netIncome")
+        if ni and ni > 0:
+            # Net income er lidt højere end FCF typisk
+            fcf = ni * 0.85
+
+    # Fallback 3: Earnings × shares
+    if not fcf or fcf <= 0:
+        eps = safe(info, "trailingEps") or safe(info, "earningsPerShare")
+        if eps and eps > 0:
+            fcf = eps * shares * 0.85
+
+    if not fcf or fcf <= 0:
+        return None
+
     cfs = []
     for y in range(1, years + 1):
         gy = g - (g - tg) * (y / years)
@@ -559,8 +586,8 @@ def dcf_valuation(info, g, dr, tg, years=10):
     tv = (fcf * (1 + tg)) / (dr - tg)
     pv_tv = tv / ((1 + dr) ** years)
     ev = sum(cfs) + pv_tv
-    debt = safe(info, "totalDebt", 0)
-    cash = safe(info, "totalCash", 0)
+    debt = safe(info, "totalDebt", 0) or 0
+    cash = safe(info, "totalCash", 0) or 0
     return (ev - debt + cash) / shares
 
 
