@@ -2186,7 +2186,7 @@ elif st.session_state.active_view == "📊 Analyse":
             filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"]),
             price, overall
         )
-        )
+        
         default_stop = targets_data.get("stop_loss", price * 0.92) if targets_data else price * 0.92
 
         stop_loss_input = ps_cols[2].number_input(
