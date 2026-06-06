@@ -17,8 +17,10 @@ from data_sources import (
 from analysis import (
     get_indicators, fundamental_score, technical_score,
     calculate_price_targets, dcf_valuation, risk_metrics,
-    monte_carlo, recommendation, filter_by_days, filter_chart_period
+    monte_carlo, recommendation, filter_by_days, filter_chart_period,
+    generate_action_plan
 )
+
 from backtest import run_backtest, simulate_strategy
 from screener import run_screener, categorize_opportunities, sector_breakdown
 from history import (
