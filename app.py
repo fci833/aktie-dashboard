@@ -1239,6 +1239,208 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"ATR: ${targets['atr']:.4f}"
                     )
 
+                                # ============ NY: SÅDAN HANDLER DU (KRYPTO) ============
+                from crypto_analysis import generate_crypto_action_plan
+
+                # FX-kurs USD → DKK
+                fx_crypto = get_fx_rate("USD", "DKK")
+
+                st.markdown("---")
+                st.markdown("## 🎯 SÅDAN HANDLER DU")
+
+                # Investerings-input
+                coins_for_plan = None
+                invest_dkk_crypto = None
+                if "KØB" in rec:
+                    st.markdown("### 💼 Hvor meget vil du investere?")
+                    inv_cols = st.columns([2, 1, 1, 1])
+                    invest_dkk_crypto = inv_cols[0].number_input(
+                        "Beløb (DKK)", min_value=500, value=5000, step=500,
+                        key=f"crypto_invest_{symbol}",
+                        help="Indtast hvor meget du vil investere i krypto"
+                    )
+
+                    if fx_crypto and price > 0:
+                        price_dkk_crypto = price * fx_crypto
+                        coins_for_plan = invest_dkk_crypto / price_dkk_crypto
+                        actual_invest = coins_for_plan * price_dkk_crypto
+
+                        inv_cols[1].metric(
+                            f"🪙 Antal {symbol}",
+                            f"{coins_for_plan:.6f}" if coins_for_plan < 1 else f"{coins_for_plan:.4f}"
+                        )
+                        inv_cols[2].metric("💰 I DKK", f"{actual_invest:,.0f} DKK")
+                        inv_cols[3].metric("💵 I USD", f"${coins_for_plan * price:,.2f}")
+
+                # Generer plan
+                plan = generate_crypto_action_plan(
+                    rec=rec, score=scores["overall"], current_price=price,
+                    targets=targets, hist=hist, symbol=symbol,
+                    fx_to_dkk=fx_crypto, investment_dkk=invest_dkk_crypto,
+                    market_score=scores["market"],
+                    technical_score=scores["technical"],
+                    sentiment_score=scores["sentiment"],
+                    dev_score=scores["developer"],
+                )
+
+                st.markdown(f"_{plan['summary']}_")
+
+                # Warnings
+                for warn in plan["warnings"]:
+                    st.warning(warn)
+
+                # Investerings-oversigt
+                if plan["totals"]:
+                    t = plan["totals"]
+                    st.markdown("### 💰 Din investering & forventet gevinst")
+                    inv_summary = st.columns(4)
+
+                    inv_summary[0].markdown(
+                        f"<div style='background:#0099ff22;padding:1rem;border-radius:10px;"
+                        f"border-left:5px solid #0099ff;text-align:center'>"
+                        f"<small style='color:#888'>💵 INVESTERING</small>"
+                        f"<h3 style='margin:0.3rem 0'>${t['invest_usd']:,.0f}</h3>"
+                        f"<small><b>≈ {t['invest_dkk']:,.0f} DKK</b></small><br>"
+                        f"<small>{t['coins']:.6f} {symbol}</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    inv_summary[1].markdown(
+                        f"<div style='background:#16a34a22;padding:1rem;border-radius:10px;"
+                        f"border-left:5px solid #16a34a;text-align:center'>"
+                        f"<small style='color:#888'>📈 FORVENTET GEVINST</small>"
+                        f"<h3 style='margin:0.3rem 0;color:#16a34a'>+${t['total_profit_usd']:,.0f}</h3>"
+                        f"<small><b>≈ +{t['total_profit_dkk']:,.0f} DKK</b></small><br>"
+                        f"<small>+{t['total_profit_pct']:.0f}% afkast</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    inv_summary[2].markdown(
+                        f"<div style='background:#ef444422;padding:1rem;border-radius:10px;"
+                        f"border-left:5px solid #ef4444;text-align:center'>"
+                        f"<small style='color:#888'>⚠️ MAX TAB</small>"
+                        f"<h3 style='margin:0.3rem 0;color:#ef4444'>-${t['max_loss_usd']:,.0f}</h3>"
+                        f"<small><b>≈ -{t['max_loss_dkk']:,.0f} DKK</b></small><br>"
+                        f"<small>Hvis stop-loss rammer</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    end_value_usd = t['invest_usd'] + t['total_profit_usd']
+                    end_value_dkk = end_value_usd * fx_crypto if fx_crypto else 0
+                    inv_summary[3].markdown(
+                        f"<div style='background:#a855f722;padding:1rem;border-radius:10px;"
+                        f"border-left:5px solid #a855f7;text-align:center'>"
+                        f"<small style='color:#888'>🎯 SLUTVÆRDI</small>"
+                        f"<h3 style='margin:0.3rem 0;color:#a855f7'>${end_value_usd:,.0f}</h3>"
+                        f"<small><b>≈ {end_value_dkk:,.0f} DKK</b></small><br>"
+                        f"<small>Efter alle 4 targets</small>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+
+                    with st.expander("📊 Sådan fordeler gevinsten sig (1/4 + 1/4 + 1/4 + 1/4)"):
+                        quarter = t['coins'] / 4
+                        breakdown = [
+                            {"Salg": "🎯 Target 1 (kort sigt)", "Coins": f"{quarter:.6f}",
+                             "Pris": f"${targets['target_short']:.4f}",
+                             "Gevinst USD": f"+${t['profit_short_usd']:,.0f}",
+                             "Gevinst DKK": f"+{t['profit_short_usd']*fx_crypto:,.0f} DKK" if fx_crypto else "-"},
+                            {"Salg": "🚀 Target 2 (lang sigt)", "Coins": f"{quarter:.6f}",
+                             "Pris": f"${targets['target_long']:.4f}",
+                             "Gevinst USD": f"+${t['profit_long_usd']:,.0f}",
+                             "Gevinst DKK": f"+{t['profit_long_usd']*fx_crypto:,.0f} DKK" if fx_crypto else "-"},
+                            {"Salg": "🌙 Target 3 (moon)", "Coins": f"{quarter:.6f}",
+                             "Pris": f"${targets['target_moon']:.4f}",
+                             "Gevinst USD": f"+${t['profit_moon_usd']:,.0f}",
+                             "Gevinst DKK": f"+{t['profit_moon_usd']*fx_crypto:,.0f} DKK" if fx_crypto else "-"},
+                            {"Salg": "💎 HODL (5-10x estimat)", "Coins": f"{quarter:.6f}",
+                             "Pris": f"${targets['target_moon']*1.3:.4f}",
+                             "Gevinst USD": f"+${t['profit_hodl_usd']:,.0f}",
+                             "Gevinst DKK": f"+{t['profit_hodl_usd']*fx_crypto:,.0f} DKK" if fx_crypto else "-"},
+                        ]
+                        st.dataframe(pd.DataFrame(breakdown), use_container_width=True, hide_index=True)
+                        st.caption(
+                            "💡 **OBS:** Krypto kan tabe **50-90%** i bear markets. "
+                            "Invester KUN hvad du har råd til at tabe. Brug ALTID stop-loss!"
+                        )
+                else:
+                    if "KØB" in rec:
+                        st.info("💡 Indtast et beløb ovenfor for at se forventet gevinst i DKK!")
+
+                # Risk/Reward
+                if plan["risk_reward"]:
+                    rr = plan["risk_reward"]
+                    st.markdown("### ⚖️ Risk / Reward")
+                    rr_cols = st.columns(5)
+                    rr_cols[0].metric("⚠️ Risk", f"-{rr['risk_pct']:.1f}%")
+                    rr_cols[1].metric("🎯 Reward (kort)", f"+{rr['reward_short_pct']:.0f}%")
+                    rr_cols[2].metric("🚀 Reward (lang)", f"+{rr['reward_long_pct']:.0f}%")
+                    rr_cols[3].metric("🌙 Reward (moon)", f"+{rr['reward_moon_pct']:.0f}%")
+
+                    rr_color = "#16a34a" if rr['ratio_moon'] >= 5 else "#22c55e" if rr['ratio_moon'] >= 3 else "#eab308" if rr['ratio_moon'] >= 2 else "#ef4444"
+                    rr_label = "Excellent" if rr['ratio_moon'] >= 5 else "God" if rr['ratio_moon'] >= 3 else "OK" if rr['ratio_moon'] >= 2 else "Svag"
+                    rr_cols[4].markdown(
+                        f"<div style='background:{rr_color}22;padding:0.6rem;border-radius:8px;"
+                        f"border-left:4px solid {rr_color};text-align:center'>"
+                        f"<small>R/R MOON</small>"
+                        f"<h3 style='margin:0.2rem 0;color:{rr_color}'>{rr['ratio_moon']:.1f}:1</h3>"
+                        f"<small>{rr_label}</small></div>",
+                        unsafe_allow_html=True
+                    )
+
+                # Steps
+                st.markdown("### 📋 Trin-for-trin handleplan")
+                for step in plan["steps"]:
+                    st.markdown(
+                        f"<div style='background:{step['color']}15;padding:1rem;border-radius:10px;"
+                        f"border-left:5px solid {step['color']};margin-bottom:0.6rem'>"
+                        f"<div style='display:flex;align-items:center;gap:0.8rem'>"
+                        f"<div style='font-size:2rem'>{step['icon']}</div>"
+                        f"<div style='flex:1'>"
+                        f"<div style='color:{step['color']};font-weight:bold;font-size:0.9rem'>"
+                        f"STEP {step['n']} · {step['title']}</div>"
+                        f"<div style='font-size:1.1rem;margin:0.3rem 0'>{step['main']}</div>"
+                        f"<div style='color:#aaa;font-size:0.9rem'>{step['sub']}</div>"
+                        f"</div></div></div>",
+                        unsafe_allow_html=True
+                    )
+
+                # Trailing stop info
+                with st.expander("📚 Hvad er TRAILING STOP? (især vigtigt for krypto)"):
+                    st.markdown("""
+                    **Trailing stop** = "rullende stop-loss" der **følger med opad** når kursen stiger,
+                    men **bevæger sig aldrig nedad**.
+
+                    ### 📈 Eksempel med BTC:
+                    ```
+                    Du køber BTC @ $50,000, stop-loss = $45,000 (-10%)
+
+                    ✅ BTC stiger til $60,000  →  trailing stop bliver $54,000 (-10%)
+                    ✅ BTC stiger til $80,000  →  trailing stop bliver $72,000
+                    ✅ BTC stiger til $100,000 →  trailing stop bliver $90,000
+                    🛑 BTC falder til $90,000  →  SOLGT med +$40,000 profit (+80%)!
+                    ```
+
+                    ### 🎯 Hvorfor er det EKSTRA vigtigt for krypto?
+                    1. **Krypto er meget volatilt** — store fald kan ske på minutter
+                    2. **Markedet er åbent 24/7** — du kan ikke sidde og kigge altid
+                    3. **FOMO er farligt** — trailing stop låser gevinst automatisk
+                    4. **Bull → bear skift** kan være brutale (BTC -75% på 6 mdr)
+
+                    ### 💼 Hvor sætter man det?
+                    - **Coinbase Advanced** — "Stop-Limit" med trailing
+                    - **Binance** — "Trailing Stop" ordre-type
+                    - **Kraken** — "Trailing Stop Loss"
+                    - **eToro** — "Trailing Stop Loss"
+
+                    ### ⚠️ Krypto-tip
+                    Sæt typisk **15-20% trailing** på krypto pga. volatilitet
+                    (vs. 5-10% på aktier). Ellers udløses det for tidligt!
+                    """)
+
+                st.caption(
+                    "⚠️ Datoer og gevinster er **estimater** baseret på historisk momentum og volatilitet. "
+                    "Krypto kan tabe 50-90% i bear markets — invester KUN hvad du har råd til at tabe. "
+                    "Brug ALTID stop-loss til at beskytte din kapital."
+                )
+                # ============ SLUT NY ============
+                
                 if symbol == "BTC":
                     halv = btc_halving_analysis(symbol)
                     if halv:
