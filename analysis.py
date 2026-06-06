@@ -40,7 +40,6 @@ def add_indicators_cached(cache_key: str, hist: pd.DataFrame):
 
 
 def get_indicators(hist: pd.DataFrame) -> pd.DataFrame:
-    """Cached indikator-beregning baseret på data signatur"""
     if hist is None or hist.empty:
         return hist
     cache_key = f"{len(hist)}_{hist['Close'].iloc[-1]:.4f}_{hist.index[-1]}"
@@ -99,10 +98,8 @@ def fundamental_score(info):
 
 
 def technical_score_vectorized(df: pd.DataFrame) -> pd.Series:
-    """Vektoriseret version - beregner score for hele serien på én gang"""
     n = len(df)
     score = np.full(n, 50.0)
-
     close = df["Close"].values
     sma50 = df["SMA50"].values
     sma200 = df["SMA200"].values
@@ -145,12 +142,11 @@ def technical_score_vectorized(df: pd.DataFrame) -> pd.Series:
         score[mom < -10] -= 6
 
     score = np.clip(score, 0, 100)
-    score[:200] = np.nan  # SMA200 ikke pålidelig før dag 200
+    score[:200] = np.nan
     return pd.Series(score, index=df.index)
 
 
 def technical_score(df):
-    """Returnerer score + detaljer for SIDSTE dag"""
     if len(df) < 200:
         return 50, []
     scores = technical_score_vectorized(df)
@@ -202,28 +198,308 @@ def technical_score(df):
 
 
 def calculate_price_targets(df, current_price, fair_value=None):
+    """
+    FIXED: Stop-loss og købszone er ALTID under current_price.
+    Targets sikrer reasonable risk/reward.
+    """
     last = df.iloc[-1]
     atr = last["ATR"] if not np.isnan(last["ATR"]) else current_price * 0.02
     recent = df.tail(252) if len(df) > 252 else df
     week52_high = recent["High"].max()
     week52_low = recent["Low"].min()
+
     sma50 = last["SMA50"] if not np.isnan(last["SMA50"]) else current_price
     sma200 = last["SMA200"] if not np.isnan(last["SMA200"]) else current_price
     bb_low = last["BB_low"] if not np.isnan(last["BB_low"]) else current_price * 0.95
     bb_high = last["BB_high"] if not np.isnan(last["BB_high"]) else current_price * 1.05
-    buy_zone_low = max(bb_low, sma200 - atr)
-    buy_zone_high = min(sma50, current_price * 0.97)
-    stop_loss = max(current_price - 2 * atr, sma200 - atr)
-    if fair_value and fair_value > current_price:
-        target = fair_value
+
+    # === STOP-LOSS: ALTID under current_price ===
+    # Standard: 2 ATR under nuværende pris
+    stop_loss = current_price - 2 * atr
+
+    # Hvis SMA200 er UNDER prisen (uptrend), kan vi bruge den som tightere support
+    if sma200 < current_price:
+        sma_stop = sma200 - 0.5 * atr
+        # Brug kun hvis det giver et tightere stop end 2 ATR
+        if sma_stop > stop_loss and sma_stop < current_price:
+            stop_loss = sma_stop
+
+    # Sikkerhedsnet: stop SKAL være under prisen (max -1%)
+    stop_loss = min(stop_loss, current_price * 0.99)
+    # Men ikke mere end 15% under
+    stop_loss = max(stop_loss, current_price * 0.85)
+
+    # === KØB ZONE: ALTID ≤ current_price ===
+    # Øverste grænse: lige under nuværende pris
+    buy_zone_high = current_price * 0.99
+    # Nederste grænse: 1.5 ATR under (typisk pullback)
+    buy_zone_low = current_price - 1.5 * atr
+
+    # Hvis BB_low er endnu lavere (pris allerede tæt på BB), brug det
+    if bb_low < buy_zone_low and bb_low > current_price * 0.85:
+        buy_zone_low = bb_low
+
+    # Sikkerhed: buy_low < buy_high
+    if buy_zone_low >= buy_zone_high:
+        buy_zone_low = buy_zone_high * 0.97
+
+    # === KORT MÅL (1-3 mdr) ===
+    target_short = max(bb_high, current_price * 1.05)
+    # Maks 15% over current for "kort"
+    target_short = min(target_short, current_price * 1.15)
+
+    # === LANG MÅL (6-12 mdr) ===
+    if fair_value and fair_value > current_price * 1.05:
+        target_long = fair_value
     else:
-        target = max(current_price * 1.20, week52_high)
+        target_long = max(current_price * 1.20, week52_high)
+
     return {
-        "buy_low": buy_zone_low, "buy_high": buy_zone_high,
-        "stop_loss": stop_loss, "target_short": bb_high,
-        "target_long": target, "week52_high": week52_high,
-        "week52_low": week52_low, "atr": atr,
+        "buy_low": buy_zone_low,
+        "buy_high": buy_zone_high,
+        "stop_loss": stop_loss,
+        "target_short": target_short,
+        "target_long": target_long,
+        "week52_high": week52_high,
+        "week52_low": week52_low,
+        "atr": atr,
     }
+
+
+def estimate_days_to_target(current_price, target_price, hist):
+    """Estimer antal dage til target baseret på recent momentum + volatilitet"""
+    if hist is None or len(hist) < 30:
+        return None
+
+    pct_to_target = (target_price / current_price - 1)
+    if abs(pct_to_target) < 0.001:
+        return 0
+
+    # 30-dages momentum
+    mom_30d = (hist["Close"].iloc[-1] / hist["Close"].iloc[-30] - 1)
+    daily_30 = mom_30d / 30
+
+    # 90-dages momentum (mere stabilt)
+    if len(hist) >= 90:
+        mom_90d = (hist["Close"].iloc[-1] / hist["Close"].iloc[-90] - 1)
+        daily_90 = mom_90d / 90
+        # Vægtet gennemsnit (30d får mest vægt for kort sigt)
+        avg_daily = daily_30 * 0.6 + daily_90 * 0.4
+    else:
+        avg_daily = daily_30
+
+    # Hvis momentum er negativ men target er positiv, brug volatilitet som fallback
+    if avg_daily <= 0 and pct_to_target > 0:
+        daily_vol = hist["Close"].pct_change().std()
+        # Antag positiv drift baseret på volatilitet (svarer til ~10% årligt afkast)
+        avg_daily = max(0.0004, daily_vol * 0.08)
+    elif avg_daily >= 0 and pct_to_target < 0:
+        # Reverseret case
+        daily_vol = hist["Close"].pct_change().std()
+        avg_daily = min(-0.0004, -daily_vol * 0.08)
+
+    if avg_daily == 0:
+        return None
+
+    days = pct_to_target / avg_daily
+
+    # Begræns til realistic range
+    if days < 0:
+        return None
+    return max(7, min(int(days), 730))  # 1 uge til 2 år
+
+
+def generate_action_plan(rec, score, current_price, targets, hist, currency="USD",
+                        f_score=None, t_score=None, dcf_upside=None):
+    """
+    Genererer en konkret handleplan med:
+    - Klare steps
+    - Datoer baseret på momentum
+    - Risk/reward ratio
+    - Konsistens-check (DCF vs anbefaling)
+    """
+    today = pd.Timestamp.now()
+
+    plan = {
+        "rec": rec,
+        "score": score,
+        "steps": [],
+        "risk_reward": None,
+        "warnings": [],
+        "summary": "",
+    }
+
+    # === KONSISTENS-CHECK ===
+    if dcf_upside is not None:
+        if "KØB" in rec and dcf_upside < -10:
+            plan["warnings"].append(
+                f"⚠️ Modellen siger KØB pga. fundamentals/teknik, men DCF "
+                f"viser overvurdering ({dcf_upside:+.1f}%). Vær forsigtig — "
+                f"aktien kan være dyrt prissat."
+            )
+        elif "KØB" in rec and -10 <= dcf_upside < 5:
+            plan["warnings"].append(
+                f"ℹ️ DCF viser FAIR PRICED ({dcf_upside:+.1f}%) — "
+                f"opside er begrænset. Anbefaling drevet af stærke fundamentals + teknik."
+            )
+        elif "SÆLG" in rec and dcf_upside > 20:
+            plan["warnings"].append(
+                f"⚠️ Modellen siger SÆLG, men DCF viser undervurdering "
+                f"({dcf_upside:+.1f}%). Måske midlertidig svaghed?"
+            )
+
+    # === RISK/REWARD ===
+    if "KØB" in rec or "HOLD" in rec:
+        risk = current_price - targets["stop_loss"]
+        reward_short = targets["target_short"] - current_price
+        reward_long = targets["target_long"] - current_price
+
+        if risk > 0:
+            plan["risk_reward"] = {
+                "risk_dkk": risk,
+                "risk_pct": (risk / current_price) * 100,
+                "reward_short_pct": (reward_short / current_price) * 100,
+                "reward_long_pct": (reward_long / current_price) * 100,
+                "ratio_short": reward_short / risk if risk > 0 else 0,
+                "ratio_long": reward_long / risk if risk > 0 else 0,
+            }
+
+    # === DATOER ===
+    days_short = estimate_days_to_target(current_price, targets["target_short"], hist)
+    days_long = estimate_days_to_target(current_price, targets["target_long"], hist)
+
+    if days_short:
+        date_short_obj = today + pd.Timedelta(days=days_short)
+        date_short = date_short_obj.strftime("%d. %b %Y")
+        weeks_short = days_short / 7
+        time_short_str = f"{weeks_short:.0f} uger" if weeks_short < 12 else f"{days_short/30:.1f} mdr"
+    else:
+        date_short = "1-3 mdr (estimat)"
+        time_short_str = "1-3 mdr"
+
+    if days_long:
+        date_long_obj = today + pd.Timedelta(days=days_long)
+        date_long = date_long_obj.strftime("%d. %b %Y")
+        time_long_str = f"{days_long/30:.0f} mdr" if days_long < 365 else f"{days_long/365:.1f} år"
+    else:
+        date_long = "6-12 mdr (estimat)"
+        time_long_str = "6-12 mdr"
+
+    # === STEPS PR. ANBEFALING ===
+    if "STÆRKT KØB" in rec or "KØB" in rec:
+        # Tjek om R/R er god
+        rr = plan["risk_reward"]
+        if rr and rr["ratio_short"] < 1.5:
+            plan["warnings"].append(
+                f"⚠️ Risk/Reward er lav ({rr['ratio_short']:.1f}:1 på kort sigt). "
+                f"Ideelt set bør den være min. 2:1."
+            )
+
+        plan["summary"] = (
+            f"Modellen anbefaler **KØB** baseret på stærke fundamentals "
+            f"(score: {f_score}/100) og teknisk billede (score: {t_score}/100)."
+        )
+
+        plan["steps"] = [
+            {
+                "n": 1, "icon": "🟢",
+                "title": "KØB AKTIEN",
+                "main": f"Køb til markedspris omkring **{current_price:.2f} {currency}**",
+                "sub": f"Eller læg limit-ordre i KØB ZONE: **{targets['buy_low']:.2f} - {targets['buy_high']:.2f} {currency}** "
+                       f"({(targets['buy_low']/current_price-1)*100:+.1f}% til {(targets['buy_high']/current_price-1)*100:+.1f}%)",
+                "color": "#16a34a",
+            },
+            {
+                "n": 2, "icon": "🛑",
+                "title": "SÆT STOP-LOSS",
+                "main": f"Stop-loss: **{targets['stop_loss']:.2f} {currency}** "
+                        f"({(targets['stop_loss']/current_price-1)*100:.1f}% — max tab)",
+                "sub": "💡 Brug TRAILING STOP når kursen stiger — så låser du gevinst",
+                "color": "#ef4444",
+            },
+            {
+                "n": 3, "icon": "🎯",
+                "title": "TAG GEVINST 1 (Sælg 1/3)",
+                "main": f"Sælg **1/3 af positionen** ved **{targets['target_short']:.2f} {currency}** "
+                        f"(+{(targets['target_short']/current_price-1)*100:.1f}%)",
+                "sub": f"📅 Forventet: **{date_short}** ({time_short_str})",
+                "color": "#eab308",
+            },
+            {
+                "n": 4, "icon": "🚀",
+                "title": "TAG GEVINST 2 (Sælg 1/3)",
+                "main": f"Sælg **endnu 1/3** ved **{targets['target_long']:.2f} {currency}** "
+                        f"(+{(targets['target_long']/current_price-1)*100:.1f}%)",
+                "sub": f"📅 Forventet: **{date_long}** ({time_long_str})",
+                "color": "#22c55e",
+            },
+            {
+                "n": 5, "icon": "🌙",
+                "title": "LAD RESTEN KØRE",
+                "main": "Behold sidste **1/3** med trailing stop og lad winneren løbe",
+                "sub": "💎 De største gevinster kommer ofte fra de sidste 20% af en position",
+                "color": "#a855f7",
+            },
+        ]
+
+    elif "HOLD" in rec:
+        plan["summary"] = (
+            f"Modellen anbefaler **HOLD** — score er {score}/100 (ikke stærk nok til køb)."
+        )
+        plan["steps"] = [
+            {
+                "n": 1, "icon": "⏸️",
+                "title": "VENT MED AT KØBE",
+                "main": f"Køb **IKKE** til nuværende pris ({current_price:.2f} {currency})",
+                "sub": f"Vent til prisen falder til KØB ZONE: **{targets['buy_low']:.2f} - {targets['buy_high']:.2f} {currency}**",
+                "color": "#eab308",
+            },
+            {
+                "n": 2, "icon": "👁️",
+                "title": "OVERVÅG",
+                "main": "Tilføj til watchlist og tjek igen om en uge",
+                "sub": "🔔 Sæt evt. prisalarm på din mæglerplatform ved købszonen",
+                "color": "#0099ff",
+            },
+            {
+                "n": 3, "icon": "📊",
+                "title": "RE-ANALYSÉR HVIS...",
+                "main": "Pris falder under købszonen, eller earnings/nyheder ændrer billedet",
+                "sub": "Kør analysen igen for at se om scoren er steget over 60 (KØB-niveau)",
+                "color": "#a855f7",
+            },
+        ]
+
+    else:  # SÆLG
+        plan["summary"] = (
+            f"Modellen anbefaler **SÆLG** — score er {score}/100 (svage fundamentals/teknik)."
+        )
+        plan["steps"] = [
+            {
+                "n": 1, "icon": "🔴",
+                "title": "KØB IKKE",
+                "main": "Modellen advarer mod at købe denne aktie nu",
+                "sub": "Der er bedre muligheder — prøv screeneren!",
+                "color": "#ef4444",
+            },
+            {
+                "n": 2, "icon": "💼",
+                "title": "HVIS DU EJER AKTIEN",
+                "main": "Overvej at tage profit eller skære tab",
+                "sub": f"Stop-loss niveau: {targets['stop_loss']:.2f} {currency} — "
+                       f"hvis prisen kommer under, så ud!",
+                "color": "#eab308",
+            },
+            {
+                "n": 3, "icon": "🔄",
+                "title": "RE-VURDÉR OM 1 MÅNED",
+                "main": "Markedsforhold ændrer sig — analysér igen senere",
+                "sub": "En aktie kan gå fra SÆLG → KØB efter en korrektion",
+                "color": "#0099ff",
+            },
+        ]
+
+    return plan
 
 
 def dcf_valuation(info, g, dr, tg, years=10):
@@ -260,7 +536,6 @@ def risk_metrics(hist):
 
 
 def monte_carlo(hist, days=252, sims=300):
-    """Vektoriseret Monte Carlo - 50x hurtigere end loop"""
     r = hist["Close"].pct_change().dropna()
     mu, sigma = r.mean(), r.std()
     lp = hist["Close"].iloc[-1]
