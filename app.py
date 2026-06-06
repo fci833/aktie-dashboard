@@ -1985,6 +1985,85 @@ elif st.session_state.active_view == "📊 Analyse":
     rec_cols[1].metric("📊 Fundamental", f"{f_score:.0f}/100", "60% vægt")
     rec_cols[2].metric("🔧 Teknisk", f"{t_score:.0f}/100", "40% vægt")
     rec_cols[3].metric("Samlet score", f"{overall:.0f}/100")
+        # ============ NY: SÅDAN HANDLER DU ============
+    from analysis import generate_action_plan
+
+    # Beregn DCF upside til konsistens-check
+    try:
+        fv_check = dcf_valuation(info, 0.10, 0.10, 0.025)
+        dcf_upside = ((fv_check / price - 1) * 100) if fv_check and price else None
+    except Exception:
+        dcf_upside = None
+
+    # Beregn targets
+    targets_main = calculate_price_targets(
+        filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"]),
+        price, fv_check if 'fv_check' in dir() else None
+    )
+
+    # Generer plan
+    plan = generate_action_plan(
+        rec=rec, score=overall, current_price=price,
+        targets=targets_main, hist=hist, currency=currency,
+        f_score=f_score, t_score=t_score, dcf_upside=dcf_upside
+    )
+
+    st.markdown("---")
+    st.markdown("## 🎯 SÅDAN HANDLER DU")
+    st.markdown(f"_{plan['summary']}_")
+
+    # Warnings
+    for warn in plan["warnings"]:
+        st.warning(warn)
+
+    # Risk/Reward boks (hvis køb)
+    if plan["risk_reward"]:
+        rr = plan["risk_reward"]
+        rr_cols = st.columns(4)
+        rr_cols[0].metric(
+            "⚠️ Risk", f"-{rr['risk_pct']:.1f}%",
+            f"-{rr['risk_dkk']:.2f} {currency}/aktie"
+        )
+        rr_cols[1].metric(
+            "🎯 Reward (kort)", f"+{rr['reward_short_pct']:.1f}%"
+        )
+        rr_cols[2].metric(
+            "🚀 Reward (lang)", f"+{rr['reward_long_pct']:.1f}%"
+        )
+        rr_color = "#16a34a" if rr['ratio_long'] >= 2 else "#eab308" if rr['ratio_long'] >= 1.5 else "#ef4444"
+        rr_label = "Excellent" if rr['ratio_long'] >= 3 else "God" if rr['ratio_long'] >= 2 else "OK" if rr['ratio_long'] >= 1.5 else "Svag"
+        rr_cols[3].markdown(
+            f"<div style='background:{rr_color}22;padding:0.6rem;border-radius:8px;"
+            f"border-left:4px solid {rr_color};text-align:center'>"
+            f"<small>R/R RATIO (lang)</small>"
+            f"<h3 style='margin:0.2rem 0;color:{rr_color}'>{rr['ratio_long']:.1f}:1</h3>"
+            f"<small>{rr_label}</small></div>",
+            unsafe_allow_html=True
+        )
+
+    # Steps
+    st.markdown("### 📋 Trin-for-trin handleplan")
+    for step in plan["steps"]:
+        st.markdown(
+            f"<div style='background:{step['color']}15;padding:1rem;border-radius:10px;"
+            f"border-left:5px solid {step['color']};margin-bottom:0.6rem'>"
+            f"<div style='display:flex;align-items:center;gap:0.8rem'>"
+            f"<div style='font-size:2rem'>{step['icon']}</div>"
+            f"<div style='flex:1'>"
+            f"<div style='color:{step['color']};font-weight:bold;font-size:0.9rem'>"
+            f"STEP {step['n']} · {step['title']}</div>"
+            f"<div style='font-size:1.1rem;margin:0.3rem 0'>{step['main']}</div>"
+            f"<div style='color:#aaa;font-size:0.9rem'>{step['sub']}</div>"
+            f"</div></div></div>",
+            unsafe_allow_html=True
+        )
+
+    st.caption(
+        "⚠️ Datoer er **estimater** baseret på historisk momentum og volatilitet. "
+        "Faktisk timing afhænger af markedsforhold, nyheder og earnings. "
+        "Brug altid stop-loss til at beskytte din kapital."
+    )
+    # ============ SLUT NY ============
 
     st.markdown("---")
     with st.expander("📐 Position Sizing Calculator", expanded=False):
