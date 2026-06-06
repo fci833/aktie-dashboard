@@ -2005,7 +2005,7 @@ elif st.session_state.active_view == "📊 Analyse":
                             title="Monte Carlo - 252 dage frem")
         st.plotly_chart(fig_m, use_container_width=True)
 
-        # Backtest
+            # Backtest
     with sub_tabs[6]:
         st.markdown("## 🎯 Backtest - Validerer modellens anbefalinger historisk")
         st.caption(
@@ -2107,7 +2107,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 else:
                     st.error(f"❌ Negativ korrelation: {correlation:.3f} - modellen forudsiger forkert!")
 
-                               if sim:
+                if sim:
                     st.markdown("---")
                     st.markdown("### 💼 Strategi-simulation")
                     st.caption(f"Køb når score ≥ {buy_threshold}, sælg når score ≤ 30. Start: $10.000")
