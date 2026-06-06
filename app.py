@@ -2435,21 +2435,25 @@ elif st.session_state.active_view == "📊 Analyse":
         # DCF
         st.markdown("---")
         st.markdown("### 💎 DCF Værdiansættelse")
-        dcf = dcf_valuation(info)
-        if dcf:
-            dc = st.columns(4)
-            dc[0].metric("Fair value", f"{dcf['fair_value']:.2f} {currency}")
-            dc[1].metric("Nuværende", f"{price:.2f} {currency}")
-            upside = (dcf["fair_value"] / price - 1) * 100
-            dc[2].metric("Upside", f"{upside:+.1f}%")
-            dc[3].metric("FCF brugt", f"{dcf['fcf_used']/1e9:.1f}B")
-            st.caption(
-                f"⚙️ Antagelser: Vækst {dcf['growth_rate']*100:.0f}% (5y), "
-                f"Terminal {dcf['terminal_growth']*100:.0f}%, "
-                f"Discount {dcf['discount_rate']*100:.0f}%"
-            )
-        else:
-            st.info("DCF kræver Free Cash Flow data (ikke tilgængelig)")
+        try:
+            dcf = dcf_valuation(info)
+            if dcf:
+                dc = st.columns(4)
+                dc[0].metric("Fair value", f"{dcf['fair_value']:.2f} {currency}")
+                dc[1].metric("Nuværende", f"{price:.2f} {currency}")
+                upside = (dcf["fair_value"] / price - 1) * 100
+                dc[2].metric("Upside", f"{upside:+.1f}%")
+                dc[3].metric("FCF brugt", f"{dcf['fcf_used']/1e9:.1f}B")
+                st.caption(
+                    f"⚙️ Antagelser: Vækst {dcf['growth_rate']*100:.0f}% (5y), "
+                    f"Terminal {dcf['terminal_growth']*100:.0f}%, "
+                    f"Discount {dcf['discount_rate']*100:.0f}%"
+                )
+            else:
+                st.info("DCF kræver Free Cash Flow data (ikke tilgængelig)")
+        except Exception as e:
+            st.warning(f"⚠️ DCF kunne ikke beregnes: {str(e)[:100]}")
+            st.caption("Dette sker ofte hvis FCF-data mangler eller er negativ")
 
     # ===== RISIKO =====
     with main_tabs[3]:
