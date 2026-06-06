@@ -2161,21 +2161,12 @@ elif st.session_state.active_view == "📊 Analyse":
     # Anbefaling card
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
-        # Find emoji baseret på anbefaling
-        rec_emoji = {
-            "STÆRKT KØB": "🚀",
-            "KØB": "🟢",
-            "HOLD": "🟡",
-            "SÆLG": "🔴",
-            "STÆRKT SÆLG": "💀",
-        }.get(rec, "📊")
-        
         st.markdown(
             f"<div style='background:{color}22;padding:1.2rem;border-radius:12px;"
             f"border-left:5px solid {color};text-align:center'>"
-            f"<div style='font-size:2rem'>{rec_emoji}</div>"
             f"<h2 style='color:{color};margin:0.3rem 0'>{rec}</h2>"
-            f"<h1 style='margin:0.3rem 0;font-size:2.5rem'>{overall:.0f}<small style='font-size:1.2rem;color:#888'>/100</small></h1>"
+            f"<h1 style='margin:0.3rem 0;font-size:2.5rem'>{overall:.0f}"
+            f"<small style='font-size:1.2rem;color:#888'>/100</small></h1>"
             f"<small style='color:#888'>Samlet score</small>"
             f"</div>",
             unsafe_allow_html=True
@@ -2199,9 +2190,13 @@ elif st.session_state.active_view == "📊 Analyse":
         )
 
         # Beregn stop-loss baseret på targets eller default
+                try:
+            fv_ps = dcf_valuation(info, 0.10, 0.10, 0.025)
+        except Exception:
+            fv_ps = None
         targets_data = calculate_price_targets(
             filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"]),
-            price, overall
+            price, fv_ps
         )
         
         default_stop = targets_data.get("stop_loss", price * 0.92) if targets_data else price * 0.92
@@ -2379,7 +2374,12 @@ elif st.session_state.active_view == "📊 Analyse":
     # ===== KURSMÅL =====
     with main_tabs[2]:
         df_targets = filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"])
-        targets = calculate_price_targets(df_targets, price, overall)
+        # Beregn DCF til fair value
+        try:
+            fv_for_targets = dcf_valuation(info, 0.10, 0.10, 0.025)
+        except Exception:
+            fv_for_targets = None
+        targets = calculate_price_targets(df_targets, price, fv_for_targets)
 
         if targets:
             st.markdown("### 💰 Kursniveauer (6 mdr basis)")
@@ -2432,35 +2432,85 @@ elif st.session_state.active_view == "📊 Analyse":
                 f"</div>", unsafe_allow_html=True
             )
 
-        # DCF
+               # DCF
         st.markdown("---")
         st.markdown("### 💎 DCF Værdiansættelse")
+        st.caption("Beregner fair value baseret på Discounted Cash Flow")
+        
+        # DCF antagelser
+        dcf_cols_input = st.columns(3)
+        growth_rate = dcf_cols_input[0].slider(
+            "🚀 Vækstrate (år 1)", 0.02, 0.25, 0.10, 0.01,
+            format="%.0f%%", key="dcf_growth"
+        )
+        discount_rate = dcf_cols_input[1].slider(
+            "💸 Discount rate (WACC)", 0.05, 0.15, 0.10, 0.01,
+            format="%.0f%%", key="dcf_discount"
+        )
+        terminal_growth = dcf_cols_input[2].slider(
+            "🏁 Terminal vækst", 0.01, 0.05, 0.025, 0.005,
+            format="%.1f%%", key="dcf_terminal"
+        )
+        
         try:
-            dcf = dcf_valuation(info)
-            if dcf:
+            fair_value = dcf_valuation(info, growth_rate, discount_rate, terminal_growth)
+            if fair_value and fair_value > 0:
                 dc = st.columns(4)
-                dc[0].metric("Fair value", f"{dcf['fair_value']:.2f} {currency}")
-                dc[1].metric("Nuværende", f"{price:.2f} {currency}")
-                upside = (dcf["fair_value"] / price - 1) * 100
-                dc[2].metric("Upside", f"{upside:+.1f}%")
-                dc[3].metric("FCF brugt", f"{dcf['fcf_used']/1e9:.1f}B")
+                dc[0].metric("💎 Fair value", f"{fair_value:.2f} {currency}")
+                dc[1].metric("📍 Nuværende", f"{price:.2f} {currency}")
+                upside = (fair_value / price - 1) * 100
+                upside_color = "normal" if abs(upside) < 10 else ("inverse" if upside < 0 else "off")
+                dc[2].metric(
+                    "📊 Upside",
+                    f"{upside:+.1f}%",
+                    "Undervurderet" if upside > 10 else "Overvurderet" if upside < -10 else "Fair"
+                )
+                
+                # Vurdering
+                if upside > 30:
+                    dc[3].markdown(
+                        "<div style='background:#16a34a22;padding:0.6rem;border-radius:8px;"
+                        "text-align:center;border-left:4px solid #16a34a'>"
+                        "<small>🟢 STÆRKT UNDERVURDERET</small></div>",
+                        unsafe_allow_html=True
+                    )
+                elif upside > 10:
+                    dc[3].markdown(
+                        "<div style='background:#22c55e22;padding:0.6rem;border-radius:8px;"
+                        "text-align:center;border-left:4px solid #22c55e'>"
+                        "<small>🟢 UNDERVURDERET</small></div>",
+                        unsafe_allow_html=True
+                    )
+                elif upside > -10:
+                    dc[3].markdown(
+                        "<div style='background:#eab30822;padding:0.6rem;border-radius:8px;"
+                        "text-align:center;border-left:4px solid #eab308'>"
+                        "<small>🟡 FAIR PRICED</small></div>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    dc[3].markdown(
+                        "<div style='background:#ef444422;padding:0.6rem;border-radius:8px;"
+                        "text-align:center;border-left:4px solid #ef4444'>"
+                        "<small>🔴 OVERVURDERET</small></div>",
+                        unsafe_allow_html=True
+                    )
+                
                 st.caption(
-                    f"⚙️ Antagelser: Vækst {dcf['growth_rate']*100:.0f}% (5y), "
-                    f"Terminal {dcf['terminal_growth']*100:.0f}%, "
-                    f"Discount {dcf['discount_rate']*100:.0f}%"
+                    f"⚙️ Antagelser: Vækst **{growth_rate*100:.0f}%** → terminal **{terminal_growth*100:.1f}%** "
+                    f"(10 år) · Discount **{discount_rate*100:.0f}%**"
                 )
             else:
-                st.info("DCF kræver Free Cash Flow data (ikke tilgængelig)")
+                st.info("ℹ️ DCF kræver positiv Free Cash Flow data (ikke tilgængelig for denne aktie)")
         except Exception as e:
             st.warning(f"⚠️ DCF kunne ikke beregnes: {str(e)[:100]}")
             st.caption("Dette sker ofte hvis FCF-data mangler eller er negativ")
-
     # ===== RISIKO =====
     with main_tabs[3]:
         df_risk = filter_by_days(df_indicators, ANALYSIS_PERIODS["risk"])
         risk = risk_metrics(df_risk)
 
-        if risk:
+            if risk:
             st.caption("📉 Risk metrics (3 års data)")
             rc = st.columns(4)
             rc[0].metric("Ann. afkast", f"{risk['ann_r']*100:.1f}%")
@@ -2468,11 +2518,9 @@ elif st.session_state.active_view == "📊 Analyse":
             rc[2].metric("Sharpe", f"{risk['sharpe']:.2f}")
             rc[3].metric("Sortino", f"{risk['sortino']:.2f}")
 
-            rc2 = st.columns(3)
+            rc2 = st.columns(2)
             rc2[0].metric("Max Drawdown", f"{risk['max_dd']*100:.1f}%")
             rc2[1].metric("VaR 95% (1d)", f"{risk['var95']*100:.2f}%")
-            if "calmar" in risk:
-                rc2[2].metric("Calmar", f"{risk['calmar']:.2f}")
 
             fig_dd = go.Figure(go.Scatter(
                 x=risk["dd_series"].index,
@@ -2510,7 +2558,168 @@ elif st.session_state.active_view == "📊 Analyse":
                 fig_m.add_trace(go.Scatter(
                     y=sims[i],
                     line=dict(width=0.5, color="rgba(0,212,170,0.1)"),
-                    showlegend=False
+                    showlegend=False    # ===== MONTE CARLO =====
+    with main_tabs[4]:
+        st.caption("🎲 Simulerer fremtidige prisbaner baseret på historisk afkast & volatilitet")
+        
+        df_mc = filter_by_days(df_indicators, ANALYSIS_PERIODS["monte_carlo"])
+
+        mc_cols_input = st.columns(2)
+        mc_days = mc_cols_input[0].slider("📅 Dage frem", 30, 365, 252, key="stock_mc_days")
+        mc_sims = mc_cols_input[1].slider("🎲 Antal simulationer", 100, 1000, 500, 100, key="stock_mc_sims")
+
+        try:
+            sims, lp = monte_carlo(df_mc, days=mc_days, sims=mc_sims)
+        except Exception as e:
+            st.warning(f"⚠️ Monte Carlo fejlede: {str(e)[:100]}")
+            sims, lp = None, None
+
+        if sims is not None and lp is not None:
+            final = sims[:, -1]
+            p5, p25, p50, p75, p95 = np.percentile(final, [5, 25, 50, 75, 95])
+
+            mc_cols = st.columns(5)
+            mc_cols[0].metric(
+                "5% (worst case)",
+                f"{p5:.2f} {currency}",
+                f"{(p5/lp-1)*100:+.0f}%"
+            )
+            mc_cols[1].metric(
+                "25%",
+                f"{p25:.2f} {currency}",
+                f"{(p25/lp-1)*100:+.0f}%"
+            )
+            mc_cols[2].metric(
+                f"📊 Median ({mc_days}d)",
+                f"{p50:.2f} {currency}",
+                f"{(p50/lp-1)*100:+.0f}%"
+            )
+            mc_cols[3].metric(
+                "75%",
+                f"{p75:.2f} {currency}",
+                f"{(p75/lp-1)*100:+.0f}%"
+            )
+            mc_cols[4].metric(
+                "95% (best case)",
+                f"{p95:.2f} {currency}",
+                f"{(p95/lp-1)*100:+.0f}%"
+            )
+
+            # Sandsynlighed for at være i plus
+            prob_positive = (final > lp).sum() / len(final) * 100
+            
+            prob_cols = st.columns(3)
+            prob_cols[0].metric(
+                "📈 Sandsynlighed for plus",
+                f"{prob_positive:.0f}%"
+            )
+            prob_cols[1].metric(
+                "📉 Sandsynlighed for minus",
+                f"{100-prob_positive:.0f}%"
+            )
+            
+            # Forventet afkast (median)
+            expected_return = (p50 / lp - 1) * 100
+            prob_cols[2].metric(
+                "💰 Forventet afkast",
+                f"{expected_return:+.1f}%",
+                f"over {mc_days} dage"
+            )
+
+            # Plot
+            fig_m = go.Figure()
+            
+            # Tegn alle simulationer (gennemsigtige)
+            for i in range(min(150, len(sims))):
+                fig_m.add_trace(go.Scatter(
+                    y=sims[i],
+                    line=dict(width=0.5, color="rgba(0,212,170,0.1)"),
+                    showlegend=False,
+                    hoverinfo="skip"
+                ))
+            
+            # Tegn percentiler
+            fig_m.add_trace(go.Scatter(
+                y=np.percentile(sims, 95, axis=0),
+                name="95% (best case)",
+                line=dict(color="#22c55e", width=2, dash="dash")
+            ))
+            fig_m.add_trace(go.Scatter(
+                y=np.percentile(sims, 50, axis=0),
+                name="Median",
+                line=dict(color="#00d4aa", width=3)
+            ))
+            fig_m.add_trace(go.Scatter(
+                y=np.percentile(sims, 5, axis=0),
+                name="5% (worst case)",
+                line=dict(color="#ef4444", width=2, dash="dash")
+            ))
+            
+            # Nuværende pris linje
+            fig_m.add_hline(
+                y=lp, line_dash="dot", line_color="white",
+                opacity=0.5, annotation_text=f"Nu: {lp:.2f}"
+            )
+            
+            fig_m.update_layout(
+                template="plotly_dark", height=500,
+                title=f"Monte Carlo - {mc_sims} simulationer, {mc_days} dage frem",
+                yaxis_title=f"Pris ({currency})",
+                xaxis_title="Dage frem"
+            )
+            st.plotly_chart(fig_m, use_container_width=True)
+
+            # Histogram af slutpriser
+            with st.expander("📊 Distribution af slutpriser"):
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Histogram(
+                    x=final,
+                    nbinsx=50,
+                    marker_color="#00d4aa",
+                    opacity=0.8,
+                    name="Slutpris"
+                ))
+                fig_hist.add_vline(
+                    x=lp, line_dash="dash", line_color="white",
+                    annotation_text=f"Nu: {lp:.2f}"
+                )
+                fig_hist.add_vline(
+                    x=p50, line_dash="dash", line_color="#00d4aa",
+                    annotation_text=f"Median: {p50:.2f}"
+                )
+                fig_hist.update_layout(
+                    template="plotly_dark", height=400,
+                    title=f"Distribution af slutpriser efter {mc_days} dage",
+                    xaxis_title=f"Pris ({currency})",
+                    yaxis_title="Antal simulationer"
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+
+                st.markdown("##### 📋 Statistisk oversigt")
+                stats_df = pd.DataFrame([
+                    {"Metric": "Min", "Værdi": f"{final.min():.2f} {currency}",
+                     "% ændring": f"{(final.min()/lp-1)*100:+.1f}%"},
+                    {"Metric": "5% percentil", "Værdi": f"{p5:.2f} {currency}",
+                     "% ændring": f"{(p5/lp-1)*100:+.1f}%"},
+                    {"Metric": "25% percentil", "Værdi": f"{p25:.2f} {currency}",
+                     "% ændring": f"{(p25/lp-1)*100:+.1f}%"},
+                    {"Metric": "Median (50%)", "Værdi": f"{p50:.2f} {currency}",
+                     "% ændring": f"{(p50/lp-1)*100:+.1f}%"},
+                    {"Metric": "75% percentil", "Værdi": f"{p75:.2f} {currency}",
+                     "% ændring": f"{(p75/lp-1)*100:+.1f}%"},
+                    {"Metric": "95% percentil", "Værdi": f"{p95:.2f} {currency}",
+                     "% ændring": f"{(p95/lp-1)*100:+.1f}%"},
+                    {"Metric": "Max", "Værdi": f"{final.max():.2f} {currency}",
+                     "% ændring": f"{(final.max()/lp-1)*100:+.1f}%"},
+                    {"Metric": "Gennemsnit", "Værdi": f"{final.mean():.2f} {currency}",
+                     "% ændring": f"{(final.mean()/lp-1)*100:+.1f}%"},
+                    {"Metric": "Standard afvigelse", "Værdi": f"{final.std():.2f} {currency}",
+                     "% ændring": "-"},
+                ])
+                st.dataframe(stats_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("ℹ️ Ikke nok data til Monte Carlo simulation")
+
                 ))
             fig_m.add_trace(go.Scatter(
                 y=np.percentile(sims, 50, axis=0),
