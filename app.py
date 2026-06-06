@@ -1896,6 +1896,15 @@ elif st.session_state.active_view == "📊 Analyse":
     with pcols[2]:
         low_52 = info.get("fiftyTwoWeekLow")
         high_52 = info.get("fiftyTwoWeekHigh")
+
+        # Fallback: beregn fra hist hvis info mangler det
+        if (low_52 is None or high_52 is None) and not hist.empty:
+            recent_year = hist.tail(252) if len(hist) >= 252 else hist
+            if low_52 is None:
+                low_52 = float(recent_year["Low"].min())
+            if high_52 is None:
+                high_52 = float(recent_year["High"].max())
+
         if low_52 is not None and high_52 is not None:
             if price and high_52 > low_52:
                 pos_pct = ((price - low_52) / (high_52 - low_52)) * 100
@@ -2008,12 +2017,42 @@ elif st.session_state.active_view == "📊 Analyse":
     if currency != "DKK":
         fx_for_plan = get_fx_rate(currency, "DKK")
 
-    # Hent shares fra position sizing (hvis brugeren har konfigureret det)
+        # === HVOR MEGET VIL DU INVESTERE? ===
     shares_for_plan = None
-    try:
-        shares_for_plan = sizing.get("shares") if sizing else None
-    except Exception:
-        shares_for_plan = None
+    if "KØB" in rec:
+        st.markdown("### 💼 Hvor meget vil du investere?")
+        inv_input_cols = st.columns([2, 1, 1, 1])
+        investment_dkk = inv_input_cols[0].number_input(
+            "Beløb (DKK)", min_value=1000, value=10000, step=1000,
+            key=f"plan_invest_{ticker}",
+            help="Indtast hvor meget du vil bruge — så beregnes alt automatisk"
+        )
+
+        # Beregn pris i DKK
+        if currency != "DKK" and fx_for_plan:
+            price_in_dkk = price * fx_for_plan
+        else:
+            price_in_dkk = price
+
+        shares_for_plan = int(investment_dkk / price_in_dkk) if price_in_dkk > 0 else 0
+        actual_invest_dkk = shares_for_plan * price_in_dkk
+
+        inv_input_cols[1].metric(
+            "📦 Antal aktier",
+            f"{shares_for_plan}",
+            help=f"{investment_dkk:,.0f} DKK / {price_in_dkk:.2f} DKK/aktie"
+        )
+        inv_input_cols[2].metric(
+            "💰 Faktisk køb",
+            f"{actual_invest_dkk:,.0f} DKK",
+            f"{actual_invest_dkk-investment_dkk:+,.0f} DKK rest"
+        )
+        if currency != "DKK":
+            inv_input_cols[3].metric(
+                f"💵 I {currency}",
+                f"{shares_for_plan * price:,.2f}",
+                help=f"{shares_for_plan} × {price:.2f} {currency}"
+            )
 
     # Generer plan
     plan = generate_action_plan(
@@ -2405,7 +2444,7 @@ elif st.session_state.active_view == "📊 Analyse":
 
         targets = calculate_price_targets(df_targets, price, fv_for_targets)
 
-        if targets:
+                if targets:
             st.markdown("### 💰 Kursniveauer (6 mdr basis)")
 
             buy_low_pct = (targets["buy_low"] / price - 1) * 100
@@ -2414,12 +2453,23 @@ elif st.session_state.active_view == "📊 Analyse":
             short_pct = (targets["target_short"] / price - 1) * 100
             long_pct = (targets["target_long"] / price - 1) * 100
 
+            # FX-kurs til DKK
+            fx_targets = None
+            if currency != "DKK":
+                fx_targets = get_fx_rate(currency, "DKK")
+
+            def dkk_str(val):
+                if fx_targets:
+                    return f"≈ {val * fx_targets:,.0f} DKK"
+                return ""
+
             tg = st.columns(5)
             tg[0].markdown(
                 f"<div style='background:#16a34a22;padding:0.8rem;border-radius:10px;"
                 f"border-left:4px solid #16a34a;text-align:center'>"
                 f"<small>🟢 KØB ZONE</small>"
                 f"<h4 style='margin:0.3rem 0'>{targets['buy_low']:.2f} - {targets['buy_high']:.2f}</h4>"
+                f"<small style='color:#aaa'>{dkk_str(targets['buy_low'])}</small><br>"
                 f"<small>{buy_low_pct:+.1f}% til {buy_high_pct:+.1f}%</small>"
                 f"</div>", unsafe_allow_html=True
             )
@@ -2428,6 +2478,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 f"border-left:4px solid #0099ff;text-align:center'>"
                 f"<small>📍 NUVÆRENDE</small>"
                 f"<h4 style='margin:0.3rem 0'>{price:.2f} {currency}</h4>"
+                f"<small style='color:#aaa'>{dkk_str(price)}</small><br>"
                 f"<small>{change_pct:+.2f}%</small>"
                 f"</div>", unsafe_allow_html=True
             )
@@ -2436,6 +2487,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 f"border-left:4px solid #ef4444;text-align:center'>"
                 f"<small>🛑 STOP LOSS</small>"
                 f"<h4 style='margin:0.3rem 0'>{targets['stop_loss']:.2f}</h4>"
+                f"<small style='color:#aaa'>{dkk_str(targets['stop_loss'])}</small><br>"
                 f"<small>{stop_pct:+.1f}%</small>"
                 f"</div>", unsafe_allow_html=True
             )
@@ -2444,6 +2496,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 f"border-left:4px solid #eab308;text-align:center'>"
                 f"<small>🎯 KORT (1-3m)</small>"
                 f"<h4 style='margin:0.3rem 0'>{targets['target_short']:.2f}</h4>"
+                f"<small style='color:#aaa'>{dkk_str(targets['target_short'])}</small><br>"
                 f"<small>{short_pct:+.1f}%</small>"
                 f"</div>", unsafe_allow_html=True
             )
@@ -2452,6 +2505,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 f"border-left:4px solid #22c55e;text-align:center'>"
                 f"<small>🚀 LANG (6-12m)</small>"
                 f"<h4 style='margin:0.3rem 0'>{targets['target_long']:.2f}</h4>"
+                f"<small style='color:#aaa'>{dkk_str(targets['target_long'])}</small><br>"
                 f"<small>{long_pct:+.1f}%</small>"
                 f"</div>", unsafe_allow_html=True
             )
