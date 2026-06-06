@@ -2081,7 +2081,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 time.sleep(1)
                 st.rerun()
 
-    # Pris-bokse
+        # Pris-bokse
     price = info.get("currentPrice")
     prev = info.get("previousClose")
     if price is None and not hist.empty:
@@ -2094,10 +2094,13 @@ elif st.session_state.active_view == "📊 Analyse":
 
     pcols = st.columns(4)
     with pcols[0]:
-        st.markdown(make_price_box("Pris nu", price, currency, change_pct),
-                    unsafe_allow_html=True)
+        if price is not None:
+            st.markdown(make_price_box("Pris nu", price, currency, change_pct),
+                        unsafe_allow_html=True)
+        else:
+            st.metric("Pris nu", "N/A")
     with pcols[1]:
-        if show_secondary and currency != "DKK":
+        if show_secondary and currency != "DKK" and price is not None:
             fx = get_fx_rate(currency, "DKK")
             if price and fx:
                 st.markdown(
@@ -2105,17 +2108,22 @@ elif st.session_state.active_view == "📊 Analyse":
                     unsafe_allow_html=True
                 )
     with pcols[2]:
-        st.markdown(
-            make_range_box("52-uger", info.get("fiftyTwoWeekLow"),
-                            info.get("fiftyTwoWeekHigh"), currency),
-            unsafe_allow_html=True
-        )
+        low_52 = info.get("fiftyTwoWeekLow")
+        high_52 = info.get("fiftyTwoWeekHigh")
+        if low_52 is not None and high_52 is not None:
+            st.markdown(
+                make_range_box("52-uger", low_52, high_52, currency),
+                unsafe_allow_html=True
+            )
+        else:
+            st.metric("52-uger", "N/A", "Ingen data")
     with pcols[3]:
         if info.get("marketCap"):
             mc = info["marketCap"]
             mc_str = f"{mc/1e12:.2f}T" if mc >= 1e12 else f"{mc/1e9:.2f}B" if mc >= 1e9 else f"{mc/1e6:.0f}M"
             st.metric("Market Cap", f"${mc_str}")
-
+        else:
+            st.metric("Market Cap", "N/A")
     # Beregn scores
     df_indicators = get_indicators(hist)
     df_technical = filter_by_days(df_indicators, ANALYSIS_PERIODS["TECHNICAL"])
