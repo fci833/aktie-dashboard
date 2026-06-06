@@ -2112,62 +2112,22 @@ elif st.session_state.active_view == "📊 Analyse":
                 else:
                     st.error(f"❌ Negativ korrelation: {correlation:.3f} - modellen forudsiger forkert!")
 
-                # ============ STRATEGI-SIMULATION ============
+                               # ============ STRATEGI-SIMULATION ============
                 if sim:
                     st.markdown("---")
                     st.markdown("### 💼 Strategi-simulation")
                     st.caption(f"Køb når score ≥ {buy_threshold}, sælg når score ≤ 30. Start: $10.000")
 
-                    # 🔧 DEBUG: Vis hvilke keys sim faktisk har
-                    with st.expander("🔧 Debug: alle keys i sim", expanded=False):
-                        st.write("**Tilgængelige keys:**", list(sim.keys()))
-                        debug_info = {}
-                        for k, v in sim.items():
-                            if isinstance(v, (list, tuple)):
-                                debug_info[k] = f"<list, len={len(v)}, første: {str(v[0])[:50] if len(v) > 0 else 'tom'}>"
-                            elif isinstance(v, dict):
-                                debug_info[k] = f"<dict, keys: {list(v.keys())[:5]}>"
-                            elif hasattr(v, "shape"):
-                                debug_info[k] = f"<{type(v).__name__}, shape={v.shape}>"
-                            else:
-                                debug_info[k] = str(v)[:100]
-                        st.json(debug_info)
-
-                                       # Helper: prøv flere keys, returnér første der ikke er None
-                    def first_not_none(d, *keys):
-                        for k in keys:
-                            v = d.get(k)
-                            if v is not None:
-                                return v
-                        return None
-
-                    # Robust key-håndtering (sikker mod pandas Series)
-                    strategy_final = first_not_none(
-                        sim,
-                        "strategy_final", "final_value", "portfolio_final",
-                        "strategy_end_value", "final"
-                    )
-                    strategy_return = first_not_none(
-                        sim,
-                        "strategy_return", "total_return", "return_pct", "strategy_pct"
-                    )
-                    bh_final = first_not_none(
-                        sim,
-                        "bh_final", "buyhold_final", "benchmark_final",
-                        "buy_hold_final", "bh_end_value"
-                    )
-                    bh_return = first_not_none(
-                        sim,
-                        "bh_return", "buyhold_return", "benchmark_return",
-                        "buy_hold_return", "bh_pct"
-                    )
-
-                    # Outperformance KUN hvis vi har begge tal
+                    # Hent værdier direkte fra sim
+                    strategy_final = sim.get("final_value")
+                    strategy_return = sim.get("strategy_return")
+                    bh_return = sim.get("buy_hold_return")
                     outperf = sim.get("outperformance")
-                    if outperf is None and strategy_return is not None and bh_return is not None:
-                        outperf = strategy_return - bh_return
+                    n_trades = sim.get("n_trades", 0)
+                    initial_cash = sim.get("initial_cash", 10000)
 
-                    n_trades = first_not_none(sim, "n_trades", "num_trades", "trades") or 0
+                    # Beregn bh_final fra bh_return
+                    bh_final = initial_cash * (1 + bh_return / 100) if bh_return is not None else None
 
                     if strategy_final is not None:
                         sm = st.columns(4)
@@ -2185,7 +2145,7 @@ elif st.session_state.active_view == "📊 Analyse":
                         else:
                             sm[1].metric("📈 Buy & Hold", "N/A")
 
-                        if outperf is not None and bh_final is not None:
+                        if outperf is not None:
                             sm[2].metric(
                                 "🎯 Outperformance",
                                 f"{outperf:+.1f}%",
@@ -2196,29 +2156,18 @@ elif st.session_state.active_view == "📊 Analyse":
 
                         sm[3].metric("📊 Antal trades", f"{n_trades}")
 
-                        # Graf - sikker mod pandas Series
-                        dates = first_not_none(sim, "dates", "date_index", "timestamps")
-                        strategy_values = first_not_none(
-                            sim,
-                            "strategy_values", "portfolio_values",
-                            "equity_curve", "strategy_equity"
-                        )
-                        bh_values = first_not_none(
-                            sim,
-                            "bh_values", "buyhold_values", "benchmark_values",
-                            "buy_hold_values", "bh_equity"
-                        )
-
-                        if dates is not None and strategy_values is not None:
+                        # Graf fra equity_curve DataFrame
+                        eq = sim.get("equity_curve")
+                        if eq is not None and isinstance(eq, pd.DataFrame) and not eq.empty:
                             fig_sim = go.Figure()
                             fig_sim.add_trace(go.Scatter(
-                                x=dates, y=strategy_values,
+                                x=eq["date"], y=eq["strategy"],
                                 name="Strategi (model)",
                                 line=dict(color="#00d4aa", width=3)
                             ))
-                            if bh_values is not None:
+                            if "buy_hold" in eq.columns:
                                 fig_sim.add_trace(go.Scatter(
-                                    x=dates, y=bh_values,
+                                    x=eq["date"], y=eq["buy_hold"],
                                     name="Buy & Hold",
                                     line=dict(color="#0099ff", width=2, dash="dash")
                                 ))
@@ -2228,6 +2177,28 @@ elif st.session_state.active_view == "📊 Analyse":
                                 yaxis_title="Værdi ($)"
                             )
                             st.plotly_chart(fig_sim, use_container_width=True)
+
+                            # Vis trades-tabel
+                            trades_df = sim.get("trades")
+                            if trades_df is not None and isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+                                with st.expander(f"📋 Vis alle {n_trades} trades"):
+                                    trades_display = trades_df.copy()
+                                    if "date" in trades_display.columns:
+                                        trades_display["date"] = pd.to_datetime(
+                                            trades_display["date"]
+                                        ).dt.strftime("%Y-%m-%d")
+                                    if "price" in trades_display.columns:
+                                        trades_display["price"] = trades_display["price"].round(2)
+                                    if "score" in trades_display.columns:
+                                        trades_display["score"] = trades_display["score"].round(1)
+                                    trades_display.columns = [
+                                        c.capitalize() for c in trades_display.columns
+                                    ]
+                                    st.dataframe(
+                                        trades_display,
+                                        use_container_width=True,
+                                        hide_index=True
+                                    )
                     else:
                         st.warning(
                             f"⚠️ Ingen handler i perioden — der var ingen score ≥ {buy_threshold} "
