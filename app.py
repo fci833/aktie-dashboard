@@ -1993,7 +1993,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 st.plotly_chart(fig_hr, use_container_width=True)
         else:
             st.warning("Kunne ikke hente on-chain data")
-            # ============ HOVED-ANALYSE-VIEW ============
+          # ============ HOVED-ANALYSE-VIEW ============
 
 elif st.session_state.active_view == "📊 Analyse":
     c1, c2 = st.columns([4, 1])
@@ -2226,19 +2226,48 @@ elif st.session_state.active_view == "📊 Analyse":
         else:
             st.metric("Market Cap", "N/A")
 
+    # ============================================================
+    # 🆕 REGIME DETECTION + REGIME-AWARE SCORING
+    # ============================================================
+    from regime_detector import (
+        detect_market_regime,
+        adjust_weights_for_regime,
+        regime_recommendation,
+        render_regime_banner,
+    )
+    from analysis import overall_score_with_regime  # 🆕
+
     # Performance tracking for analyse
     _analysis_start = time.time()
     df_indicators = get_indicators(hist)
     df_technical = filter_by_days(df_indicators, ANALYSIS_PERIODS["technical"])
 
+    # Beregn fundamental + teknisk scores
     f_score, f_details = fundamental_score(info)
     t_score, t_details = technical_score(df_technical)
-    overall = f_score * 0.6 + t_score * 0.4
-    rec, color = recommendation(overall)
+
+    # 🆕 REGIME-AWARE OVERALL SCORE
+    score_data = overall_score_with_regime(f_score, t_score)
+    overall = score_data["overall"]
+    regime = score_data["regime"]
+    regime_conf = score_data["regime_confidence"]
+    regime_metrics = score_data["regime_metrics"]
+    fund_weight = score_data["fund_weight"]
+    tech_weight = score_data["tech_weight"]
+
+    # Anbefaling baseret på regime
+    rec, color = recommendation(overall, regime=regime)
+
     _analysis_time = time.time() - _analysis_start
 
     st.markdown("---")
 
+    # 🆕 VIS REGIME BANNER ØVERST
+    render_regime_banner(regime, regime_conf, regime_metrics, asset_type="stock")
+
+    st.markdown("")  # Lille spacing
+
+    # === SCORE CARDS (NU MED REGIME-INFO) ===
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
         st.markdown(
@@ -2247,15 +2276,42 @@ elif st.session_state.active_view == "📊 Analyse":
             f"<h2 style='color:{color};margin:0.3rem 0'>{rec}</h2>"
             f"<h1 style='margin:0.3rem 0;font-size:2.5rem'>{overall:.0f}"
             f"<small style='font-size:1.2rem;color:#888'>/100</small></h1>"
-            f"<small style='color:#888'>Samlet score</small>"
+            f"<small style='color:#888'>Regime-justeret score</small>"
             f"</div>",
             unsafe_allow_html=True
         )
-    rec_cols[1].metric("📊 Fundamental", f"{f_score:.0f}/100", "60% vægt")
-    rec_cols[2].metric("🔧 Teknisk", f"{t_score:.0f}/100", "40% vægt")
-    rec_cols[3].metric("Samlet score", f"{overall:.0f}/100")
+    rec_cols[1].metric(
+        "📊 Fundamental",
+        f"{f_score:.0f}/100",
+        f"{int(fund_weight*100)}% vægt ({regime})"
+    )
+    rec_cols[2].metric(
+        "🔧 Teknisk",
+        f"{t_score:.0f}/100",
+        f"{int(tech_weight*100)}% vægt ({regime})"
+    )
+    rec_cols[3].metric(
+        "🎯 Regime",
+        regime,
+        f"{regime_conf}% conf."
+    )
 
-    # ============ ACTION PLAN ============
+    # 🆕 OPLYSNINGS-BOKS OM REGIME-EFFEKT
+    if regime in ("BEAR", "VOLATILE"):
+        st.info(
+            f"💡 **{regime} marked detected:** Vægtning er flyttet mod fundamentals "
+            f"({int(fund_weight*100)}% vs standard 60%). "
+            f"Tærskler for KØB er hævet for at være mere konservativ. "
+            f"En score på 65 giver derfor måske kun 'HOLD' i stedet for 'KØB'."
+        )
+    elif regime == "BULL":
+        st.success(
+            f"💡 **BULL marked detected:** Vægtning er flyttet mod teknisk "
+            f"({int(tech_weight*100)}% vs standard 40%). "
+            f"Momentum-strategier virker bedre i bull markets."
+        )
+
+       # ============ ACTION PLAN ============
 
     try:
         fv_check = dcf_valuation(info, 0.10, 0.10, 0.025)
@@ -2308,16 +2364,41 @@ elif st.session_state.active_view == "📊 Analyse":
                 help=f"{shares_for_plan} × {price:.2f} {currency}"
             )
 
+    # 🆕 GENERATE ACTION PLAN MED REGIME
     plan = generate_action_plan(
         rec=rec, score=overall, current_price=price,
         targets=targets_main, hist=hist, currency=currency,
         f_score=f_score, t_score=t_score, dcf_upside=dcf_upside,
-        shares=shares_for_plan, fx_to_dkk=fx_for_plan
+        shares=shares_for_plan, fx_to_dkk=fx_for_plan,
+        regime=regime  # 🆕 TILFØJET: Sender markedsregime til action plan
     )
 
     st.markdown("---")
     st.markdown("## 🎯 SÅDAN HANDLER DU")
     st.markdown(f"_{plan['summary']}_")
+
+    # 🆕 REGIME-SPECIFIK CONTEXT BOX
+    if regime in ("BEAR", "VOLATILE"):
+        st.markdown(
+            f"<div style='background:#ef444415;padding:0.8rem 1rem;border-radius:8px;"
+            f"border-left:4px solid #ef4444;margin:0.5rem 0'>"
+            f"⚠️ <b>{'🐻 BEAR' if regime == 'BEAR' else '⚡ VOLATILE'} MARKED:</b> "
+            f"Vær ekstra forsigtig med position-størrelse. Overvej at "
+            f"<b>halvere normalt risk</b> (1% i stedet for 2%) og brug "
+            f"<b>strammere stop-loss</b>."
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    elif regime == "BULL" and "KØB" in rec:
+        st.markdown(
+            f"<div style='background:#16a34a15;padding:0.8rem 1rem;border-radius:8px;"
+            f"border-left:4px solid #16a34a;margin:0.5rem 0'>"
+            f"🐂 <b>BULL MARKED:</b> Momentum er din ven. "
+            f"Lad vinderne køre længere — overvej at flytte trailing stop "
+            f"<b>højere</b> (8-10% i stedet for 5%) for at fange større opture."
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
     for warn in plan["warnings"]:
         st.warning(warn)
@@ -2430,8 +2511,29 @@ elif st.session_state.active_view == "📊 Analyse":
         rr_cols[2].metric(
             "🚀 Reward (lang)", f"+{rr['reward_long_pct']:.1f}%"
         )
-        rr_color = "#16a34a" if rr['ratio_long'] >= 2 else "#eab308" if rr['ratio_long'] >= 1.5 else "#ef4444"
-        rr_label = "Excellent" if rr['ratio_long'] >= 3 else "God" if rr['ratio_long'] >= 2 else "OK" if rr['ratio_long'] >= 1.5 else "Svag"
+
+        # 🆕 REGIME-AWARE R/R THRESHOLDS
+        # I bear/volatile markeder kræves højere R/R for at være "god"
+        if regime in ("BEAR", "VOLATILE"):
+            excellent_threshold = 4
+            good_threshold = 3
+            ok_threshold = 2
+        else:
+            excellent_threshold = 3
+            good_threshold = 2
+            ok_threshold = 1.5
+
+        rr_color = (
+            "#16a34a" if rr['ratio_long'] >= good_threshold
+            else "#eab308" if rr['ratio_long'] >= ok_threshold
+            else "#ef4444"
+        )
+        rr_label = (
+            "Excellent" if rr['ratio_long'] >= excellent_threshold
+            else "God" if rr['ratio_long'] >= good_threshold
+            else "OK" if rr['ratio_long'] >= ok_threshold
+            else "Svag"
+        )
         rr_cols[3].markdown(
             f"<div style='background:{rr_color}22;padding:0.6rem;border-radius:8px;"
             f"border-left:4px solid {rr_color};text-align:center'>"
@@ -2440,6 +2542,14 @@ elif st.session_state.active_view == "📊 Analyse":
             f"<small>{rr_label}</small></div>",
             unsafe_allow_html=True
         )
+
+        # 🆕 R/R RAADGIVNING BASERET PÅ REGIME
+        if regime in ("BEAR", "VOLATILE") and rr['ratio_long'] < 3:
+            st.warning(
+                f"⚠️ I {regime} marked anbefales R/R ratio på **min. 3:1** — "
+                f"din nuværende er {rr['ratio_long']:.1f}:1. "
+                f"Overvej at vente på bedre indgangspris eller skip denne handel."
+            )
 
     st.markdown("### 📋 Trin-for-trin handleplan")
     for step in plan["steps"]:
@@ -2494,13 +2604,28 @@ elif st.session_state.active_view == "📊 Analyse":
     with st.expander("📐 Position Sizing Calculator", expanded=False):
         st.caption("Beregn hvor mange aktier du skal købe baseret på din risk tolerance")
 
+        # 🆕 REGIME-AWARE DEFAULT RISK
+        if regime == "BEAR":
+            default_risk = 1.0
+            risk_help = "🐻 Bear marked: Anbefalet 1% risk pr. trade"
+        elif regime == "VOLATILE":
+            default_risk = 1.5
+            risk_help = "⚡ Volatile marked: Anbefalet 1.5% risk pr. trade"
+        elif regime == "BULL":
+            default_risk = 2.0
+            risk_help = "🐂 Bull marked: 2% risk er typisk OK"
+        else:
+            default_risk = 2.0
+            risk_help = "Standard 2% risk pr. trade"
+
         ps_cols = st.columns(4)
         portfolio_val = ps_cols[0].number_input(
             "💼 Din portefølje (DKK)", min_value=10000,
             value=100000, step=10000, key="ps_portfolio"
         )
         risk_pct = ps_cols[1].slider(
-            "⚠️ Risk pr. trade (%)", 0.5, 5.0, 2.0, 0.5, key="ps_risk"
+            "⚠️ Risk pr. trade (%)", 0.5, 5.0, default_risk, 0.5,
+            key="ps_risk", help=risk_help
         )
 
         try:
@@ -2544,10 +2669,16 @@ elif st.session_state.active_view == "📊 Analyse":
             ps_summary[2].metric("📉 Risk pr. aktie", f"{sizing['risk_per_share']:.2f} DKK")
 
             if "KØB" in rec:
+                regime_note = ""
+                if regime == "BEAR":
+                    regime_note = " 🐻 (BEAR marked — overvej halv position!)"
+                elif regime == "VOLATILE":
+                    regime_note = " ⚡ (VOLATILE marked — vær forsigtig)"
+
                 st.success(
                     f"✅ **Anbefaling:** Køb **{sizing['shares']:,} aktier** "
                     f"@ {price:.2f} {currency} = {sizing['position_value']:,.0f} DKK "
-                    f"({sizing['position_pct']:.1f}% af din portefølje)"
+                    f"({sizing['position_pct']:.1f}% af din portefølje){regime_note}"
                 )
             elif "HOLD" in rec:
                 st.info("ℹ️ Modellen siger HOLD - vurdér selv om du vil tage positionen")
