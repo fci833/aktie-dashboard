@@ -1,4 +1,4 @@
-"""Krypto-datakilder - Yahoo Finance + CoinGecko (Binance dropped pga. geo-block)"""
+"""Krypto-datakilder - Yahoo Finance + CoinGecko (med forbedret tiered caching)"""
 import time
 import requests
 import numpy as np
@@ -11,6 +11,26 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; AktieDashboard/1.0)",
     "Accept": "application/json",
 }
+
+# ============================================================
+# 🚀 CACHE STRATEGI (TIERED)
+# ============================================================
+# CACHE_PRICE  = 600    (10 min) — pris-data, daglige candles
+# CACHE_META   = 86400  (24 t)   — metadata (navn, supply, ATH, social)
+# CACHE_SEARCH = 604800 (7 dage) — coin_id mapping (immutable)
+# CACHE_GLOBAL = 600    (10 min) — global market data
+# CACHE_FG     = 3600   (1 time) — fear & greed (opdateres dagligt)
+# CACHE_TREND  = 600    (10 min) — trending/movers
+# CACHE_CHAIN  = 3600   (1 time) — on-chain BTC metrics
+# ============================================================
+
+CACHE_PRICE = 600
+CACHE_META = 86400
+CACHE_SEARCH = 604800
+CACHE_GLOBAL = 600
+CACHE_FG = 3600
+CACHE_TREND = 600
+CACHE_CHAIN = 3600
 
 
 def is_crypto(ticker):
@@ -32,17 +52,19 @@ def normalize_crypto_ticker(ticker):
     return t
 
 
-# ===== YAHOO FINANCE FOR KRYPTO (PRIMÆR) =====
+# ============================================================
+# YAHOO FINANCE FOR KRYPTO (PRIMÆR)
+# ============================================================
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=CACHE_PRICE, show_spinner=False)
 def fetch_yahoo_crypto(symbol, period="2y"):
     """
     Hent krypto fra Yahoo Finance med BTC-USD format.
-    Yahoo har gratis crypto data uden rate limit.
+    Cache: 10 min (daglige candles opdateres sjældent intra-day).
     """
     try:
         import yfinance as yf
-        yahoo_symbol = f"{symbol}-USD"
+        yahoo_symbol = f"{symbol.upper()}-USD"
 
         ticker = yf.Ticker(yahoo_symbol)
         hist = ticker.history(period=period, auto_adjust=False)
@@ -59,7 +81,7 @@ def fetch_yahoo_crypto(symbol, period="2y"):
         if hist.empty:
             return None
 
-        # Prøv at hente info
+        # Prøv at hente info (kan være langsomt, men cachet sammen)
         try:
             info = ticker.info or {}
         except Exception:
@@ -81,7 +103,7 @@ def fetch_yahoo_crypto(symbol, period="2y"):
 
         result_info = {
             "longName": info.get("name") or info.get("longName") or symbol,
-            "symbol": symbol,
+            "symbol": symbol.upper(),
             "currency": "USD",
             "currentPrice": last,
             "previousClose": prev,
@@ -105,15 +127,21 @@ def fetch_yahoo_crypto(symbol, period="2y"):
         return None
 
 
-# ===== COINGECKO SEARCH =====
+# ============================================================
+# COINGECKO SEARCH (LANG CACHE - coin_ids er immutable)
+# ============================================================
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=CACHE_SEARCH, show_spinner=False)
 def search_coingecko_id(symbol):
-    """Slå symbol op på CoinGecko → coin_id"""
+    """
+    Slå symbol op på CoinGecko → coin_id.
+    Cache: 7 dage (coin IDs ændres aldrig).
+    """
     try:
+        symbol_clean = symbol.upper().strip()
         r = requests.get(
             "https://api.coingecko.com/api/v3/search",
-            params={"query": symbol},
+            params={"query": symbol_clean},
             headers=HEADERS,
             timeout=10,
         )
@@ -124,8 +152,7 @@ def search_coingecko_id(symbol):
         if not coins:
             return None
 
-        symbol_upper = symbol.upper()
-        exact_matches = [c for c in coins if c.get("symbol", "").upper() == symbol_upper]
+        exact_matches = [c for c in coins if c.get("symbol", "").upper() == symbol_clean]
         if exact_matches:
             exact_matches.sort(key=lambda c: c.get("market_cap_rank") or 999999)
             return exact_matches[0].get("id")
@@ -135,11 +162,18 @@ def search_coingecko_id(symbol):
         return None
 
 
-# ===== COINGECKO HOVEDFETCH =====
+# ============================================================
+# COINGECKO - SPLITTET I METADATA + CHART (forskellig TTL)
+# ============================================================
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_coingecko(coin_id):
-    """Hent komplet krypto-data fra CoinGecko"""
+@st.cache_data(ttl=CACHE_META, show_spinner=False)
+def fetch_coingecko_metadata(coin_id):
+    """
+    Hent kun metadata (navn, supply, ATH, social, developer).
+    Cache: 24 timer (metadata ændres sjældent).
+
+    Returnerer dict eller "RATE_LIMIT" / None.
+    """
     try:
         r = requests.get(
             f"https://api.coingecko.com/api/v3/coins/{coin_id}",
@@ -158,11 +192,73 @@ def fetch_coingecko(coin_id):
             return "RATE_LIMIT"
         if r.status_code != 200:
             return None
-        data = r.json()
 
+        data = r.json()
+        md = data.get("market_data") or {}
+        cd = data.get("community_data") or {}
+        dd = data.get("developer_data") or {}
+
+        def safe_get(d, *keys):
+            for k in keys:
+                if not isinstance(d, dict):
+                    return None
+                d = d.get(k)
+                if d is None:
+                    return None
+            return d
+
+        return {
+            "longName": data.get("name"),
+            "symbol": (data.get("symbol") or "").upper(),
+            "marketCap": safe_get(md, "market_cap", "usd"),
+            "marketCapRank": md.get("market_cap_rank"),
+            "totalVolume": safe_get(md, "total_volume", "usd"),
+            "circulating_supply": md.get("circulating_supply"),
+            "total_supply": md.get("total_supply"),
+            "max_supply": md.get("max_supply"),
+            "ath": safe_get(md, "ath", "usd"),
+            "ath_change_%": safe_get(md, "ath_change_percentage", "usd"),
+            "ath_date": safe_get(md, "ath_date", "usd"),
+            "atl": safe_get(md, "atl", "usd"),
+            "atl_change_%": safe_get(md, "atl_change_percentage", "usd"),
+            "currentPrice": safe_get(md, "current_price", "usd"),
+            "change_1h": safe_get(md, "price_change_percentage_1h_in_currency", "usd"),
+            "change_24h": md.get("price_change_percentage_24h"),
+            "change_7d": md.get("price_change_percentage_7d"),
+            "change_30d": md.get("price_change_percentage_30d"),
+            "change_1y": md.get("price_change_percentage_1y"),
+            "sentiment_votes_up_%": data.get("sentiment_votes_up_percentage"),
+            "community_score": data.get("community_score"),
+            "public_interest_score": data.get("public_interest_score"),
+            "twitter_followers": cd.get("twitter_followers"),
+            "reddit_subscribers": cd.get("reddit_subscribers"),
+            "developer_score": data.get("developer_score"),
+            "github_stars": dd.get("stars"),
+            "github_forks": dd.get("forks"),
+            "github_subscribers": dd.get("subscribers"),
+            "commit_count_4_weeks": dd.get("commit_count_4_weeks"),
+            "github_pull_requests_merged": dd.get("pull_requests_merged"),
+            "description": ((data.get("description") or {}).get("en") or "")[:500],
+        }
+
+    except Exception as e:
+        print(f"[fetch_coingecko_metadata] {coin_id} EXCEPTION: {e}")
+        return None
+
+
+@st.cache_data(ttl=CACHE_PRICE, show_spinner=False)
+def fetch_coingecko_chart(coin_id, days=365):
+    """
+    Hent OHLCV chart-data fra CoinGecko.
+    Cache: 10 min (price data).
+
+    Returnerer DataFrame eller "RATE_LIMIT" / None.
+    """
+    try:
+        # Daglig pris-historik
         chart_r = requests.get(
             f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
-            params={"vs_currency": "usd", "days": "365", "interval": "daily"},
+            params={"vs_currency": "usd", "days": str(days), "interval": "daily"},
             headers=HEADERS,
             timeout=15,
         )
@@ -182,10 +278,11 @@ def fetch_coingecko(coin_id):
         df_prices["ts"] = pd.to_datetime(df_prices["ts"], unit="ms").dt.normalize()
         df_prices = df_prices.drop_duplicates(subset="ts").set_index("ts")
 
+        # OHLC (best effort - ikke alle coins har det)
         try:
             ohlc_r = requests.get(
                 f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc",
-                params={"vs_currency": "usd", "days": "365"},
+                params={"vs_currency": "usd", "days": str(days)},
                 headers=HEADERS,
                 timeout=15,
             )
@@ -217,73 +314,54 @@ def fetch_coingecko(coin_id):
         if df.empty:
             return None
 
-        md = data.get("market_data") or {}
-        cd = data.get("community_data") or {}
-        dd = data.get("developer_data") or {}
-
-        def safe_get(d, *keys):
-            for k in keys:
-                if not isinstance(d, dict):
-                    return None
-                d = d.get(k)
-                if d is None:
-                    return None
-            return d
-
-        info = {
-            "longName": data.get("name"),
-            "symbol": (data.get("symbol") or "").upper(),
-            "currency": "USD",
-            "currentPrice": safe_get(md, "current_price", "usd") or float(df["Close"].iloc[-1]),
-            "marketCap": safe_get(md, "market_cap", "usd"),
-            "marketCapRank": md.get("market_cap_rank"),
-            "totalVolume": safe_get(md, "total_volume", "usd"),
-            "sector": "Cryptocurrency",
-            "country": "Global",
-            "circulating_supply": md.get("circulating_supply"),
-            "total_supply": md.get("total_supply"),
-            "max_supply": md.get("max_supply"),
-            "ath": safe_get(md, "ath", "usd"),
-            "ath_change_%": safe_get(md, "ath_change_percentage", "usd"),
-            "ath_date": safe_get(md, "ath_date", "usd"),
-            "atl": safe_get(md, "atl", "usd"),
-            "atl_change_%": safe_get(md, "atl_change_percentage", "usd"),
-            "change_1h": safe_get(md, "price_change_percentage_1h_in_currency", "usd"),
-            "change_24h": md.get("price_change_percentage_24h"),
-            "change_7d": md.get("price_change_percentage_7d"),
-            "change_30d": md.get("price_change_percentage_30d"),
-            "change_1y": md.get("price_change_percentage_1y"),
-            "sentiment_votes_up_%": data.get("sentiment_votes_up_percentage"),
-            "community_score": data.get("community_score"),
-            "public_interest_score": data.get("public_interest_score"),
-            "twitter_followers": cd.get("twitter_followers"),
-            "reddit_subscribers": cd.get("reddit_subscribers"),
-            "developer_score": data.get("developer_score"),
-            "github_stars": dd.get("stars"),
-            "github_forks": dd.get("forks"),
-            "github_subscribers": dd.get("subscribers"),
-            "commit_count_4_weeks": dd.get("commit_count_4_weeks"),
-            "github_pull_requests_merged": dd.get("pull_requests_merged"),
-            "description": ((data.get("description") or {}).get("en") or "")[:500],
-            "previousClose": float(df["Close"].iloc[-2]) if len(df) >= 2 else safe_get(md, "current_price", "usd"),
-        }
-
-        return {"info": info, "hist": df, "source": "CoinGecko"}
+        return df
 
     except Exception as e:
-        print(f"[fetch_coingecko] {coin_id} EXCEPTION: {e}")
+        print(f"[fetch_coingecko_chart] {coin_id} EXCEPTION: {e}")
         return None
 
 
-# ===== CRYPTOCOMPARE (BACKUP) =====
+def fetch_coingecko(coin_id):
+    """
+    Wrapper der kombinerer metadata + chart.
+    Hver del er cached separat med forskellig TTL.
+    """
+    metadata = fetch_coingecko_metadata(coin_id)
+    if metadata == "RATE_LIMIT":
+        return "RATE_LIMIT"
+    if metadata is None:
+        return None
 
-@st.cache_data(ttl=300, show_spinner=False)
+    df = fetch_coingecko_chart(coin_id)
+    if df == "RATE_LIMIT":
+        return "RATE_LIMIT"
+    if df is None or df.empty:
+        return None
+
+    info = dict(metadata)
+    info["currency"] = "USD"
+    info["sector"] = "Cryptocurrency"
+    info["country"] = "Global"
+    if not info.get("currentPrice"):
+        info["currentPrice"] = float(df["Close"].iloc[-1])
+    info["previousClose"] = (
+        float(df["Close"].iloc[-2]) if len(df) >= 2 else info["currentPrice"]
+    )
+
+    return {"info": info, "hist": df, "source": "CoinGecko"}
+
+
+# ============================================================
+# CRYPTOCOMPARE (BACKUP)
+# ============================================================
+
+@st.cache_data(ttl=CACHE_PRICE, show_spinner=False)
 def fetch_cryptocompare(symbol, days=365):
-    """Hent OHLCV fra CryptoCompare som backup"""
+    """Backup fra CryptoCompare. Cache: 10 min."""
     try:
         r = requests.get(
             "https://min-api.cryptocompare.com/data/v2/histoday",
-            params={"fsym": symbol, "tsym": "USD", "limit": days},
+            params={"fsym": symbol.upper(), "tsym": "USD", "limit": days},
             timeout=10,
         )
         if r.status_code != 200:
@@ -315,10 +393,13 @@ def fetch_cryptocompare(symbol, days=365):
         return None
 
 
-# ===== FEAR & GREED =====
+# ============================================================
+# FEAR & GREED (LANG CACHE - opdateres dagligt)
+# ============================================================
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=CACHE_FG, show_spinner=False)
 def fetch_fear_greed():
+    """Cache: 1 time (F&G opdateres dagligt)."""
     try:
         r = requests.get("https://api.alternative.me/fng/?limit=30", timeout=10)
         if r.status_code != 200:
@@ -334,10 +415,13 @@ def fetch_fear_greed():
         return None
 
 
-# ===== GLOBAL MARKET =====
+# ============================================================
+# GLOBAL MARKET
+# ============================================================
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=CACHE_GLOBAL, show_spinner=False)
 def fetch_global_crypto_market():
+    """Cache: 10 min."""
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/global",
@@ -359,55 +443,40 @@ def fetch_global_crypto_market():
         return None
 
 
-# ===== HJÆLPER: Berig Yahoo med CoinGecko-metadata =====
+# ============================================================
+# HJÆLPER: Berig Yahoo med CoinGecko-metadata (NU CACHET!)
+# ============================================================
 
 def _enrich_with_coingecko(yahoo_data, coin_id):
-    """Tilføj CoinGecko metadata til Yahoo data (best effort)"""
-    try:
-        r = requests.get(
-            f"https://api.coingecko.com/api/v3/coins/{coin_id}",
-            params={
-                "localization": "false",
-                "tickers": "false",
-                "market_data": "true",
-                "community_data": "true",
-                "developer_data": "true",
-                "sparkline": "false",
-            },
-            headers=HEADERS,
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return yahoo_data
-
-        data = r.json()
-        md = data.get("market_data") or {}
-        cd = data.get("community_data") or {}
-        dd = data.get("developer_data") or {}
-
-        info = yahoo_data["info"]
-        info["longName"] = data.get("name") or info["longName"]
-        info["marketCap"] = (md.get("market_cap") or {}).get("usd") or info.get("marketCap")
-        info["marketCapRank"] = md.get("market_cap_rank")
-        info["totalVolume"] = (md.get("total_volume") or {}).get("usd") or info.get("totalVolume")
-        info["ath"] = (md.get("ath") or {}).get("usd")
-        info["ath_change_%"] = (md.get("ath_change_percentage") or {}).get("usd")
-        info["sentiment_votes_up_%"] = data.get("sentiment_votes_up_percentage")
-        info["community_score"] = data.get("community_score")
-        info["public_interest_score"] = data.get("public_interest_score")
-        info["twitter_followers"] = cd.get("twitter_followers")
-        info["reddit_subscribers"] = cd.get("reddit_subscribers")
-        info["developer_score"] = data.get("developer_score")
-        info["github_stars"] = dd.get("stars")
-        info["github_forks"] = dd.get("forks")
-        info["commit_count_4_weeks"] = dd.get("commit_count_4_weeks")
-        info["description"] = ((data.get("description") or {}).get("en") or info.get("description") or "")[:500]
-
-        yahoo_data["source"] = "Yahoo + CoinGecko"
+    """
+    Tilføj CoinGecko metadata til Yahoo data.
+    Bruger nu cachet `fetch_coingecko_metadata` → spar API-kald!
+    """
+    metadata = fetch_coingecko_metadata(coin_id)
+    if metadata in (None, "RATE_LIMIT"):
         return yahoo_data
-    except Exception as e:
-        print(f"[_enrich_with_coingecko] {coin_id}: {e}")
-        return yahoo_data
+
+    info = yahoo_data["info"]
+    # Bevarede Yahoo-felter, men beriget med CoinGecko-detaljer
+    enrichment_keys = [
+        "longName", "marketCap", "marketCapRank", "totalVolume",
+        "ath", "ath_change_%", "ath_date", "atl", "atl_change_%",
+        "sentiment_votes_up_%", "community_score", "public_interest_score",
+        "twitter_followers", "reddit_subscribers",
+        "developer_score", "github_stars", "github_forks",
+        "github_subscribers", "commit_count_4_weeks",
+        "github_pull_requests_merged", "description",
+    ]
+    for key in enrichment_keys:
+        val = metadata.get(key)
+        if val is not None and (info.get(key) is None or info.get(key) == ""):
+            info[key] = val
+        elif val is not None and key in ("marketCap", "marketCapRank", "ath"):
+            # Disse foretrækkes fra CoinGecko (mere pålidelige for krypto)
+            info[key] = val
+
+    yahoo_data["source"] = "Yahoo + CoinGecko"
+    return yahoo_data
 
 
 def _build_response_from_df(df, symbol, category=None):
@@ -443,7 +512,16 @@ def _build_response_from_df(df, symbol, category=None):
     return {"info": info, "hist": df, "source": "Backup"}
 
 
-# ===== HOVED-FETCH (NY STRATEGI) =====
+# ============================================================
+# HOVED-FETCH (NEGATIV-CACHE FOR FEJL)
+# ============================================================
+
+# Negativ cache: undgå retry-storm hvis ticker fejler
+@st.cache_data(ttl=300, show_spinner=False)
+def _is_known_bad_ticker(symbol):
+    """Returnerer True hvis tickeren netop har fejlet (5 min cache)."""
+    return False  # Sættes via session_state ved fejl
+
 
 def fetch_crypto_data(ticker):
     """
@@ -451,9 +529,11 @@ def fetch_crypto_data(ticker):
 
     Strategi:
     1. Yahoo Finance (BTC-USD format) → primær, hurtig, ingen rate limit
-    2. Berig med CoinGecko metadata
+    2. Berig med CoinGecko metadata (cachet 24t!)
     3. Hvis Yahoo fejler → CoinGecko fuld data
     4. Sidste udvej → CryptoCompare
+
+    Cache hits er ekstremt hurtige (< 1ms) takket være tiered TTL.
     """
     if not ticker:
         return None
@@ -467,12 +547,12 @@ def fetch_crypto_data(ticker):
         config = CRYPTO_UNIVERSE[symbol]
         log.append(f"✅ {symbol} fundet i CRYPTO_UNIVERSE")
 
-        # Step 1a: Yahoo Finance først
+        # Step 1a: Yahoo Finance først (cache: 10 min)
         log.append(f"🔄 Yahoo Finance: {symbol}-USD")
         ydata = fetch_yahoo_crypto(symbol)
         if ydata is not None:
             log.append(f"✅ Yahoo OK: {len(ydata['hist'])} dage")
-            # Berig med CoinGecko metadata
+            # Berig med CoinGecko metadata (cachet 24t)
             ydata = _enrich_with_coingecko(ydata, config["cg"])
             ydata["debug_log"] = log
             return ydata
@@ -518,7 +598,7 @@ def fetch_crypto_data(ticker):
     ydata = fetch_yahoo_crypto(symbol)
     if ydata is not None:
         log.append(f"✅ Yahoo OK: {len(ydata['hist'])} dage")
-        # Find coin_id og berig
+        # Find coin_id og berig (begge cachet)
         coin_id = search_coingecko_id(symbol)
         if coin_id:
             log.append(f"✅ CoinGecko ID: {coin_id}")
@@ -556,14 +636,17 @@ def fetch_crypto_data(ticker):
     print(f"\n=== FETCH FAILED FOR {symbol} ===")
     for line in log:
         print(f"  {line}")
-    print("="*50)
+    print("=" * 50)
     return None
 
 
-# ===== ON-CHAIN BTC =====
+# ============================================================
+# ON-CHAIN BTC
+# ============================================================
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=CACHE_CHAIN, show_spinner=False)
 def fetch_btc_onchain():
+    """Cache: 1 time (on-chain data opdateres ca. hver 10 min)."""
     try:
         metrics = {}
         endpoints = {
@@ -594,10 +677,13 @@ def fetch_btc_onchain():
         return {}
 
 
-# ===== TRENDING =====
+# ============================================================
+# TRENDING / TOP MOVERS
+# ============================================================
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=CACHE_TREND, show_spinner=False)
 def fetch_trending_coins():
+    """Cache: 10 min."""
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/search/trending",
@@ -621,10 +707,9 @@ def fetch_trending_coins():
         return []
 
 
-# ===== TOP MOVERS =====
-
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=CACHE_TREND, show_spinner=False)
 def fetch_top_movers():
+    """Cache: 10 min."""
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/coins/markets",
@@ -654,12 +739,48 @@ def fetch_top_movers():
         return None, None
 
 
-# ===== BAGUDKOMPATIBEL: fetch_binance =====
+# ============================================================
+# CACHE MANAGEMENT
+# ============================================================
+
+def clear_crypto_cache():
+    """
+    Ryd al krypto-relateret cache.
+    Bruges fra UI hvis bruger vil tvinge refresh.
+    """
+    fetch_yahoo_crypto.clear()
+    search_coingecko_id.clear()
+    fetch_coingecko_metadata.clear()
+    fetch_coingecko_chart.clear()
+    fetch_cryptocompare.clear()
+    fetch_fear_greed.clear()
+    fetch_global_crypto_market.clear()
+    fetch_btc_onchain.clear()
+    fetch_trending_coins.clear()
+    fetch_top_movers.clear()
+
+
+def get_cache_info():
+    """
+    Returnér info om cache TTL'er (til Dev Mode).
+    """
+    return {
+        "Yahoo crypto": f"{CACHE_PRICE}s ({CACHE_PRICE//60} min)",
+        "CoinGecko metadata": f"{CACHE_META}s ({CACHE_META//3600} t)",
+        "CoinGecko chart": f"{CACHE_PRICE}s ({CACHE_PRICE//60} min)",
+        "Coin ID search": f"{CACHE_SEARCH}s ({CACHE_SEARCH//86400} dage)",
+        "Global market": f"{CACHE_GLOBAL}s ({CACHE_GLOBAL//60} min)",
+        "Fear & Greed": f"{CACHE_FG}s ({CACHE_FG//60} min)",
+        "Trending/Movers": f"{CACHE_TREND}s ({CACHE_TREND//60} min)",
+        "BTC on-chain": f"{CACHE_CHAIN}s ({CACHE_CHAIN//60} min)",
+    }
+
+
+# ============================================================
+# DEPRECATED
+# ============================================================
 
 def fetch_binance(symbol, interval="1d", limit=500):
-    """
-    Deprecated: Binance er geo-blokeret på Streamlit Cloud.
-    Returnerer None - brug fetch_yahoo_crypto i stedet.
-    """
+    """Deprecated: Binance er geo-blokeret på Streamlit Cloud."""
     print(f"[fetch_binance] DEPRECATED: Binance er geo-blokeret på Streamlit Cloud")
     return None
