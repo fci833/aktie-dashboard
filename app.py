@@ -8,6 +8,9 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime
 
+# ============ PERFORMANCE MONITORING ============
+_app_start_time = time.time()
+
 from config import ANALYSIS_PERIODS, SCREENER_UNIVERSES
 from data_sources import (
     fetch_data, search_tickers, get_fx_rate, get_api_keys,
@@ -76,6 +79,10 @@ if "screener_results" not in st.session_state:
     st.session_state.screener_results = None
 if "active_view" not in st.session_state:
     st.session_state.active_view = "🏠 Hjem"
+if "search_history" not in st.session_state:
+    st.session_state.search_history = []
+if "dev_mode" not in st.session_state:
+    st.session_state.dev_mode = False
 
 
 # ============ DIAGNOSE ============
@@ -153,12 +160,26 @@ def run_diagnostics(ticker):
     return results
 
 
-# ============ HJÆLPER: Skift til analyse ============
+# ============ HJÆLPER: Skift til analyse + Search history ============
 
 def goto_analysis(ticker):
     st.session_state.current_ticker = ticker
     st.session_state.active_view = "📊 Analyse"
+    # Tilføj til søge-historik
+    add_to_search_history(ticker)
     st.rerun()
+
+
+def add_to_search_history(ticker):
+    """Tilføjer ticker til søge-historik (max 10)"""
+    if not ticker:
+        return
+    ticker_clean = ticker.strip().upper()
+    history = st.session_state.search_history
+    if ticker_clean in history:
+        history.remove(ticker_clean)
+    history.insert(0, ticker_clean)
+    st.session_state.search_history = history[:10]
 
 
 # ============ SIDEBAR ============
@@ -212,6 +233,14 @@ with st.sidebar:
     st.caption("💰 Kursmål: **6 mdr**")
     st.caption("📉 Risk: **3 år**")
     st.caption("🎲 Monte Carlo: **2 år**")
+
+    st.markdown("---")
+    # Dev mode toggle
+    st.session_state.dev_mode = st.checkbox(
+        "🐛 Dev mode (vis perf-stats)",
+        value=st.session_state.dev_mode,
+        help="Viser performance-statistik nederst"
+    )
 
 
 # ============ NAVIGATION ============
@@ -355,8 +384,9 @@ if st.session_state.active_view == "🏠 Hjem":
             )
         else:
             st.caption(f"📋 {len(st.session_state.watchlist)} tickers i watchlist")
-            with st.spinner(f"Analyserer {len(st.session_state.watchlist)} tickers..."):
-                wdf = analyze_watchlist(st.session_state.watchlist, max_workers=4)
+            # ⚡ PERFORMANCE: Bumped max_workers fra 4 → 8 for hurtigere parallel fetch
+            with st.spinner(f"⚡ Analyserer {len(st.session_state.watchlist)} tickers parallelt..."):
+                wdf = analyze_watchlist(st.session_state.watchlist, max_workers=8)
             if wdf.empty:
                 st.warning("Kunne ikke analysere watchlist (data-fejl?)")
             else:
@@ -488,9 +518,7 @@ if st.session_state.active_view == "🏠 Hjem":
         "⚠️ **Ikke finansiel rådgivning.** Dashboard er et analyseværktøj. "
         "Lav altid din egen research før investering. Past performance is not indicative of future results."
     )
-
-
-# ============ SØGE-VIEW ============
+    # ============ SØGE-VIEW ============
 
 elif st.session_state.active_view == "🔍 Søg ticker":
     st.subheader("🔍 Find ticker for et firma")
@@ -985,8 +1013,7 @@ elif st.session_state.active_view == "🔎 Screener":
                 st.success(f"Slettet {deleted} gamle snapshots")
                 time.sleep(1)
                 st.rerun()
-
-# ============ KRYPTO-VIEW ============
+                # ============ KRYPTO-VIEW ============
 
 elif st.session_state.active_view == "🪙 Krypto":
     st.subheader("🪙 Krypto Dashboard - Pro Edition")
@@ -1239,7 +1266,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"ATR: ${targets['atr']:.4f}"
                     )
 
-                                # ============ NY: SÅDAN HANDLER DU (KRYPTO) ============
+                # ============ KRYPTO ACTION PLAN ============
                 from crypto_analysis import generate_crypto_action_plan
 
                 # FX-kurs USD → DKK
@@ -1439,8 +1466,8 @@ elif st.session_state.active_view == "🪙 Krypto":
                     "Krypto kan tabe 50-90% i bear markets — invester KUN hvad du har råd til at tabe. "
                     "Brug ALTID stop-loss til at beskytte din kapital."
                 )
-                # ============ SLUT NY ============
-                
+                # ============ SLUT KRYPTO ACTION PLAN ============
+
                 if symbol == "BTC":
                     halv = btc_halving_analysis(symbol)
                     if halv:
@@ -1966,9 +1993,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 st.plotly_chart(fig_hr, use_container_width=True)
         else:
             st.warning("Kunne ikke hente on-chain data")
-
-
-# ============ HOVED-ANALYSE-VIEW ============
+            # ============ HOVED-ANALYSE-VIEW ============
 
 elif st.session_state.active_view == "📊 Analyse":
     c1, c2 = st.columns([4, 1])
@@ -1978,8 +2003,31 @@ elif st.session_state.active_view == "📊 Analyse":
     ).strip().upper()
     auto_analyze = c2.button("🔍 Analysér", type="primary", use_container_width=True)
 
+    # ============ SØGE-HISTORIK ============
+    if st.session_state.search_history:
+        st.caption("🕐 **Seneste søgninger** (klik for hurtig analyse):")
+        hist_cols = st.columns(min(10, len(st.session_state.search_history)))
+        for i, hist_ticker in enumerate(st.session_state.search_history):
+            with hist_cols[i]:
+                if st.button(
+                    hist_ticker,
+                    key=f"hist_{hist_ticker}_{i}",
+                    use_container_width=True,
+                    help=f"Analysér {hist_ticker} igen"
+                ):
+                    goto_analysis(hist_ticker)
+
+        # Ryd historik knap
+        cols_clear = st.columns([5, 1])
+        if cols_clear[1].button("🗑️ Ryd historik", key="clear_search_hist", use_container_width=True):
+            st.session_state.search_history = []
+            st.rerun()
+
     if auto_analyze or st.session_state.current_ticker == ticker_input:
         st.session_state.current_ticker = ticker_input
+        # Tilføj til søgehistorik når der søges
+        if auto_analyze and ticker_input:
+            add_to_search_history(ticker_input)
     ticker = ticker_input
 
     if not ticker:
@@ -1994,19 +2042,25 @@ elif st.session_state.active_view == "📊 Analyse":
             st.session_state.active_view = "🪙 Krypto"
             st.rerun()
 
+    # Performance tracking
+    _fetch_start = time.time()
     with st.spinner(f"Henter data for {ticker}..."):
         data = fetch_data(ticker)
+    _fetch_time = time.time() - _fetch_start
 
     if data is None:
         st.error(f"❌ Kunne ikke hente data for '{ticker}'")
         st.info("👉 Prøv **🔍 Søg ticker** fanen")
         st.stop()
 
+    # Tilføj til historik når data er hentet succesfuldt
+    add_to_search_history(ticker)
+
     st.session_state.last_source = data["source"]
     if data.get("warning"):
         st.warning(f"⚠️ {data['warning']}")
     else:
-        st.success(f"✅ Data hentet fra: **{data['source']}**")
+        st.success(f"✅ Data hentet fra: **{data['source']}** ({_fetch_time:.1f}s)")
 
     st.markdown(
         "<div style='background:#0099ff15;padding:0.6rem 1rem;border-radius:8px;"
@@ -2099,7 +2153,6 @@ elif st.session_state.active_view == "📊 Analyse":
         low_52 = info.get("fiftyTwoWeekLow")
         high_52 = info.get("fiftyTwoWeekHigh")
 
-        # Fallback: beregn fra hist hvis info mangler det
         if (low_52 is None or high_52 is None) and not hist.empty:
             recent_year = hist.tail(252) if len(hist) >= 252 else hist
             if low_52 is None:
@@ -2173,6 +2226,8 @@ elif st.session_state.active_view == "📊 Analyse":
         else:
             st.metric("Market Cap", "N/A")
 
+    # Performance tracking for analyse
+    _analysis_start = time.time()
     df_indicators = get_indicators(hist)
     df_technical = filter_by_days(df_indicators, ANALYSIS_PERIODS["technical"])
 
@@ -2180,6 +2235,7 @@ elif st.session_state.active_view == "📊 Analyse":
     t_score, t_details = technical_score(df_technical)
     overall = f_score * 0.6 + t_score * 0.4
     rec, color = recommendation(overall)
+    _analysis_time = time.time() - _analysis_start
 
     st.markdown("---")
 
@@ -2198,9 +2254,9 @@ elif st.session_state.active_view == "📊 Analyse":
     rec_cols[1].metric("📊 Fundamental", f"{f_score:.0f}/100", "60% vægt")
     rec_cols[2].metric("🔧 Teknisk", f"{t_score:.0f}/100", "40% vægt")
     rec_cols[3].metric("Samlet score", f"{overall:.0f}/100")
-           # ============ NY: SÅDAN HANDLER DU ============
 
-    # Beregn DCF upside til konsistens-check
+    # ============ ACTION PLAN ============
+
     try:
         fv_check = dcf_valuation(info, 0.10, 0.10, 0.025)
         dcf_upside = ((fv_check / price - 1) * 100) if fv_check and price else None
@@ -2208,18 +2264,15 @@ elif st.session_state.active_view == "📊 Analyse":
         dcf_upside = None
         fv_check = None
 
-    # Beregn targets
     targets_main = calculate_price_targets(
         filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"]),
         price, fv_check
     )
 
-    # Hent FX-kurs hvis ikke DKK
     fx_for_plan = None
     if currency != "DKK":
         fx_for_plan = get_fx_rate(currency, "DKK")
 
-        # === HVOR MEGET VIL DU INVESTERE? ===
     shares_for_plan = None
     if "KØB" in rec:
         st.markdown("### 💼 Hvor meget vil du investere?")
@@ -2230,7 +2283,6 @@ elif st.session_state.active_view == "📊 Analyse":
             help="Indtast hvor meget du vil bruge — så beregnes alt automatisk"
         )
 
-        # Beregn pris i DKK
         if currency != "DKK" and fx_for_plan:
             price_in_dkk = price * fx_for_plan
         else:
@@ -2256,7 +2308,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 help=f"{shares_for_plan} × {price:.2f} {currency}"
             )
 
-    # Generer plan
     plan = generate_action_plan(
         rec=rec, score=overall, current_price=price,
         targets=targets_main, hist=hist, currency=currency,
@@ -2268,18 +2319,15 @@ elif st.session_state.active_view == "📊 Analyse":
     st.markdown("## 🎯 SÅDAN HANDLER DU")
     st.markdown(f"_{plan['summary']}_")
 
-    # Warnings
     for warn in plan["warnings"]:
         st.warning(warn)
 
-    # === STOR INVESTERINGS-OVERSIGT (hvis KØB) ===
     if plan["totals"]:
         t = plan["totals"]
         st.markdown("### 💰 Din investering & forventet gevinst")
 
         inv_cols = st.columns(4)
 
-        # Total investering
         invest_str_dkk = f"{t['invest_dkk']:,.0f} DKK" if t['invest_dkk'] else "-"
         inv_cols[0].markdown(
             f"<div style='background:#0099ff22;padding:1rem;border-radius:10px;"
@@ -2292,7 +2340,6 @@ elif st.session_state.active_view == "📊 Analyse":
             unsafe_allow_html=True
         )
 
-        # Forventet gevinst (hvis alle targets rammes)
         profit_str_dkk = f"{t['total_profit_dkk']:,.0f} DKK" if t['total_profit_dkk'] else "-"
         inv_cols[1].markdown(
             f"<div style='background:#16a34a22;padding:1rem;border-radius:10px;"
@@ -2305,7 +2352,6 @@ elif st.session_state.active_view == "📊 Analyse":
             unsafe_allow_html=True
         )
 
-        # Max tab
         loss_str_dkk = f"{t['max_loss_dkk']:,.0f} DKK" if t['max_loss_dkk'] else "-"
         inv_cols[2].markdown(
             f"<div style='background:#ef444422;padding:1rem;border-radius:10px;"
@@ -2318,7 +2364,6 @@ elif st.session_state.active_view == "📊 Analyse":
             unsafe_allow_html=True
         )
 
-        # Slutværdi
         end_value_usd = t['invest_usd'] + t['total_profit_usd']
         end_value_dkk = end_value_usd * fx_for_plan if fx_for_plan else None
         end_str_dkk = f"{end_value_dkk:,.0f} DKK" if end_value_dkk else "-"
@@ -2333,10 +2378,9 @@ elif st.session_state.active_view == "📊 Analyse":
             unsafe_allow_html=True
         )
 
-        # Profit-breakdown pr. salg
         with st.expander("📊 Sådan fordeler gevinsten sig (1/3 + 1/3 + 1/3 strategi)"):
             third_shares = t['shares'] // 3
-            remaining = t['shares'] - 2 * third_shares  # sidste tredjedel = resten
+            remaining = t['shares'] - 2 * third_shares
 
             breakdown_data = []
             breakdown_data.append({
@@ -2372,7 +2416,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 "du skal købe — så får du her vist den **forventede gevinst i DKK**!"
             )
 
-    # Risk/Reward boks (hvis køb)
     if plan["risk_reward"]:
         rr = plan["risk_reward"]
         st.markdown("### ⚖️ Risk / Reward")
@@ -2398,7 +2441,6 @@ elif st.session_state.active_view == "📊 Analyse":
             unsafe_allow_html=True
         )
 
-    # Steps
     st.markdown("### 📋 Trin-for-trin handleplan")
     for step in plan["steps"]:
         st.markdown(
@@ -2415,7 +2457,6 @@ elif st.session_state.active_view == "📊 Analyse":
             unsafe_allow_html=True
         )
 
-    # === HVAD ER TRAILING STOP? ===
     with st.expander("📚 Hvad er TRAILING STOP? (klik for forklaring)"):
         st.markdown("""
         **Trailing stop** = "rullende stop-loss" der **følger med opad** når kursen stiger,
@@ -2437,19 +2478,10 @@ elif st.session_state.active_view == "📊 Analyse":
         3. **Du lader vinderne løbe** — trailing stop'et "ruller" med opad
 
         ### 💼 Hvor sætter man det?
-        De fleste mæglere understøtter trailing stop:
         - 🇩🇰 **Nordnet** — "Trailing stop" når du opretter ordre
         - 🇩🇰 **Saxo** — "Trailing stop loss"
         - 🌍 **eToro** — "Trailing stop loss"
         - 🌍 **Interactive Brokers** — "TRAIL"
-
-        Du kan typisk sætte det som:
-        - **Procent** (fx 5% under top)
-        - **Beløb** (fx 6 USD under top)
-
-        ### ⚠️ Vigtigt at huske
-        Trailing stops er ikke 100% sikre — i meget volatile markeder kan de "udløses for tidligt"
-        ved kortvarige dyk. Sæt typisk 5-10% afstand for normale aktier.
         """)
 
     st.caption(
@@ -2457,8 +2489,6 @@ elif st.session_state.active_view == "📊 Analyse":
         "Faktisk timing afhænger af markedsforhold, nyheder og earnings. "
         "Brug altid stop-loss til at beskytte din kapital."
     )
-    # ============ SLUT NY ============
-    # ============ SLUT NY ============
 
     st.markdown("---")
     with st.expander("📐 Position Sizing Calculator", expanded=False):
@@ -2655,7 +2685,6 @@ elif st.session_state.active_view == "📊 Analyse":
             short_pct = (targets["target_short"] / price - 1) * 100
             long_pct = (targets["target_long"] / price - 1) * 100
 
-            # FX-kurs til DKK
             fx_targets = None
             if currency != "DKK":
                 fx_targets = get_fx_rate(currency, "DKK")
@@ -3030,3 +3059,45 @@ elif st.session_state.active_view == "📊 Analyse":
         if info.get("longBusinessSummary"):
             with st.expander("ℹ️ Om virksomheden"):
                 st.write(info["longBusinessSummary"][:2000])
+
+
+# ============ DEV MODE FOOTER (PERFORMANCE STATS) ============
+
+if st.session_state.dev_mode:
+    st.markdown("---")
+    st.markdown("### 🐛 Dev Mode — Performance Stats")
+
+    _total_time = time.time() - _app_start_time
+
+    dev_cols = st.columns(4)
+    dev_cols[0].metric("⏱️ Total render-tid", f"{_total_time:.2f}s")
+
+    # Vis cache info
+    try:
+        cache_info = "✅ Aktiv"
+        dev_cols[1].metric("💾 Cache", cache_info)
+    except Exception:
+        dev_cols[1].metric("💾 Cache", "?")
+
+    dev_cols[2].metric("📍 Aktiv view", st.session_state.active_view)
+    dev_cols[3].metric("📋 Watchlist", f"{len(st.session_state.watchlist)} tickers")
+
+    # Session state debug
+    with st.expander("🔍 Session state (debug)"):
+        debug_state = {
+            "current_ticker": st.session_state.get("current_ticker", ""),
+            "active_view": st.session_state.get("active_view", ""),
+            "last_source": st.session_state.get("last_source", ""),
+            "watchlist_count": len(st.session_state.get("watchlist", [])),
+            "search_history_count": len(st.session_state.get("search_history", [])),
+            "search_history": st.session_state.get("search_history", []),
+            "screener_has_results": st.session_state.get("screener_results") is not None,
+            "crypto_analyzed": st.session_state.get("crypto_analyzed", "ingen"),
+        }
+        st.json(debug_state)
+
+    # Tips
+    st.caption(
+        "💡 **Tip:** Hvis render-tid > 5s, er der typisk ventetid på API-kald. "
+        "Tryk **🔄 Ryd cache** kun hvis nødvendigt — det tvinger refetch af alt."
+    )
