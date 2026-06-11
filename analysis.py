@@ -1,10 +1,25 @@
-"""Tekniske indikatorer, scoring, DCF, risk metrics, Monte Carlo"""
+"""Tekniske indikatorer, scoring, DCF, risk metrics, Monte Carlo
+
+OPDATERET: Integreret med regime_detector for adaptive vægte og tærskler.
+"""
 import numpy as np
 import pandas as pd
 import streamlit as st
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.trend import MACD, SMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
+
+# 🆕 Regime detector integration (lazy import for at undgå circular)
+try:
+    from regime_detector import (
+        detect_market_regime,
+        adjust_weights_for_regime,
+        regime_recommendation,
+    )
+    REGIME_AVAILABLE = True
+except ImportError:
+    REGIME_AVAILABLE = False
+    print("[analysis] regime_detector ikke fundet - bruger statiske vægte")
 
 
 def safe(d, key, default=None):
@@ -197,7 +212,123 @@ def technical_score(df):
     return int(last_score), det
 
 
-# ============ PERFORMANCE: CACHE WRAPPERS ============
+# ============================================================
+# 🆕 REGIME-AWARE SCORING
+# ============================================================
+
+def overall_score_with_regime(f_score, t_score, regime=None):
+    """
+    🆕 Beregn overall score MED regime-justerede vægte.
+
+    Args:
+        f_score: fundamental score (0-100)
+        t_score: technical score (0-100)
+        regime: optional - "BULL"/"BEAR"/"SIDEWAYS"/"VOLATILE"/"UNKNOWN"
+                Hvis None: auto-detect via regime_detector
+
+    Returns:
+        dict med:
+            overall: float 0-100
+            fund_weight: float
+            tech_weight: float
+            regime: str
+            regime_confidence: int
+            regime_metrics: dict
+    """
+    # Default fallback hvis regime detector ikke er tilgængelig
+    if not REGIME_AVAILABLE:
+        overall = f_score * 0.6 + t_score * 0.4
+        return {
+            "overall": overall,
+            "fund_weight": 0.6,
+            "tech_weight": 0.4,
+            "regime": "UNKNOWN",
+            "regime_confidence": 0,
+            "regime_metrics": {},
+        }
+
+    # Detect regime hvis ikke angivet
+    regime_metrics = {}
+    regime_conf = 0
+    if regime is None:
+        try:
+            regime, regime_conf, regime_metrics = detect_market_regime()
+        except Exception as e:
+            print(f"[overall_score_with_regime] regime detection failed: {e}")
+            regime = "UNKNOWN"
+
+    # Hent regime-justerede vægte
+    fund_w, tech_w = adjust_weights_for_regime(regime, asset_type="stock")
+    overall = f_score * fund_w + t_score * tech_w
+
+    return {
+        "overall": overall,
+        "fund_weight": fund_w,
+        "tech_weight": tech_w,
+        "regime": regime,
+        "regime_confidence": regime_conf,
+        "regime_metrics": regime_metrics,
+    }
+
+
+# ============================================================
+# RECOMMENDATION (NU REGIME-AWARE)
+# ============================================================
+
+def recommendation(s, regime=None):
+    """
+    Konvertér score til anbefaling.
+
+    🆕 OPDATERET: Bruger nu regime-aware tærskler hvis regime angives
+    eller regime_detector er tilgængelig.
+
+    Args:
+        s: score 0-100
+        regime: optional regime label - hvis None auto-detect.
+                Kan også være "STATIC" for at tvinge gamle statiske tærskler.
+
+    Returns:
+        (label, color)
+    """
+    # Static fallback (gammel adfærd)
+    if regime == "STATIC" or not REGIME_AVAILABLE:
+        if s >= 75: return "🟢 STÆRKT KØB", "#16a34a"
+        if s >= 60: return "🟢 KØB", "#22c55e"
+        if s >= 45: return "🟡 HOLD", "#eab308"
+        if s >= 30: return "🔴 SÆLG", "#ef4444"
+        return "🔴 STÆRKT SÆLG", "#b91c1c"
+
+    # Auto-detect regime
+    if regime is None:
+        try:
+            regime, _, _ = detect_market_regime()
+        except Exception:
+            regime = "UNKNOWN"
+
+    # Brug regime_detector's tærskler
+    label, color = regime_recommendation(regime, s)
+
+    # Tilføj emoji prefix for konsistens med gammel UI
+    emoji_map = {
+        "STÆRKT KØB": "🟢",
+        "KØB": "🟢",
+        "HOLD": "🟡",
+        "SÆLG": "🔴",
+        "STÆRKT SÆLG": "🔴",
+    }
+    emoji = emoji_map.get(label, "")
+    return f"{emoji} {label}".strip(), color
+
+
+def recommendation_label(s, regime=None):
+    """Returnér kun label (uden emoji/farve)."""
+    full, _ = recommendation(s, regime)
+    return full.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "").strip()
+
+
+# ============================================================
+# PERFORMANCE: CACHE WRAPPERS (uændret)
+# ============================================================
 
 def _calc_targets_internal(current_price, fair_value, atr, sma50, sma200,
                            bb_low, bb_high, week52_high, week52_low):
@@ -264,8 +395,6 @@ def dcf_cached(fcf: float, shares: float, debt: float, cash: float,
     ev = sum(cfs) + pv_tv
     return (ev - debt + cash) / shares
 
-# ============ END PERFORMANCE ============
-
 
 def calculate_price_targets(df, current_price, fair_value=None):
     """FIXED + CACHED: Stop-loss/buy-zone er ALTID under current_price"""
@@ -323,10 +452,11 @@ def estimate_days_to_target(current_price, target_price, hist):
 
 def generate_action_plan(rec, score, current_price, targets, hist, currency="USD",
                         f_score=None, t_score=None, dcf_upside=None,
-                        shares=None, fx_to_dkk=None):
+                        shares=None, fx_to_dkk=None, regime=None):
     """
-    Genererer en konkret handleplan med:
-    - Klare steps, datoer, risk/reward, konsistens-check, totals, DKK-konvertering
+    Genererer en konkret handleplan.
+
+    🆕 OPDATERET: Tilføjer regime-info i summary hvis tilgængelig.
     """
     today = pd.Timestamp.now()
 
@@ -334,6 +464,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
         "rec": rec, "score": score, "steps": [],
         "risk_reward": None, "warnings": [], "summary": "",
         "totals": None,
+        "regime": regime,
     }
 
     def fmt_price(usd_val):
@@ -342,6 +473,23 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
             dkk_val = usd_val * fx_to_dkk
             s += f" _(≈ {dkk_val:,.0f} DKK)_"
         return s
+
+    # === REGIME-AWARE WARNINGS ===
+    if regime == "BEAR" and "KØB" in rec:
+        plan["warnings"].append(
+            "🐻 **BEAR MARKET ADVARSEL:** Vi er i bear marked — vær ekstra forsigtig. "
+            "Brug strammere stop-loss (5-7% i stedet for 10%)."
+        )
+    elif regime == "VOLATILE" and "KØB" in rec:
+        plan["warnings"].append(
+            "⚡ **VOLATIL MARKED:** Højt volatilt marked — overvej mindre position-størrelse "
+            "og bredere stop-loss."
+        )
+    elif regime == "BULL" and "SÆLG" in rec:
+        plan["warnings"].append(
+            "🐂 **BULL MARKET:** Markedet er stærkt — overvej om denne aktie er undtagelsen, "
+            "eller om der er nyheder/fundamentale problemer."
+        )
 
     # === KONSISTENS-CHECK ===
     if dcf_upside is not None:
@@ -425,6 +573,13 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
         date_long = "6-12 mdr (estimat)"
         time_long_str = "6-12 mdr"
 
+    # === REGIME LABEL TIL SUMMARY ===
+    regime_label = ""
+    if regime and regime != "UNKNOWN":
+        regime_emojis = {"BULL": "🐂", "BEAR": "🐻", "SIDEWAYS": "➡️", "VOLATILE": "⚡"}
+        emj = regime_emojis.get(regime, "")
+        regime_label = f" (Markedsregime: {emj} **{regime}**)"
+
     # === STEPS ===
     if "STÆRKT KØB" in rec or "KØB" in rec:
         rr = plan["risk_reward"]
@@ -436,7 +591,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
 
         plan["summary"] = (
             f"Modellen anbefaler **KØB** baseret på stærke fundamentals "
-            f"(score: {f_score}/100) og teknisk billede (score: {t_score}/100)."
+            f"(score: {f_score}/100) og teknisk billede (score: {t_score}/100).{regime_label}"
         )
 
         shares_text = f"{shares} aktier" if shares else "din position"
@@ -486,7 +641,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
 
     elif "HOLD" in rec:
         plan["summary"] = (
-            f"Modellen anbefaler **HOLD** — score er {score}/100 (ikke stærk nok til køb)."
+            f"Modellen anbefaler **HOLD** — score er {score}/100 (ikke stærk nok til køb).{regime_label}"
         )
         plan["steps"] = [
             {
@@ -514,7 +669,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
 
     else:  # SÆLG
         plan["summary"] = (
-            f"Modellen anbefaler **SÆLG** — score er {score}/100 (svage fundamentals/teknik)."
+            f"Modellen anbefaler **SÆLG** — score er {score}/100 (svage fundamentals/teknik).{regime_label}"
         )
         plan["steps"] = [
             {
@@ -604,22 +759,6 @@ def monte_carlo(hist, days=252, sims=300):
     random_returns = np.random.normal(mu, sigma, size=(sims, days))
     out = lp * np.cumprod(1 + random_returns, axis=1)
     return out, lp
-
-
-def recommendation(s):
-    if s >= 75: return "🟢 STÆRKT KØB", "#16a34a"
-    if s >= 60: return "🟢 KØB", "#22c55e"
-    if s >= 45: return "🟡 HOLD", "#eab308"
-    if s >= 30: return "🔴 SÆLG", "#ef4444"
-    return "🔴 STÆRKT SÆLG", "#b91c1c"
-
-
-def recommendation_label(s):
-    if s >= 75: return "STÆRKT KØB"
-    if s >= 60: return "KØB"
-    if s >= 45: return "HOLD"
-    if s >= 30: return "SÆLG"
-    return "STÆRKT SÆLG"
 
 
 def filter_by_days(hist, days):
