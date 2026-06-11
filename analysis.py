@@ -197,58 +197,39 @@ def technical_score(df):
     return int(last_score), det
 
 
-def calculate_price_targets(df, current_price, fair_value=None):
-    """
-    FIXED: Stop-loss og købszone er ALTID under current_price.
-    Targets sikrer reasonable risk/reward.
-    """
-    last = df.iloc[-1]
-    atr = last["ATR"] if not np.isnan(last["ATR"]) else current_price * 0.02
-    recent = df.tail(252) if len(df) > 252 else df
-    week52_high = recent["High"].max()
-    week52_low = recent["Low"].min()
+# ============ PERFORMANCE: CACHE WRAPPERS ============
 
-    sma50 = last["SMA50"] if not np.isnan(last["SMA50"]) else current_price
-    sma200 = last["SMA200"] if not np.isnan(last["SMA200"]) else current_price
-    bb_low = last["BB_low"] if not np.isnan(last["BB_low"]) else current_price * 0.95
-    bb_high = last["BB_high"] if not np.isnan(last["BB_high"]) else current_price * 1.05
+def _calc_targets_internal(current_price, fair_value, atr, sma50, sma200,
+                           bb_low, bb_high, week52_high, week52_low):
+    """Pure function - kan caches sikkert"""
+    if np.isnan(atr): atr = current_price * 0.02
+    if np.isnan(sma50): sma50 = current_price
+    if np.isnan(sma200): sma200 = current_price
+    if np.isnan(bb_low): bb_low = current_price * 0.95
+    if np.isnan(bb_high): bb_high = current_price * 1.05
 
     # === STOP-LOSS: ALTID under current_price ===
-    # Standard: 2 ATR under nuværende pris
     stop_loss = current_price - 2 * atr
-
-    # Hvis SMA200 er UNDER prisen (uptrend), kan vi bruge den som tightere support
     if sma200 < current_price:
         sma_stop = sma200 - 0.5 * atr
-        # Brug kun hvis det giver et tightere stop end 2 ATR
         if sma_stop > stop_loss and sma_stop < current_price:
             stop_loss = sma_stop
-
-    # Sikkerhedsnet: stop SKAL være under prisen (max -1%)
     stop_loss = min(stop_loss, current_price * 0.99)
-    # Men ikke mere end 15% under
     stop_loss = max(stop_loss, current_price * 0.85)
 
     # === KØB ZONE: ALTID ≤ current_price ===
-    # Øverste grænse: lige under nuværende pris
     buy_zone_high = current_price * 0.99
-    # Nederste grænse: 1.5 ATR under (typisk pullback)
     buy_zone_low = current_price - 1.5 * atr
-
-    # Hvis BB_low er endnu lavere (pris allerede tæt på BB), brug det
     if bb_low < buy_zone_low and bb_low > current_price * 0.85:
         buy_zone_low = bb_low
-
-    # Sikkerhed: buy_low < buy_high
     if buy_zone_low >= buy_zone_high:
         buy_zone_low = buy_zone_high * 0.97
 
-    # === KORT MÅL (1-3 mdr) ===
+    # === KORT MÅL ===
     target_short = max(bb_high, current_price * 1.05)
-    # Maks 15% over current for "kort"
     target_short = min(target_short, current_price * 1.15)
 
-    # === LANG MÅL (6-12 mdr) ===
+    # === LANG MÅL ===
     if fair_value and fair_value > current_price * 1.05:
         target_long = fair_value
     else:
@@ -266,6 +247,44 @@ def calculate_price_targets(df, current_price, fair_value=None):
     }
 
 
+@st.cache_data(ttl=600, show_spinner=False, max_entries=300)
+def dcf_cached(fcf: float, shares: float, debt: float, cash: float,
+               g: float, dr: float, tg: float, years: int = 10):
+    """Cached DCF - kun primitive args, så slider-spam bliver instant"""
+    if not fcf or fcf <= 0 or not shares:
+        return None
+    cfs = []
+    current_fcf = fcf
+    for y in range(1, years + 1):
+        gy = g - (g - tg) * (y / years)
+        current_fcf = current_fcf * (1 + gy)
+        cfs.append(current_fcf / ((1 + dr) ** y))
+    tv = (current_fcf * (1 + tg)) / (dr - tg)
+    pv_tv = tv / ((1 + dr) ** years)
+    ev = sum(cfs) + pv_tv
+    return (ev - debt + cash) / shares
+
+# ============ END PERFORMANCE ============
+
+
+def calculate_price_targets(df, current_price, fair_value=None):
+    """FIXED + CACHED: Stop-loss/buy-zone er ALTID under current_price"""
+    last = df.iloc[-1]
+    recent = df.tail(252) if len(df) > 252 else df
+
+    return _calc_targets_internal(
+        current_price=current_price,
+        fair_value=fair_value,
+        atr=float(last["ATR"]) if not np.isnan(last["ATR"]) else float("nan"),
+        sma50=float(last["SMA50"]) if not np.isnan(last["SMA50"]) else float("nan"),
+        sma200=float(last["SMA200"]) if not np.isnan(last["SMA200"]) else float("nan"),
+        bb_low=float(last["BB_low"]) if not np.isnan(last["BB_low"]) else float("nan"),
+        bb_high=float(last["BB_high"]) if not np.isnan(last["BB_high"]) else float("nan"),
+        week52_high=float(recent["High"].max()),
+        week52_low=float(recent["Low"].min()),
+    )
+
+
 def estimate_days_to_target(current_price, target_price, hist):
     """Estimer antal dage til target baseret på recent momentum + volatilitet"""
     if hist is None or len(hist) < 30:
@@ -275,26 +294,20 @@ def estimate_days_to_target(current_price, target_price, hist):
     if abs(pct_to_target) < 0.001:
         return 0
 
-    # 30-dages momentum
     mom_30d = (hist["Close"].iloc[-1] / hist["Close"].iloc[-30] - 1)
     daily_30 = mom_30d / 30
 
-    # 90-dages momentum (mere stabilt)
     if len(hist) >= 90:
         mom_90d = (hist["Close"].iloc[-1] / hist["Close"].iloc[-90] - 1)
         daily_90 = mom_90d / 90
-        # Vægtet gennemsnit (30d får mest vægt for kort sigt)
         avg_daily = daily_30 * 0.6 + daily_90 * 0.4
     else:
         avg_daily = daily_30
 
-    # Hvis momentum er negativ men target er positiv, brug volatilitet som fallback
     if avg_daily <= 0 and pct_to_target > 0:
         daily_vol = hist["Close"].pct_change().std()
-        # Antag positiv drift baseret på volatilitet (svarer til ~10% årligt afkast)
         avg_daily = max(0.0004, daily_vol * 0.08)
     elif avg_daily >= 0 and pct_to_target < 0:
-        # Reverseret case
         daily_vol = hist["Close"].pct_change().std()
         avg_daily = min(-0.0004, -daily_vol * 0.08)
 
@@ -303,10 +316,9 @@ def estimate_days_to_target(current_price, target_price, hist):
 
     days = pct_to_target / avg_daily
 
-    # Begræns til realistic range
     if days < 0:
         return None
-    return max(7, min(int(days), 730))  # 1 uge til 2 år
+    return max(7, min(int(days), 730))
 
 
 def generate_action_plan(rec, score, current_price, targets, hist, currency="USD",
@@ -314,26 +326,16 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
                         shares=None, fx_to_dkk=None):
     """
     Genererer en konkret handleplan med:
-    - Klare steps
-    - Datoer baseret på momentum
-    - Risk/reward ratio
-    - Konsistens-check (DCF vs anbefaling)
-    - Total investering & forventet gevinst
-    - DKK-konvertering
+    - Klare steps, datoer, risk/reward, konsistens-check, totals, DKK-konvertering
     """
     today = pd.Timestamp.now()
 
     plan = {
-        "rec": rec,
-        "score": score,
-        "steps": [],
-        "risk_reward": None,
-        "warnings": [],
-        "summary": "",
+        "rec": rec, "score": score, "steps": [],
+        "risk_reward": None, "warnings": [], "summary": "",
         "totals": None,
     }
 
-    # Hjælpefunktion: format pris med DKK
     def fmt_price(usd_val):
         s = f"**{usd_val:,.2f} {currency}**"
         if fx_to_dkk and currency != "DKK":
@@ -376,19 +378,16 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
                 "ratio_long": reward_long / risk if risk > 0 else 0,
             }
 
-    # === TOTALS (hvis vi har shares) ===
+    # === TOTALS ===
     if shares and shares > 0 and ("KØB" in rec):
         total_invest_usd = shares * current_price
-        # Hvis 1/3 sælges på short target, 1/3 på long, 1/3 lader vi køre (estimat: long target)
         shares_per_third = shares / 3
 
-        # Profit ved hvert target
         profit_short = shares_per_third * (targets["target_short"] - current_price)
         profit_long = shares_per_third * (targets["target_long"] - current_price)
-        profit_moon = shares_per_third * (targets["target_long"] * 1.15 - current_price)  # +15% over long
+        profit_moon = shares_per_third * (targets["target_long"] * 1.15 - current_price)
         total_profit_usd = profit_short + profit_long + profit_moon
 
-        # Max tab (hvis stop ramt før gevinst)
         max_loss_usd = shares * (current_price - targets["stop_loss"])
 
         plan["totals"] = {
@@ -426,7 +425,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
         date_long = "6-12 mdr (estimat)"
         time_long_str = "6-12 mdr"
 
-    # === STEPS PR. ANBEFALING ===
+    # === STEPS ===
     if "STÆRKT KØB" in rec or "KØB" in rec:
         rr = plan["risk_reward"]
         if rr and rr["ratio_short"] < 1.5:
@@ -440,7 +439,6 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
             f"(score: {f_score}/100) og teknisk billede (score: {t_score}/100)."
         )
 
-        # Build steps med shares-info hvis tilgængelig
         shares_text = f"{shares} aktier" if shares else "din position"
         third_text = f"{int(shares/3)} aktier" if shares and shares >= 3 else "1/3 af positionen"
 
@@ -547,7 +545,7 @@ def generate_action_plan(rec, score, current_price, targets, hist, currency="USD
 
 
 def dcf_valuation(info, g, dr, tg, years=10):
-    """DCF med fallback: FCF → operating cashflow → net income"""
+    """DCF med fallback chain + caching"""
     shares = safe(info, "sharesOutstanding")
     if not shares:
         return None
@@ -559,17 +557,15 @@ def dcf_valuation(info, g, dr, tg, years=10):
     if not fcf or fcf <= 0:
         ocf = safe(info, "operatingCashflow")
         if ocf and ocf > 0:
-            # Antag capex ~25% af OCF (industri-gennemsnit)
             fcf = ocf * 0.75
 
-    # Fallback 2: Net income (mindre præcist)
+    # Fallback 2: Net income
     if not fcf or fcf <= 0:
         ni = safe(info, "netIncomeToCommon") or safe(info, "netIncome")
         if ni and ni > 0:
-            # Net income er lidt højere end FCF typisk
             fcf = ni * 0.85
 
-    # Fallback 3: Earnings × shares
+    # Fallback 3: EPS × shares
     if not fcf or fcf <= 0:
         eps = safe(info, "trailingEps") or safe(info, "earningsPerShare")
         if eps and eps > 0:
@@ -578,17 +574,11 @@ def dcf_valuation(info, g, dr, tg, years=10):
     if not fcf or fcf <= 0:
         return None
 
-    cfs = []
-    for y in range(1, years + 1):
-        gy = g - (g - tg) * (y / years)
-        fcf = fcf * (1 + gy)
-        cfs.append(fcf / ((1 + dr) ** y))
-    tv = (fcf * (1 + tg)) / (dr - tg)
-    pv_tv = tv / ((1 + dr) ** years)
-    ev = sum(cfs) + pv_tv
     debt = safe(info, "totalDebt", 0) or 0
     cash = safe(info, "totalCash", 0) or 0
-    return (ev - debt + cash) / shares
+
+    return dcf_cached(float(fcf), float(shares), float(debt), float(cash),
+                      float(g), float(dr), float(tg), int(years))
 
 
 def risk_metrics(hist):
@@ -607,6 +597,7 @@ def risk_metrics(hist):
 
 
 def monte_carlo(hist, days=252, sims=300):
+    """Vektoriseret Monte Carlo"""
     r = hist["Close"].pct_change().dropna()
     mu, sigma = r.mean(), r.std()
     lp = hist["Close"].iloc[-1]
