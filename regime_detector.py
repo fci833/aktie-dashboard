@@ -1,6 +1,6 @@
-"""Market regime detection - detekterer bull/bear/sideways/volatile markeder.
+"""Market regime detection - NU MED smart benchmark-valg baseret på country/exchange.
 
-Integreres i scoring så vægte og tærskler justeres dynamisk baseret på markedsforhold.
+Detekterer bull/bear/sideways/volatile markeder med valgbar eller automatisk benchmark.
 """
 import pandas as pd
 import numpy as np
@@ -32,27 +32,118 @@ REGIME_DESCRIPTIONS = {
     "UNKNOWN": "Kunne ikke bestemme regime. Bruger standard-vægte.",
 }
 
+# 🆕 BENCHMARK MAP: country/exchange → benchmark ticker + label
+BENCHMARK_MAP = {
+    # USA
+    "United States": ("SPY", "S&P 500"),
+    "US":            ("SPY", "S&P 500"),
+    
+    # Danmark
+    "Denmark":       ("^OMXC25", "OMXC25"),
+    "DK":            ("^OMXC25", "OMXC25"),
+    
+    # Sverige
+    "Sweden":        ("^OMX", "OMX Stockholm"),
+    "SE":            ("^OMX", "OMX Stockholm"),
+    
+    # Norge
+    "Norway":        ("^OSEAX", "Oslo Børs"),
+    "NO":            ("^OSEAX", "Oslo Børs"),
+    
+    # Tyskland
+    "Germany":       ("^GDAXI", "DAX"),
+    "DE":            ("^GDAXI", "DAX"),
+    
+    # UK
+    "United Kingdom": ("^FTSE", "FTSE 100"),
+    "GB":            ("^FTSE", "FTSE 100"),
+    
+    # Frankrig
+    "France":        ("^FCHI", "CAC 40"),
+    "FR":            ("^FCHI", "CAC 40"),
+    
+    # Holland
+    "Netherlands":   ("^AEX", "AEX"),
+    "NL":            ("^AEX", "AEX"),
+    
+    # Schweiz
+    "Switzerland":   ("^SSMI", "SMI"),
+    "CH":            ("^SSMI", "SMI"),
+    
+    # Japan
+    "Japan":         ("^N225", "Nikkei 225"),
+    "JP":            ("^N225", "Nikkei 225"),
+    
+    # Hong Kong / Kina
+    "Hong Kong":     ("^HSI", "Hang Seng"),
+    "HK":            ("^HSI", "Hang Seng"),
+    "China":         ("000001.SS", "Shanghai Comp"),
+    "CN":            ("000001.SS", "Shanghai Comp"),
+    
+    # Generel Europa fallback
+    "Europe":        ("^STOXX50E", "Euro Stoxx 50"),
+    "EU":            ("^STOXX50E", "Euro Stoxx 50"),
+}
+
+# Suffix-baseret fallback (når country mangler)
+SUFFIX_TO_BENCHMARK = {
+    ".CO": ("^OMXC25", "OMXC25"),
+    ".ST": ("^OMX", "OMX Stockholm"),
+    ".OL": ("^OSEAX", "Oslo Børs"),
+    ".DE": ("^GDAXI", "DAX"),
+    ".F":  ("^GDAXI", "DAX"),
+    ".L":  ("^FTSE", "FTSE 100"),
+    ".PA": ("^FCHI", "CAC 40"),
+    ".AS": ("^AEX", "AEX"),
+    ".SW": ("^SSMI", "SMI"),
+    ".T":  ("^N225", "Nikkei 225"),
+    ".HK": ("^HSI", "Hang Seng"),
+}
+
+
+def get_benchmark_for_ticker(ticker: str = None, country: str = None):
+    """
+    Returnér (benchmark_ticker, label) baseret på country eller ticker-suffix.
+    
+    Prioritet:
+    1. Country (mest pålidelig)
+    2. Ticker suffix (.CO → OMXC25)
+    3. Default: SPY
+    """
+    # 1. Country baseret
+    if country and country in BENCHMARK_MAP:
+        return BENCHMARK_MAP[country]
+    
+    # 2. Suffix baseret
+    if ticker:
+        ticker_upper = ticker.upper()
+        for suffix, (bench, label) in SUFFIX_TO_BENCHMARK.items():
+            if ticker_upper.endswith(suffix):
+                return bench, label
+    
+    # 3. Default
+    return "SPY", "S&P 500"
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def detect_market_regime(benchmark="SPY"):
+def detect_market_regime(benchmark="SPY", benchmark_label=None):
     """
-    Detekterer markedsregime baseret på benchmark (default S&P 500).
-
-    Logik:
-    - VOLATILE: 30d volatilitet > 30% (annualiseret)
-    - BULL: pris > SMA50 > SMA200, 6m momentum > 5%
-    - BEAR: pris < SMA50, pris < SMA200, 6m momentum < -5%
-    - SIDEWAYS: alt andet
-
-    Returns:
-        regime: str
-        confidence: int (0-100)
-        metrics: dict med detaljer
+    Detekterer markedsregime baseret på benchmark.
+    
+    Args:
+        benchmark: ticker for benchmark (default SPY)
+        benchmark_label: pænt label til UI (default = benchmark)
     """
+    if benchmark_label is None:
+        benchmark_label = benchmark
+    
     try:
         bench = yf.Ticker(benchmark).history(period="1y")
         if bench.empty or len(bench) < 200:
-            return "UNKNOWN", 0, {}
+            # Fallback til SPY hvis benchmark fejler
+            if benchmark != "SPY":
+                return detect_market_regime("SPY", "S&P 500 (fallback)")
+            return "UNKNOWN", 0, {"benchmark_label": benchmark_label}
 
         close = bench["Close"]
         sma50 = close.rolling(50).mean()
@@ -107,6 +198,7 @@ def detect_market_regime(benchmark="SPY"):
 
         return regime, confidence, {
             "benchmark": benchmark,
+            "benchmark_label": benchmark_label,
             "spy_price": price,
             "sma50": sma50_val,
             "sma200": sma200_val,
@@ -122,15 +214,71 @@ def detect_market_regime(benchmark="SPY"):
         }
     except Exception as e:
         print(f"[detect_market_regime] {e}")
-        return "UNKNOWN", 0, {}
+        # Fallback til SPY
+        if benchmark != "SPY":
+            return detect_market_regime("SPY", "S&P 500 (fallback)")
+        return "UNKNOWN", 0, {"benchmark_label": benchmark_label}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def detect_combined_regime(ticker: str = None, country: str = None):
+    """
+    🆕 Smart regime detection: kombinerer LOKAL + GLOBAL regime.
+    
+    Returns:
+        regime: combined regime
+        confidence: 0-100
+        metrics: dict med både lokal og global info
+    """
+    # 1. Find lokalt benchmark
+    local_bench, local_label = get_benchmark_for_ticker(ticker, country)
+    
+    # 2. Detect lokalt
+    local_regime, local_conf, local_metrics = detect_market_regime(local_bench, local_label)
+    
+    # 3. Detect global (SPY) hvis lokal ikke er SPY
+    if local_bench == "SPY":
+        # Allerede US-aktie, brug bare lokal
+        local_metrics["is_combined"] = False
+        return local_regime, local_conf, local_metrics
+    
+    global_regime, global_conf, global_metrics = detect_market_regime("SPY", "S&P 500")
+    
+    # 4. Kombinér: global vægter 30%, lokal 70%
+    # Prioritér det "værste" regime hvis de er forskellige (forsigtighedsprincip)
+    severity = {
+        "BULL": 0,
+        "SIDEWAYS": 1,
+        "VOLATILE": 2,
+        "BEAR": 3,
+        "UNKNOWN": 1,
+    }
+    
+    if severity.get(global_regime, 1) > severity.get(local_regime, 1):
+        # Global er værre — flyt mod global
+        combined_regime = global_regime
+        combined_conf = int(local_conf * 0.5 + global_conf * 0.5)
+    else:
+        # Lokal er værre eller ens — brug lokal
+        combined_regime = local_regime
+        combined_conf = int(local_conf * 0.7 + global_conf * 0.3)
+    
+    return combined_regime, combined_conf, {
+        **local_metrics,
+        "is_combined": True,
+        "local_regime": local_regime,
+        "local_confidence": local_conf,
+        "local_label": local_label,
+        "global_regime": global_regime,
+        "global_confidence": global_conf,
+        "global_label": "S&P 500",
+        "benchmark_label": f"{local_label} + S&P 500",
+    }
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def detect_crypto_regime(benchmark="BTC-USD"):
-    """
-    Krypto-specifikt regime baseret på BTC.
-    Krypto er mere volatilt så tærskler er anderledes.
-    """
+    """Krypto-specifikt regime baseret på BTC."""
     try:
         bench = yf.Ticker(benchmark).history(period="1y")
         if bench.empty or len(bench) < 100:
@@ -144,25 +292,21 @@ def detect_crypto_regime(benchmark="BTC-USD"):
         sma50_val = float(sma50.iloc[-1])
         sma200_val = float(sma200.iloc[-1])
 
-        # Volatilitet (annualiseret) - krypto er mere volatilt
         returns = close.pct_change().dropna()
         vol_30d = float(returns.tail(30).std() * np.sqrt(365) * 100) if len(returns) >= 30 else 0
 
-        # Drawdown
         peak = close.cummax()
         drawdown = float((close.iloc[-1] / peak.iloc[-1] - 1) * 100)
 
-        # Momentum
         if len(close) >= 90:
             mom_3m = float((close.iloc[-1] / close.iloc[-90] - 1) * 100)
         else:
             mom_3m = 0
 
-        # Krypto-specifikke tærskler (mere volatilt)
         if vol_30d > 80:
             regime = "VOLATILE"
             confidence = min(100, int(vol_30d))
-        elif drawdown < -25:  # Krypto kan tabe meget mere
+        elif drawdown < -25:
             regime = "BEAR"
             confidence = min(100, int(50 + abs(drawdown)))
         elif price > sma50_val and price > sma200_val and mom_3m > 15:
@@ -177,6 +321,7 @@ def detect_crypto_regime(benchmark="BTC-USD"):
 
         return regime, confidence, {
             "benchmark": benchmark,
+            "benchmark_label": "Bitcoin",
             "btc_price": price,
             "sma50": sma50_val,
             "sma200": sma200_val,
@@ -190,70 +335,35 @@ def detect_crypto_regime(benchmark="BTC-USD"):
 
 
 def adjust_weights_for_regime(regime, asset_type="stock"):
-    """
-    Justér fundamental/teknisk vægte baseret på regime.
-
-    Returns:
-        (fundamental_weight, technical_weight)
-    """
+    """Justér fundamental/teknisk vægte baseret på regime."""
     if asset_type == "crypto":
-        # Krypto har anderledes vægte (mere teknisk-drevet)
         weights = {
-            "BULL":     (0.30, 0.70),  # Krypto bull = pure momentum
-            "BEAR":     (0.55, 0.45),  # Bear: kig på fundamentals
-            "VOLATILE": (0.50, 0.50),  # Vær forsigtig
+            "BULL":     (0.30, 0.70),
+            "BEAR":     (0.55, 0.45),
+            "VOLATILE": (0.50, 0.50),
             "SIDEWAYS": (0.40, 0.60),
             "UNKNOWN":  (0.40, 0.60),
         }
     else:
         weights = {
-            "BULL":     (0.45, 0.55),  # Mere teknisk
-            "BEAR":     (0.75, 0.25),  # Meget mere fundamental
-            "VOLATILE": (0.70, 0.30),  # Kvalitet vinder
-            "SIDEWAYS": (0.60, 0.40),  # Standard
+            "BULL":     (0.45, 0.55),
+            "BEAR":     (0.75, 0.25),
+            "VOLATILE": (0.70, 0.30),
+            "SIDEWAYS": (0.60, 0.40),
             "UNKNOWN":  (0.60, 0.40),
         }
     return weights.get(regime, weights["UNKNOWN"])
 
 
 def regime_recommendation(regime, score):
-    """
-    Justér rec-tærskler baseret på regime.
-    I bear markets skal score være HØJERE for KØB.
-    """
+    """Justér rec-tærskler baseret på regime."""
     thresholds = {
-        "BULL": {
-            "STÆRKT KØB": 73,
-            "KØB": 58,
-            "HOLD": 38,
-            "SÆLG": 23,
-        },
-        "BEAR": {
-            "STÆRKT KØB": 80,  # Skal være meget overbevisende
-            "KØB": 70,
-            "HOLD": 50,
-            "SÆLG": 35,
-        },
-        "VOLATILE": {
-            "STÆRKT KØB": 78,
-            "KØB": 65,
-            "HOLD": 45,
-            "SÆLG": 30,
-        },
-        "SIDEWAYS": {
-            "STÆRKT KØB": 75,
-            "KØB": 60,
-            "HOLD": 40,
-            "SÆLG": 25,
-        },
-        "UNKNOWN": {
-            "STÆRKT KØB": 75,
-            "KØB": 60,
-            "HOLD": 40,
-            "SÆLG": 25,
-        },
+        "BULL": {"STÆRKT KØB": 73, "KØB": 58, "HOLD": 38, "SÆLG": 23},
+        "BEAR": {"STÆRKT KØB": 80, "KØB": 70, "HOLD": 50, "SÆLG": 35},
+        "VOLATILE": {"STÆRKT KØB": 78, "KØB": 65, "HOLD": 45, "SÆLG": 30},
+        "SIDEWAYS": {"STÆRKT KØB": 75, "KØB": 60, "HOLD": 40, "SÆLG": 25},
+        "UNKNOWN": {"STÆRKT KØB": 75, "KØB": 60, "HOLD": 40, "SÆLG": 25},
     }
-
     t = thresholds.get(regime, thresholds["UNKNOWN"])
 
     if score >= t["STÆRKT KØB"]:
@@ -269,18 +379,32 @@ def regime_recommendation(regime, score):
 
 
 def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
-    """
-    Render et flot regime-banner i Streamlit.
-    Kald øverst i analyse-views.
-    """
+    """🆕 Render regime-banner — viser nu kombineret lokal+global hvis relevant."""
     color = REGIME_COLORS.get(regime, "#6b7280")
     emoji = REGIME_EMOJI.get(regime, "❓")
     desc = REGIME_DESCRIPTIONS.get(regime, "")
-
-    # Vægte for dette regime
+    
     fund_w, tech_w = adjust_weights_for_regime(regime, asset_type)
+    benchmark_label = metrics.get("benchmark_label", "S&P 500" if asset_type == "stock" else "Bitcoin")
 
-    benchmark_label = "BTC" if asset_type == "crypto" else "S&P 500"
+    # 🆕 Vis combined info hvis relevant
+    is_combined = metrics.get("is_combined", False)
+    
+    if is_combined:
+        local_reg = metrics.get("local_regime", regime)
+        local_label = metrics.get("local_label", "Local")
+        global_reg = metrics.get("global_regime", "?")
+        local_emoji = REGIME_EMOJI.get(local_reg, "")
+        global_emoji = REGIME_EMOJI.get(global_reg, "")
+        
+        sub_info = (
+            f"<div style='font-size:0.85rem;color:#aaa;margin-top:0.4rem'>"
+            f"📍 <b>{local_label}:</b> {local_emoji} {local_reg} · "
+            f"🌍 <b>S&P 500:</b> {global_emoji} {global_reg}"
+            f"</div>"
+        )
+    else:
+        sub_info = ""
 
     banner_html = f"""
     <div style='background:linear-gradient(90deg, {color}33 0%, {color}11 100%);
@@ -295,6 +419,7 @@ def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
                 <div style='color:#aaa;font-size:0.9rem;margin-top:0.2rem'>
                     {desc}
                 </div>
+                {sub_info}
             </div>
             <div style='text-align:right'>
                 <div style='font-size:0.8rem;color:#888'>CONFIDENCE</div>
@@ -319,7 +444,7 @@ def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
         with st.expander("📊 Regime-detaljer (klik)"):
             mcols = st.columns(4)
             if "spy_price" in metrics:
-                mcols[0].metric("Benchmark pris", f"${metrics['spy_price']:.2f}")
+                mcols[0].metric(f"{benchmark_label} pris", f"{metrics['spy_price']:,.2f}")
             if "btc_price" in metrics:
                 mcols[0].metric("BTC pris", f"${metrics['btc_price']:,.0f}")
             if "vol_30d" in metrics:
@@ -336,3 +461,23 @@ def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
                 tcols[0].metric("Pris > SMA50", "✅" if metrics["above_sma50"] else "❌")
                 tcols[1].metric("Pris > SMA200", "✅" if metrics["above_sma200"] else "❌")
                 tcols[2].metric("SMA50 > SMA200", "✅" if metrics.get("sma50_above_200") else "❌")
+            
+            # Vis combined-detaljer
+            if is_combined:
+                st.markdown("---")
+                st.markdown("**🌐 Kombineret regime-analyse:**")
+                ccols = st.columns(2)
+                ccols[0].metric(
+                    f"📍 {metrics.get('local_label')}",
+                    f"{REGIME_EMOJI.get(metrics.get('local_regime'), '')} {metrics.get('local_regime')}",
+                    f"{metrics.get('local_confidence')}% confidence"
+                )
+                ccols[1].metric(
+                    f"🌍 {metrics.get('global_label')}",
+                    f"{REGIME_EMOJI.get(metrics.get('global_regime'), '')} {metrics.get('global_regime')}",
+                    f"{metrics.get('global_confidence')}% confidence"
+                )
+                st.caption(
+                    "💡 Kombineret regime vægter lokal 70% og global 30%. "
+                    "Hvis global er værre end lokal, bruges global (forsigtighedsprincip)."
+                )
