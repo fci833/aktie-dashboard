@@ -1,4 +1,4 @@
-"""Aktie Dashboard - Hovedapp med Krypto + Daily Brief"""
+"""Aktie Dashboard - Hovedapp med Krypto + Daily Brief + News Sentiment"""
 import time
 import numpy as np
 import pandas as pd
@@ -52,6 +52,13 @@ from daily_brief import (
     get_market_pulse, analyze_watchlist,
     get_recent_rating_changes, get_top_opportunities,
     calculate_position_size,
+)
+
+# 🆕 NEWS SENTIMENT
+from news_sentiment import (
+    get_news_sentiment,
+    render_sentiment_summary,
+    render_news_feed,
 )
 
 import warnings
@@ -165,7 +172,6 @@ def run_diagnostics(ticker):
 def goto_analysis(ticker):
     st.session_state.current_ticker = ticker
     st.session_state.active_view = "📊 Analyse"
-    # Tilføj til søge-historik
     add_to_search_history(ticker)
     st.rerun()
 
@@ -180,9 +186,7 @@ def add_to_search_history(ticker):
         history.remove(ticker_clean)
     history.insert(0, ticker_clean)
     st.session_state.search_history = history[:10]
-
-
-# ============ SIDEBAR ============
+    # ============ SIDEBAR ============
 
 with st.sidebar:
     st.markdown("### 📡 Datakilder")
@@ -235,7 +239,6 @@ with st.sidebar:
     st.caption("🎲 Monte Carlo: **2 år**")
 
     st.markdown("---")
-    # Dev mode toggle
     st.session_state.dev_mode = st.checkbox(
         "🐛 Dev mode (vis perf-stats)",
         value=st.session_state.dev_mode,
@@ -384,7 +387,262 @@ if st.session_state.active_view == "🏠 Hjem":
             )
         else:
             st.caption(f"📋 {len(st.session_state.watchlist)} tickers i watchlist")
-            # ⚡ PERFORMANCE: Bumped max_workers fra 4 → 8 for hurtigere parallel fetch
+            with st.spinner(f"⚡ Analyserer {len(st.session_state.watchlist)} tickers parallelt..."):
+                wdf = analyze_watchlist(st.session_state.watchlist, max_workers=8)
+            if wdf.empty:
+                st.warning("Kunne ikke analysere watchlist (data-fejl?)")
+            else:
+                buy_df = wdf[wdf["score"] >= 60]
+                hold_df = wdf[(wdf["score"] >= 40) & (wdf["score"] < 60)]
+                sell_df = wdf[wdf["score"] < 40]
+
+                wsum_cols = st.columns(3)
+                wsum_cols[0].metric("🟢 KØB-signaler", len(buy_df))
+                wsum_cols[1].metric("🟡 HOLD", len(hold_df))
+                wsum_cols[2].metric("🔴 SÆLG-signaler", len(sell_df))
+
+                if not buy_df.empty:
+                    st.markdown("#### 🟢 KØB i din watchlist")
+                    for idx, (_, row) in enumerate(buy_df.iterrows()):
+                        cols = st.columns([1, 3, 1, 1, 1])
+                        cols[0].markdown(
+                            f"<div style='background:#16a34a;color:white;padding:0.4rem;"
+                            f"border-radius:8px;text-align:center;font-weight:bold'>{row['score']:.0f}</div>",
+                            unsafe_allow_html=True
+                        )
+                        cols[1].markdown(f"**{row['ticker']}** {row['type']}")
+                        cols[1].caption(str(row['name'])[:50])
+                        cols[2].metric("Pris", f"{row['price']:.2f}", f"{row['change_%']:+.2f}%",
+                                       label_visibility="collapsed")
+                        cols[3].markdown(f"<div style='text-align:center'>{row['recommendation']}</div>",
+                                        unsafe_allow_html=True)
+                        if cols[4].button("📊", key=f"wbuy_{row['ticker']}_{idx}", use_container_width=True):
+                            goto_analysis(row["ticker"])
+
+                if not sell_df.empty:
+                    with st.expander(f"🔴 SÆLG-signaler ({len(sell_df)})"):
+                        for idx, (_, row) in enumerate(sell_df.iterrows()):
+                            cols = st.columns([1, 3, 1, 1, 1])
+                            cols[0].markdown(
+                                f"<div style='background:#ef4444;color:white;padding:0.4rem;"
+                                f"border-radius:8px;text-align:center;font-weight:bold'>{row['score']:.0f}</div>",
+                                unsafe_allow_html=True
+                            )
+                            cols[1].markdown(f"**{row['ticker']}**")
+                            cols[1].caption(str(row['name'])[:40])
+                            cols[2].metric("Pris", f"{row['price']:.2f}", f"{row['change_%']:+.2f}%",
+                                           label_visibility="collapsed")
+                            cols[3].markdown(f"<div style='text-align:center'>{row['recommendation']}</div>",
+                                            unsafe_allow_html=True)
+                            if cols[4].button("📊", key=f"wsell_{row['ticker']}_{idx}", use_container_width=True):
+                                goto_analysis(row["ticker"])
+
+                if not hold_df.empty:
+                    with st.expander(f"🟡 HOLD ({len(hold_df)})"):
+                        for idx, (_, row) in enumerate(hold_df.iterrows()):
+                            cols = st.columns([1, 3, 1, 1, 1])
+                            cols[0].markdown(f"**{row['score']:.0f}**")
+                            cols[1].markdown(f"**{row['ticker']}**")
+                            cols[1].caption(str(row['name'])[:40])
+                            cols[2].metric("Pris", f"{row['price']:.2f}", f"{row['change_%']:+.2f}%",
+                                           label_visibility="collapsed")
+                            cols[3].markdown(f"<div style='text-align:center'>{row['recommendation']}</div>",
+                                            unsafe_allow_html=True)
+                            if cols[4].button("📊", key=f"whold_{row['ticker']}_{idx}", use_container_width=True):
+                                goto_analysis(row["ticker"])
+
+    with action_tabs[2]:
+        changes = get_recent_rating_changes()
+        if changes is None:
+            st.info(
+                "💡 **For få snapshots til at vise ændringer.**\n\n"
+                "👉 Kør screeneren minimum 2 gange (forskellige dage) for at se rating-ændringer her."
+            )
+        else:
+            st.caption(f"🔄 Sammenligning: {changes['ts_prev'][:10]} → {changes['ts_now'][:10]}")
+            up_count = len(changes["upgraded"])
+            down_count = len(changes["downgraded"])
+            cc = st.columns(2)
+            cc[0].metric("📈 Opgraderet", up_count)
+            cc[1].metric("📉 Nedgraderet", down_count)
+
+            if up_count == 0 and down_count == 0:
+                st.success("✅ Ingen rating-ændringer siden sidst")
+            else:
+                if up_count > 0:
+                    st.markdown("#### 📈 Opgraderet (køb-vinduer åbner)")
+                    up_disp = changes["upgraded"][[
+                        c for c in ["ticker", "name", "recommendation_prev", "recommendation_now",
+                                    "score_change", "price_change_%"]
+                        if c in changes["upgraded"].columns
+                    ]].rename(columns={
+                        "recommendation_prev": "Var", "recommendation_now": "Nu",
+                        "score_change": "Score Δ", "price_change_%": "Pris Δ%",
+                    })
+                    for col in ["Score Δ", "Pris Δ%"]:
+                        if col in up_disp.columns:
+                            up_disp[col] = pd.to_numeric(up_disp[col], errors="coerce").round(2)
+                    st.dataframe(up_disp, use_container_width=True, hide_index=True)
+
+                if down_count > 0:
+                    st.markdown("#### 📉 Nedgraderet (overvej salg)")
+                    down_disp = changes["downgraded"][[
+                        c for c in ["ticker", "name", "recommendation_prev", "recommendation_now",
+                                    "score_change", "price_change_%"]
+                        if c in changes["downgraded"].columns
+                    ]].rename(columns={
+                        "recommendation_prev": "Var", "recommendation_now": "Nu",
+                        "score_change": "Score Δ", "price_change_%": "Pris Δ%",
+                    })
+                    for col in ["Score Δ", "Pris Δ%"]:
+                        if col in down_disp.columns:
+                            down_disp[col] = pd.to_numeric(down_disp[col], errors="coerce").round(2)
+                    st.dataframe(down_disp, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown("### ⚡ Hurtige genveje")
+    quick_cols = st.columns(4)
+    if quick_cols[0].button("🔎 Kør screener nu", use_container_width=True, key="qg_screener"):
+        st.session_state.active_view = "🔎 Screener"
+        st.rerun()
+    if quick_cols[1].button("🪙 Krypto-overblik", use_container_width=True, key="qg_crypto"):
+        st.session_state.active_view = "🪙 Krypto"
+        st.rerun()
+    if quick_cols[2].button("🔍 Søg ticker", use_container_width=True, key="qg_search"):
+        st.session_state.active_view = "🔍 Søg ticker"
+        st.rerun()
+    if quick_cols[3].button("📊 Detaljeret analyse", use_container_width=True, key="qg_analysis"):
+        st.session_state.active_view = "📊 Analyse"
+        st.rerun()
+
+    st.markdown("---")
+    st.caption(
+        "⚠️ **Ikke finansiel rådgivning.** Dashboard er et analyseværktøj. "
+        "Lav altid din egen research før investering. Past performance is not indicative of future results."
+    )
+    # ============ HJEM (DAILY BRIEF) ============
+
+if st.session_state.active_view == "🏠 Hjem":
+    today = datetime.now()
+    weekday_dk = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"][today.weekday()]
+    month_dk = ["januar", "februar", "marts", "april", "maj", "juni",
+                "juli", "august", "september", "oktober", "november", "december"][today.month - 1]
+
+    st.markdown(
+        f"<h2 style='margin-bottom:0'>☀️ God morgen!</h2>"
+        f"<p style='color:#888;margin-top:0'>{weekday_dk} {today.day}. {month_dk} {today.year} · "
+        f"Klokken {today.strftime('%H:%M')}</p>",
+        unsafe_allow_html=True
+    )
+
+    refresh_col1, refresh_col2 = st.columns([5, 1])
+    with refresh_col2:
+        if st.button("🔄 Opdater", use_container_width=True, key="refresh_home"):
+            st.cache_data.clear()
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 📊 Market Pulse")
+
+    with st.spinner("Henter markedsdata..."):
+        pulse = get_market_pulse()
+
+    st.markdown(
+        f"<div style='background:{pulse['regime_color']}22;padding:0.8rem 1.2rem;"
+        f"border-radius:10px;border-left:5px solid {pulse['regime_color']};margin-bottom:1rem'>"
+        f"<b>Markedsregime:</b> {pulse['regime']}</div>",
+        unsafe_allow_html=True
+    )
+
+    pulse_cols = st.columns(5)
+
+    spy = pulse["stocks"].get("S&P 500", {})
+    if spy:
+        change = spy["change_%"]
+        emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
+        pulse_cols[0].metric(f"{emoji} S&P 500", f"${spy['price']:,.0f}", f"{change:+.2f}%")
+    else:
+        pulse_cols[0].metric("S&P 500", "N/A")
+
+    nasdaq = pulse["stocks"].get("Nasdaq 100", {})
+    if nasdaq:
+        change = nasdaq["change_%"]
+        emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
+        pulse_cols[1].metric(f"{emoji} Nasdaq 100", f"${nasdaq['price']:,.0f}", f"{change:+.2f}%")
+    else:
+        pulse_cols[1].metric("Nasdaq 100", "N/A")
+
+    vix = pulse["stocks"].get("VIX", {})
+    if vix:
+        v = vix["price"]
+        emoji = "🟢" if v < 15 else "🟡" if v < 25 else "🔴"
+        label = "Lav frygt" if v < 15 else "Normal" if v < 25 else "HØJ FRYGT"
+        pulse_cols[2].metric(f"{emoji} VIX (frygt)", f"{v:.1f}", label)
+    else:
+        pulse_cols[2].metric("VIX", "N/A")
+
+    crypto = pulse.get("crypto", {})
+    if crypto:
+        change = crypto.get("change_24h", 0)
+        emoji = "🟢" if change > 0 else "🔴" if change < 0 else "🟡"
+        pulse_cols[3].metric(f"{emoji} Krypto MC", f"${crypto['total_mc_t']:.2f}T", f"{change:+.2f}%")
+    else:
+        pulse_cols[3].metric("Krypto", "N/A")
+
+    fg = pulse.get("fear_greed", {})
+    if fg:
+        v = fg["value"]
+        emoji = "🔴" if v < 25 else "🟢" if v > 75 else "🟡"
+        pulse_cols[4].metric(f"{emoji} Krypto F&G", f"{v}/100", fg["label"])
+    else:
+        pulse_cols[4].metric("F&G", "N/A")
+
+    st.markdown("---")
+    st.markdown("### 🎯 Dagens Handlinger")
+
+    action_tabs = st.tabs(["🟢 KØB-muligheder", "👁️ Min Watchlist", "🔄 Rating-ændringer"])
+
+    with action_tabs[0]:
+        opps = get_top_opportunities(min_score=70, n_max=10)
+        if opps is None:
+            st.info(
+                "💡 **Ingen screener-snapshots fundet endnu.**\n\n"
+                "👉 Gå til **🔎 Screener** → kør en screener → så vises top-muligheder her automatisk!"
+            )
+        elif opps["buys"].empty:
+            st.warning("Ingen aktier i seneste snapshot har score ≥ 70")
+        else:
+            st.caption(f"📊 Fra seneste screening: **{opps['universe']}** · {opps['snapshot_ts'][:10]}")
+            for idx, (_, row) in enumerate(opps["buys"].iterrows()):
+                cols = st.columns([1, 3, 1, 1, 1, 1])
+                score = row.get("overall", 0)
+                score_color = "#16a34a" if score >= 75 else "#22c55e" if score >= 65 else "#eab308"
+                cols[0].markdown(
+                    f"<div style='background:{score_color};color:white;padding:0.4rem;"
+                    f"border-radius:8px;text-align:center;font-weight:bold'>{score:.0f}</div>",
+                    unsafe_allow_html=True
+                )
+                cols[1].markdown(f"**{row['ticker']}**")
+                cols[1].caption(str(row.get("name", ""))[:50])
+                price = row.get("price", 0)
+                change = row.get("change_%", 0)
+                cols[2].metric("Pris", f"{price:.2f}", f"{change:+.2f}%", label_visibility="collapsed")
+                rec = row.get("recommendation", "")
+                cols[3].markdown(f"<div style='text-align:center;font-weight:bold'>{rec}</div>",
+                                unsafe_allow_html=True)
+                cols[4].caption(str(row.get("sector", "?"))[:15])
+                if cols[5].button("📊 Åbn", key=f"home_buy_{row['ticker']}_{idx}", use_container_width=True):
+                    goto_analysis(row["ticker"])
+                st.markdown("<hr style='margin:0.3rem 0;opacity:0.2'>", unsafe_allow_html=True)
+
+    with action_tabs[1]:
+        if not st.session_state.watchlist:
+            st.info(
+                "💡 **Din watchlist er tom.**\n\n"
+                "👉 Hver gang du analyserer en aktie/krypto, tilføjes den automatisk her."
+            )
+        else:
+            st.caption(f"📋 {len(st.session_state.watchlist)} tickers i watchlist")
             with st.spinner(f"⚡ Analyserer {len(st.session_state.watchlist)} tickers parallelt..."):
                 wdf = analyze_watchlist(st.session_state.watchlist, max_workers=8)
             if wdf.empty:
@@ -1269,13 +1527,11 @@ elif st.session_state.active_view == "🪙 Krypto":
                 # ============ KRYPTO ACTION PLAN ============
                 from crypto_analysis import generate_crypto_action_plan
 
-                # FX-kurs USD → DKK
                 fx_crypto = get_fx_rate("USD", "DKK")
 
                 st.markdown("---")
                 st.markdown("## 🎯 SÅDAN HANDLER DU")
 
-                # Investerings-input
                 coins_for_plan = None
                 invest_dkk_crypto = None
                 if "KØB" in rec:
@@ -1299,7 +1555,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                         inv_cols[2].metric("💰 I DKK", f"{actual_invest:,.0f} DKK")
                         inv_cols[3].metric("💵 I USD", f"${coins_for_plan * price:,.2f}")
 
-                # Generer plan
                 plan = generate_crypto_action_plan(
                     rec=rec, score=scores["overall"], current_price=price,
                     targets=targets, hist=hist, symbol=symbol,
@@ -1312,11 +1567,9 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                 st.markdown(f"_{plan['summary']}_")
 
-                # Warnings
                 for warn in plan["warnings"]:
                     st.warning(warn)
 
-                # Investerings-oversigt
                 if plan["totals"]:
                     t = plan["totals"]
                     st.markdown("### 💰 Din investering & forventet gevinst")
@@ -1390,7 +1643,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     if "KØB" in rec:
                         st.info("💡 Indtast et beløb ovenfor for at se forventet gevinst i DKK!")
 
-                # Risk/Reward
                 if plan["risk_reward"]:
                     rr = plan["risk_reward"]
                     st.markdown("### ⚖️ Risk / Reward")
@@ -1411,7 +1663,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                         unsafe_allow_html=True
                     )
 
-                # Steps
                 st.markdown("### 📋 Trin-for-trin handleplan")
                 for step in plan["steps"]:
                     st.markdown(
@@ -1428,7 +1679,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                         unsafe_allow_html=True
                     )
 
-                # Trailing stop info
                 with st.expander("📚 Hvad er TRAILING STOP? (især vigtigt for krypto)"):
                     st.markdown("""
                     **Trailing stop** = "rullende stop-loss" der **følger med opad** når kursen stiger,
@@ -1466,7 +1716,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                     "Krypto kan tabe 50-90% i bear markets — invester KUN hvad du har råd til at tabe. "
                     "Brug ALTID stop-loss til at beskytte din kapital."
                 )
-                # ============ SLUT KRYPTO ACTION PLAN ============
 
                 if symbol == "BTC":
                     halv = btc_halving_analysis(symbol)
@@ -1993,7 +2242,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 st.plotly_chart(fig_hr, use_container_width=True)
         else:
             st.warning("Kunne ikke hente on-chain data")
-          # ============ HOVED-ANALYSE-VIEW ============
+            # ============ HOVED-ANALYSE-VIEW ============
 
 elif st.session_state.active_view == "📊 Analyse":
     c1, c2 = st.columns([4, 1])
@@ -2017,7 +2266,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 ):
                     goto_analysis(hist_ticker)
 
-        # Ryd historik knap
         cols_clear = st.columns([5, 1])
         if cols_clear[1].button("🗑️ Ryd historik", key="clear_search_hist", use_container_width=True):
             st.session_state.search_history = []
@@ -2025,7 +2273,6 @@ elif st.session_state.active_view == "📊 Analyse":
 
     if auto_analyze or st.session_state.current_ticker == ticker_input:
         st.session_state.current_ticker = ticker_input
-        # Tilføj til søgehistorik når der søges
         if auto_analyze and ticker_input:
             add_to_search_history(ticker_input)
     ticker = ticker_input
@@ -2042,7 +2289,6 @@ elif st.session_state.active_view == "📊 Analyse":
             st.session_state.active_view = "🪙 Krypto"
             st.rerun()
 
-    # Performance tracking
     _fetch_start = time.time()
     with st.spinner(f"Henter data for {ticker}..."):
         data = fetch_data(ticker)
@@ -2053,7 +2299,6 @@ elif st.session_state.active_view == "📊 Analyse":
         st.info("👉 Prøv **🔍 Søg ticker** fanen")
         st.stop()
 
-    # Tilføj til historik når data er hentet succesfuldt
     add_to_search_history(ticker)
 
     st.session_state.last_source = data["source"]
@@ -2227,33 +2472,28 @@ elif st.session_state.active_view == "📊 Analyse":
             st.metric("Market Cap", "N/A")
 
     # ============================================================
-        # ============================================================
-    # 🆕 REGIME DETECTION + REGIME-AWARE SCORING (SMART BENCHMARK)
+    # 🆕 REGIME DETECTION + REGIME-AWARE SCORING
     # ============================================================
     from regime_detector import (
         detect_market_regime,
-        detect_combined_regime,  # 🆕 NY: Smart benchmark per ticker/country
+        detect_combined_regime,
         adjust_weights_for_regime,
         regime_recommendation,
         render_regime_banner,
     )
     from analysis import overall_score_with_regime
 
-    # Performance tracking for analyse
     _analysis_start = time.time()
     df_indicators = get_indicators(hist)
     df_technical = filter_by_days(df_indicators, ANALYSIS_PERIODS["technical"])
 
-    # Beregn fundamental + teknisk scores
     f_score, f_details = fundamental_score(info)
     t_score, t_details = technical_score(df_technical)
 
-    # 🆕 REGIME-AWARE OVERALL SCORE MED SMART BENCHMARK
-    # NOVO-B.CO → OMXC25, SAP.DE → DAX, AAPL → S&P 500, etc.
     score_data = overall_score_with_regime(
         f_score, t_score,
-        ticker=ticker,                  # 🆕 Bruges til suffix-detection (.CO, .DE, .L)
-        country=info.get("country"),    # 🆕 Bruges til country-detection (Denmark, Germany)
+        ticker=ticker,
+        country=info.get("country"),
     )
     overall = score_data["overall"]
     regime = score_data["regime"]
@@ -2262,26 +2502,22 @@ elif st.session_state.active_view == "📊 Analyse":
     fund_weight = score_data["fund_weight"]
     tech_weight = score_data["tech_weight"]
 
-    # 🆕 Hent benchmark label til UI (fx "OMXC25 + S&P 500" eller "S&P 500")
     benchmark_label = regime_metrics.get("benchmark_label", "S&P 500")
     is_combined_regime = regime_metrics.get("is_combined", False)
 
-    # Anbefaling baseret på regime
     rec, color = recommendation(overall, regime=regime)
 
     _analysis_time = time.time() - _analysis_start
 
     st.markdown("---")
 
-    # 🆕 VIS REGIME BANNER ØVERST (nu med korrekt lokalt benchmark)
     render_regime_banner(regime, regime_conf, regime_metrics, asset_type="stock")
 
-    st.markdown("")  # Lille spacing
+    st.markdown("")
 
-    # === SCORE CARDS (NU MED REGIME-INFO) ===
+    # === SCORE CARDS ===
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
-        # 🆕 Vis benchmark info i score-kortet
         bench_info = f"vs {benchmark_label}" if benchmark_label else ""
         st.markdown(
             f"<div style='background:{color}22;padding:1.2rem;border-radius:12px;"
@@ -2310,30 +2546,25 @@ elif st.session_state.active_view == "📊 Analyse":
         f"{regime_conf}% conf."
     )
 
-    # 🆕 OPLYSNINGS-BOKS OM REGIME-EFFEKT (nu med benchmark-info)
     if regime in ("BEAR", "VOLATILE"):
         st.info(
             f"💡 **{regime} marked detected** ({benchmark_label}): "
             f"Vægtning er flyttet mod fundamentals "
             f"({int(fund_weight*100)}% vs standard 60%). "
-            f"Tærskler for KØB er hævet for at være mere konservativ. "
-            f"En score på 65 giver derfor måske kun 'HOLD' i stedet for 'KØB'."
+            f"Tærskler for KØB er hævet for at være mere konservativ."
         )
     elif regime == "BULL":
         st.success(
             f"💡 **BULL marked detected** ({benchmark_label}): "
             f"Vægtning er flyttet mod teknisk "
-            f"({int(tech_weight*100)}% vs standard 40%). "
-            f"Momentum-strategier virker bedre i bull markets."
+            f"({int(tech_weight*100)}% vs standard 40%)."
         )
     elif regime == "SIDEWAYS":
         st.info(
             f"💡 **SIDEWAYS marked detected** ({benchmark_label}): "
-            f"Markedet trender ikke klart — balanceret tilgang anbefales. "
-            f"Range-trading og mean reversion strategier kan virke bedre end momentum."
+            f"Markedet trender ikke klart — balanceret tilgang anbefales."
         )
 
-    # 🆕 EKSTRA INFO: Vis hvis vi bruger combined regime (lokal + global)
     if is_combined_regime:
         local_reg = regime_metrics.get("local_regime", "?")
         local_label = regime_metrics.get("local_label", "Local")
@@ -2348,16 +2579,25 @@ elif st.session_state.active_view == "📊 Analyse":
         local_emj = regime_emojis.get(local_reg, "")
         global_emj = regime_emojis.get(global_reg, "")
 
-        # Vis kun hvis local og global er forskellige (interessant info)
         if local_reg != global_reg:
             st.warning(
                 f"🌐 **Divergerende markeder:** "
                 f"📍 {local_label} er {local_emj} **{local_reg}** ({local_conf}% conf.) — "
                 f"🌍 men globalt (S&P 500) er {global_emj} **{global_reg}** ({global_conf}% conf.). "
-                f"Vi bruger **{regime}** (forsigtighedsprincip: vægter 70% lokal + 30% global)."
+                f"Vi bruger **{regime}** (forsigtighedsprincip)."
             )
-       # ============ ACTION PLAN ============
 
+    # ============================================================
+    # 🆕 NEWS SENTIMENT - KOMPAKT OVERSIGT (lige under score-kort)
+    # ============================================================
+    st.markdown("---")
+    company_name = info.get("longName") or info.get("shortName") or ticker
+    with st.spinner("📰 Henter nyheder & sentiment..."):
+        sentiment_data = get_news_sentiment(ticker, company_name=company_name, limit=20)
+
+    render_sentiment_summary(sentiment_data, compact=True)
+
+    # ============ ACTION PLAN ============
     try:
         fv_check = dcf_valuation(info, 0.10, 0.10, 0.025)
         dcf_upside = ((fv_check / price - 1) * 100) if fv_check and price else None
@@ -2409,28 +2649,47 @@ elif st.session_state.active_view == "📊 Analyse":
                 help=f"{shares_for_plan} × {price:.2f} {currency}"
             )
 
-    # 🆕 GENERATE ACTION PLAN MED REGIME
     plan = generate_action_plan(
         rec=rec, score=overall, current_price=price,
         targets=targets_main, hist=hist, currency=currency,
         f_score=f_score, t_score=t_score, dcf_upside=dcf_upside,
         shares=shares_for_plan, fx_to_dkk=fx_for_plan,
-        regime=regime  # 🆕 TILFØJET: Sender markedsregime til action plan
+        regime=regime
     )
 
     st.markdown("---")
     st.markdown("## 🎯 SÅDAN HANDLER DU")
     st.markdown(f"_{plan['summary']}_")
 
-    # 🆕 REGIME-SPECIFIK CONTEXT BOX
+    # 🆕 SENTIMENT-BASERET ADVARSEL I ACTION PLAN
+    if sentiment_data and sentiment_data.get("article_count", 0) >= 3:
+        sent_score = sentiment_data.get("sentiment_score", 0)
+        sent_label = sentiment_data.get("label", "Neutral")
+
+        if "KØB" in rec and sent_score < -0.2:
+            st.warning(
+                f"⚠️ **NYHEDSADVARSEL:** Modellen siger **{rec}**, men nyheds-sentiment "
+                f"er **{sent_label}** ({sent_score:+.2f}). Overvej at vente på bedre "
+                f"nyhedsstrøm før indgang, eller halver position-størrelsen."
+            )
+        elif "SÆLG" in rec and sent_score > 0.3:
+            st.info(
+                f"💡 **NYHEDSDIVERGENS:** Modellen siger **{rec}**, men nyhederne er "
+                f"**{sent_label}** ({sent_score:+.2f}). Måske et turnaround i sigte? "
+                f"Hold øje med nyhederne i Nyheder-fanen."
+            )
+        elif "KØB" in rec and sent_score > 0.3:
+            st.success(
+                f"✅ **POSITIV NYHEDSBEKRÆFTELSE:** Modellen siger **{rec}** og nyheder "
+                f"er **{sent_label}** ({sent_score:+.2f}) — stærkt signal!"
+            )
+
     if regime in ("BEAR", "VOLATILE"):
         st.markdown(
             f"<div style='background:#ef444415;padding:0.8rem 1rem;border-radius:8px;"
             f"border-left:4px solid #ef4444;margin:0.5rem 0'>"
             f"⚠️ <b>{'🐻 BEAR' if regime == 'BEAR' else '⚡ VOLATILE'} MARKED:</b> "
-            f"Vær ekstra forsigtig med position-størrelse. Overvej at "
-            f"<b>halvere normalt risk</b> (1% i stedet for 2%) og brug "
-            f"<b>strammere stop-loss</b>."
+            f"Vær ekstra forsigtig med position-størrelse."
             f"</div>",
             unsafe_allow_html=True
         )
@@ -2438,9 +2697,7 @@ elif st.session_state.active_view == "📊 Analyse":
         st.markdown(
             f"<div style='background:#16a34a15;padding:0.8rem 1rem;border-radius:8px;"
             f"border-left:4px solid #16a34a;margin:0.5rem 0'>"
-            f"🐂 <b>BULL MARKED:</b> Momentum er din ven. "
-            f"Lad vinderne køre længere — overvej at flytte trailing stop "
-            f"<b>højere</b> (8-10% i stedet for 5%) for at fange større opture."
+            f"🐂 <b>BULL MARKED:</b> Momentum er din ven."
             f"</div>",
             unsafe_allow_html=True
         )
@@ -2557,8 +2814,6 @@ elif st.session_state.active_view == "📊 Analyse":
             "🚀 Reward (lang)", f"+{rr['reward_long_pct']:.1f}%"
         )
 
-        # 🆕 REGIME-AWARE R/R THRESHOLDS
-        # I bear/volatile markeder kræves højere R/R for at være "god"
         if regime in ("BEAR", "VOLATILE"):
             excellent_threshold = 4
             good_threshold = 3
@@ -2588,12 +2843,10 @@ elif st.session_state.active_view == "📊 Analyse":
             unsafe_allow_html=True
         )
 
-        # 🆕 R/R RAADGIVNING BASERET PÅ REGIME
         if regime in ("BEAR", "VOLATILE") and rr['ratio_long'] < 3:
             st.warning(
                 f"⚠️ I {regime} marked anbefales R/R ratio på **min. 3:1** — "
-                f"din nuværende er {rr['ratio_long']:.1f}:1. "
-                f"Overvej at vente på bedre indgangspris eller skip denne handel."
+                f"din nuværende er {rr['ratio_long']:.1f}:1."
             )
 
     st.markdown("### 📋 Trin-for-trin handleplan")
@@ -2614,42 +2867,31 @@ elif st.session_state.active_view == "📊 Analyse":
 
     with st.expander("📚 Hvad er TRAILING STOP? (klik for forklaring)"):
         st.markdown("""
-        **Trailing stop** = "rullende stop-loss" der **følger med opad** når kursen stiger,
-        men **bevæger sig aldrig nedad**.
+        **Trailing stop** = "rullende stop-loss" der **følger med opad** når kursen stiger.
 
         ### 📈 Eksempel:
         ```
         Du køber @ 120 USD, stop-loss = 114 USD (-5%)
-
-        ✅ Kurs stiger til 130 USD  →  trailing stop bliver 123 USD (-5% under top)
-        ✅ Kurs stiger til 140 USD  →  trailing stop bliver 133 USD
+        ✅ Kurs stiger til 130 USD  →  trailing stop bliver 123 USD
         ✅ Kurs stiger til 150 USD  →  trailing stop bliver 142 USD
-        🛑 Kurs falder til 142 USD  →  SOLGT automatisk med +22 USD profit!
+        🛑 Kurs falder til 142 USD  →  SOLGT med +22 USD profit!
         ```
 
-        ### 🎯 Hvorfor er det smart?
-        1. **Du låser gevinst automatisk** — ingen grund til at sidde og kigge på skærmen
-        2. **Du beskytter mod store fald** — hvis aktien pludselig styrtdykker
-        3. **Du lader vinderne løbe** — trailing stop'et "ruller" med opad
-
         ### 💼 Hvor sætter man det?
-        - 🇩🇰 **Nordnet** — "Trailing stop" når du opretter ordre
+        - 🇩🇰 **Nordnet** — "Trailing stop"
         - 🇩🇰 **Saxo** — "Trailing stop loss"
         - 🌍 **eToro** — "Trailing stop loss"
         - 🌍 **Interactive Brokers** — "TRAIL"
         """)
 
     st.caption(
-        "⚠️ Datoer og gevinster er **estimater** baseret på historisk momentum og volatilitet. "
-        "Faktisk timing afhænger af markedsforhold, nyheder og earnings. "
-        "Brug altid stop-loss til at beskytte din kapital."
+        "⚠️ Datoer og gevinster er **estimater** baseret på historisk momentum og volatilitet."
     )
 
     st.markdown("---")
     with st.expander("📐 Position Sizing Calculator", expanded=False):
         st.caption("Beregn hvor mange aktier du skal købe baseret på din risk tolerance")
 
-        # 🆕 REGIME-AWARE DEFAULT RISK
         if regime == "BEAR":
             default_risk = 1.0
             risk_help = "🐻 Bear marked: Anbefalet 1% risk pr. trade"
@@ -2732,11 +2974,14 @@ elif st.session_state.active_view == "📊 Analyse":
         else:
             st.warning("Kunne ikke beregne position size (tjek input)")
 
+    # ============================================================
+    # 🆕 MAIN TABS - NU MED "📰 Nyheder" TAB
+    # ============================================================
     st.markdown("---")
     main_tabs = st.tabs([
         "📊 Charts", "🔧 Indikatorer", "💰 Kursmål",
         "📉 Risiko", "🎲 Monte Carlo", "🎯 Backtest",
-        "📋 Detaljer"
+        "📰 Nyheder", "📋 Detaljer"
     ])
 
     # ===== CHARTS =====
@@ -2985,7 +3230,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 st.info("ℹ️ DCF kræver positiv Free Cash Flow data (ikke tilgængelig for denne aktie)")
         except Exception as e:
             st.warning(f"⚠️ DCF kunne ikke beregnes: {str(e)[:100]}")
-            st.caption("Dette sker ofte hvis FCF-data mangler eller er negativ")
 
     # ===== RISIKO =====
     with main_tabs[3]:
@@ -3086,38 +3330,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 xaxis_title="Dage frem"
             )
             st.plotly_chart(fig_m, use_container_width=True)
-
-            with st.expander("📊 Distribution af slutpriser"):
-                fig_hist = go.Figure()
-                fig_hist.add_trace(go.Histogram(
-                    x=final, nbinsx=50,
-                    marker_color="#00d4aa", opacity=0.8, name="Slutpris"
-                ))
-                fig_hist.add_vline(x=lp, line_dash="dash", line_color="white",
-                                    annotation_text=f"Nu: {lp:.2f}")
-                fig_hist.add_vline(x=p50, line_dash="dash", line_color="#00d4aa",
-                                    annotation_text=f"Median: {p50:.2f}")
-                fig_hist.update_layout(
-                    template="plotly_dark", height=400,
-                    title=f"Distribution af slutpriser efter {mc_days} dage",
-                    xaxis_title=f"Pris ({currency})",
-                    yaxis_title="Antal simulationer"
-                )
-                st.plotly_chart(fig_hist, use_container_width=True)
-
-                stats_df = pd.DataFrame([
-                    {"Metric": "Min", "Værdi": f"{final.min():.2f} {currency}",
-                     "% ændring": f"{(final.min()/lp-1)*100:+.1f}%"},
-                    {"Metric": "5% percentil", "Værdi": f"{p5:.2f} {currency}",
-                     "% ændring": f"{(p5/lp-1)*100:+.1f}%"},
-                    {"Metric": "Median (50%)", "Værdi": f"{p50:.2f} {currency}",
-                     "% ændring": f"{(p50/lp-1)*100:+.1f}%"},
-                    {"Metric": "95% percentil", "Værdi": f"{p95:.2f} {currency}",
-                     "% ændring": f"{(p95/lp-1)*100:+.1f}%"},
-                    {"Metric": "Max", "Værdi": f"{final.max():.2f} {currency}",
-                     "% ændring": f"{(final.max()/lp-1)*100:+.1f}%"},
-                ])
-                st.dataframe(stats_df, use_container_width=True, hide_index=True)
         else:
             st.info("ℹ️ Ikke nok data til Monte Carlo simulation")
 
@@ -3173,8 +3385,62 @@ elif st.session_state.active_view == "📊 Analyse":
                 fig_bt.update_layout(template="plotly_dark", height=400)
                 st.plotly_chart(fig_bt, use_container_width=True)
 
-    # ===== DETALJER =====
+    # ===== 🆕 NYHEDER (ny tab) =====
     with main_tabs[6]:
+        st.markdown("### 📰 Seneste nyheder & sentiment-analyse")
+        st.caption(f"Henter automatisk seneste nyhedsartikler om **{company_name}** og analyserer sentiment")
+
+        if sentiment_data is None or sentiment_data.get("article_count", 0) == 0:
+            st.info(
+                "💡 **Ingen nyheder fundet for denne ticker.**\n\n"
+                "Mulige årsager:\n"
+                "- Ticker er for niche / lille\n"
+                "- News API er rate-limited\n"
+                "- Ingen API-key konfigureret\n\n"
+                "Tjek `news_sentiment.py` for konfiguration."
+            )
+        else:
+            # Vis full sentiment summary (ikke compact)
+            render_sentiment_summary(sentiment_data, compact=False)
+
+            st.markdown("---")
+            st.markdown("#### 📑 Nyhedsfeed")
+
+            # Filter-controls
+            filter_cols = st.columns([2, 1, 1])
+            filter_sentiment = filter_cols[0].selectbox(
+                "Filtrér efter sentiment",
+                ["Alle", "🟢 Kun positive", "🔴 Kun negative", "🟡 Kun neutrale"],
+                key="news_filter"
+            )
+            sort_by = filter_cols[1].selectbox(
+                "Sortér efter",
+                ["Nyeste først", "Mest positive", "Mest negative"],
+                key="news_sort"
+            )
+            max_items = filter_cols[2].number_input(
+                "Max artikler", min_value=5, max_value=50, value=15, step=5,
+                key="news_max"
+            )
+
+            # Render feed med filtre
+            render_news_feed(
+                sentiment_data,
+                filter_type=filter_sentiment,
+                sort_by=sort_by,
+                max_items=max_items
+            )
+
+            # Genopfrisk-knap
+            st.markdown("---")
+            if st.button("🔄 Genhent nyheder", key="refresh_news"):
+                # Ryd cache for denne ticker
+                get_news_sentiment.clear() if hasattr(get_news_sentiment, "clear") else None
+                st.cache_data.clear()
+                st.rerun()
+
+    # ===== DETALJER =====
+    with main_tabs[7]:
         det_cols = st.columns(2)
 
         with det_cols[0]:
@@ -3248,7 +3514,6 @@ if st.session_state.dev_mode:
     dev_cols = st.columns(4)
     dev_cols[0].metric("⏱️ Total render-tid", f"{_total_time:.2f}s")
 
-    # Vis cache info
     try:
         cache_info = "✅ Aktiv"
         dev_cols[1].metric("💾 Cache", cache_info)
@@ -3258,7 +3523,6 @@ if st.session_state.dev_mode:
     dev_cols[2].metric("📍 Aktiv view", st.session_state.active_view)
     dev_cols[3].metric("📋 Watchlist", f"{len(st.session_state.watchlist)} tickers")
 
-    # Session state debug
     with st.expander("🔍 Session state (debug)"):
         debug_state = {
             "current_ticker": st.session_state.get("current_ticker", ""),
@@ -3272,7 +3536,6 @@ if st.session_state.dev_mode:
         }
         st.json(debug_state)
 
-    # Tips
     st.caption(
         "💡 **Tip:** Hvis render-tid > 5s, er der typisk ventetid på API-kald. "
         "Tryk **🔄 Ryd cache** kun hvis nødvendigt — det tvinger refetch af alt."
