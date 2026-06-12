@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ============ PERFORMANCE MONITORING ============
 _app_start_time = time.time()
@@ -61,7 +61,7 @@ from news_sentiment import (
     render_news_feed,
 )
 
-# 🆕 EARNINGS WARNING
+# 🆕 EARNINGS WARNING - opdateret med score-boost + chart-markers
 from earnings_warning import (
     get_earnings_info,
     render_earnings_warning,
@@ -69,6 +69,11 @@ from earnings_warning import (
     render_post_earnings_moves,
     render_watchlist_earnings_calendar,
     get_earnings_warning_message,
+    # 🆕 NYE FUNKTIONER:
+    calculate_earnings_score_boost,
+    render_earnings_score_card,
+    add_earnings_markers_to_chart,
+    add_earnings_legend_caption,
 )
 
 import warnings
@@ -175,7 +180,9 @@ def run_diagnostics(ticker):
         except Exception as e:
             results.append(("Finnhub", "❌ Crash", "-", str(e)[:300]))
     return results
-    # ============ HJÆLPER: Skift til analyse + Search history ============
+
+
+# ============ HJÆLPER: Skift til analyse + Search history ============
 
 def goto_analysis(ticker):
     st.session_state.current_ticker = ticker
@@ -379,7 +386,7 @@ if st.session_state.active_view == "🏠 Hjem":
     st.markdown("---")
     st.markdown("### 🎯 Dagens Handlinger")
 
-    # 🆕 NU MED 4 TABS - tilføjet "📅 Earnings-kalender"
+    # 🆕 4 TABS - inkl. earnings-kalender
     action_tabs = st.tabs([
         "🟢 KØB-muligheder",
         "👁️ Min Watchlist",
@@ -540,7 +547,7 @@ if st.session_state.active_view == "🏠 Hjem":
                             down_disp[col] = pd.to_numeric(down_disp[col], errors="coerce").round(2)
                     st.dataframe(down_disp, use_container_width=True, hide_index=True)
 
-    # 🆕 NY TAB: EARNINGS-KALENDER
+    # 🆕 EARNINGS-KALENDER TAB
     with action_tabs[3]:
         st.markdown("### 📅 Earnings-kalender for din watchlist")
         st.caption(
@@ -576,7 +583,10 @@ if st.session_state.active_view == "🏠 Hjem":
     st.caption(
         "⚠️ **Ikke finansiel rådgivning.** Dashboard er et analyseværktøj. "
         "Lav altid din egen research før investering. Past performance is not indicative of future results."
-    )    # ============ SØGE-VIEW ============
+    )
+
+
+# ============ SØGE-VIEW ============
 
 elif st.session_state.active_view == "🔍 Søg ticker":
     st.subheader("🔍 Find ticker for et firma")
@@ -842,7 +852,8 @@ elif st.session_state.active_view == "🔎 Screener":
                             cols[4].markdown(f"_{row.get('recommendation', '')}_")
                             if cols[5].button("📊", key=f"sec_btn_{row['ticker']}"):
                                 goto_analysis(row["ticker"])
-                                    # ===== MODE 3: SAMMENLIGN =====
+
+    # ===== MODE 3: SAMMENLIGN =====
     with sc_modes[2]:
         st.markdown("### 🔔 Sammenlign med tidligere snapshots")
         st.caption("Find aktier der har ændret rating, fået højere/lavere score siden sidst")
@@ -1321,7 +1332,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"ATR: ${targets['atr']:.4f}"
                     )
 
-                                # ============ KRYPTO ACTION PLAN ============
+                # ============ KRYPTO ACTION PLAN ============
                 from crypto_analysis import generate_crypto_action_plan
 
                 fx_crypto = get_fx_rate("USD", "DKK")
@@ -1812,7 +1823,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 if info.get("description"):
                     with st.expander("ℹ️ Om denne krypto"):
                         st.write(info["description"])
-    # ===== TAB 2: SCREENER =====
+                            # ===== TAB 2: SCREENER =====
     with crypto_tabs[1]:
         st.markdown("### 🔎 Krypto-screener")
         sc1, sc2 = st.columns([2, 1])
@@ -2268,7 +2279,7 @@ elif st.session_state.active_view == "📊 Analyse":
             st.metric("Market Cap", "N/A")
 
     # ============================================================
-    # 🆕 REGIME DETECTION + REGIME-AWARE SCORING
+    # 🆕 REGIME DETECTION + REGIME-AWARE SCORING + EARNINGS BOOST
     # ============================================================
     from regime_detector import (
         detect_market_regime,
@@ -2301,6 +2312,20 @@ elif st.session_state.active_view == "📊 Analyse":
     benchmark_label = regime_metrics.get("benchmark_label", "S&P 500")
     is_combined_regime = regime_metrics.get("is_combined", False)
 
+    # ============================================================
+    # 🆕 EARNINGS-DATA HENTES TIDLIGT (bruges til score-boost + chart)
+    # ============================================================
+    with st.spinner("📅 Tjekker earnings-kalender..."):
+        earnings_data = get_earnings_info(ticker)
+
+    # 🆕 BEREGN EARNINGS SCORE BOOST
+    earnings_boost_info = calculate_earnings_score_boost(earnings_data)
+    earnings_boost = earnings_boost_info["boost"]
+
+    # 🆕 JUSTÉR OVERALL SCORE (clamp til 0-100)
+    overall_pre_earnings = overall
+    overall = max(0, min(100, overall + earnings_boost))
+
     rec, color = recommendation(overall, regime=regime)
 
     _analysis_time = time.time() - _analysis_start
@@ -2311,18 +2336,29 @@ elif st.session_state.active_view == "📊 Analyse":
 
     st.markdown("")
 
-    # === SCORE CARDS ===
+    # === SCORE CARDS MED EARNINGS-JUSTERING ===
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
         bench_info = f"vs {benchmark_label}" if benchmark_label else ""
+        # 🆕 Vis earnings-justering hvis den eksisterer
+        earnings_note = ""
+        if earnings_boost != 0:
+            sign = "+" if earnings_boost > 0 else ""
+            earnings_note = (
+                f"<br><small style='color:#a855f7;font-size:0.75rem'>"
+                f"📅 Earnings: {sign}{earnings_boost} (var {overall_pre_earnings:.0f})"
+                f"</small>"
+            )
+
         st.markdown(
             f"<div style='background:{color}22;padding:1.2rem;border-radius:12px;"
             f"border-left:5px solid {color};text-align:center'>"
             f"<h2 style='color:{color};margin:0.3rem 0'>{rec}</h2>"
             f"<h1 style='margin:0.3rem 0;font-size:2.5rem'>{overall:.0f}"
             f"<small style='font-size:1.2rem;color:#888'>/100</small></h1>"
-            f"<small style='color:#888'>Regime-justeret score</small><br>"
+            f"<small style='color:#888'>Regime + earnings-justeret</small><br>"
             f"<small style='color:#666;font-size:0.75rem'>{bench_info}</small>"
+            f"{earnings_note}"
             f"</div>",
             unsafe_allow_html=True
         )
@@ -2341,6 +2377,11 @@ elif st.session_state.active_view == "📊 Analyse":
         regime,
         f"{regime_conf}% conf."
     )
+
+    # 🆕 EARNINGS SCORE CARD (vises kun hvis der ER en effekt)
+    if earnings_boost != 0:
+        st.markdown("")
+        render_earnings_score_card(earnings_data)
 
     if regime in ("BEAR", "VOLATILE"):
         st.info(
@@ -2384,7 +2425,7 @@ elif st.session_state.active_view == "📊 Analyse":
             )
 
     # ============================================================
-    # 📰 NEWS SENTIMENT - KOMPAKT OVERSIGT (lige under score-kort)
+    # 📰 NEWS SENTIMENT - KOMPAKT OVERSIGT
     # ============================================================
     st.markdown("---")
     company_name = info.get("longName") or info.get("shortName") or ticker
@@ -2395,11 +2436,9 @@ elif st.session_state.active_view == "📊 Analyse":
 
     # ============================================================
     # 🆕 EARNINGS WARNING - lige under sentiment
+    # (earnings_data er allerede hentet tidligere til score-boost)
     # ============================================================
     st.markdown("---")
-    with st.spinner("📅 Tjekker earnings-kalender..."):
-        earnings_data = get_earnings_info(ticker)
-
     render_earnings_warning(earnings_data, compact=True)
 
     # ============ ACTION PLAN ============
@@ -2790,7 +2829,7 @@ elif st.session_state.active_view == "📊 Analyse":
         else:
             st.warning("Kunne ikke beregne position size (tjek input)")
                 # ============================================================
-    # 🆕 MAIN TABS - NU MED "📅 Earnings" TAB
+    # 🆕 MAIN TABS - NU MED "📅 Earnings" TAB + earnings-markers på chart
     # ============================================================
     st.markdown("---")
     main_tabs = st.tabs([
@@ -2799,13 +2838,13 @@ elif st.session_state.active_view == "📊 Analyse":
         "📰 Nyheder", "📅 Earnings", "📋 Detaljer"
     ])
 
-    # ===== CHARTS =====
+    # ===== CHARTS (med earnings-markører) =====
     with main_tabs[0]:
         df_chart = filter_chart_period(df_indicators, period)
         fig = make_subplots(
             rows=3, cols=1, shared_xaxes=True,
             row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.05,
-            subplot_titles=("Pris + SMA + Bollinger", "RSI", "MACD")
+            subplot_titles=("Pris + SMA + Bollinger + 📅 Earnings", "RSI", "MACD")
         )
         fig.add_trace(go.Candlestick(
             x=df_chart.index, open=df_chart["Open"], high=df_chart["High"],
@@ -2850,12 +2889,23 @@ elif st.session_state.active_view == "📊 Analyse":
                 name="Signal", line=dict(color="orange")
             ), 3, 1)
 
+        # 🆕 TILFØJ EARNINGS-MARKØRER PÅ MAIN PRICE CHART (row 1)
+        add_earnings_markers_to_chart(
+            fig=fig,
+            earnings_data=earnings_data,
+            hist_df=df_chart,
+            row=1, col=1
+        )
+
         fig.update_layout(
             height=800, xaxis_rangeslider_visible=False,
             template="plotly_dark",
             title=f"{ticker} - Teknisk analyse ({period})"
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        # 🆕 VIS LEGEND under chartet
+        add_earnings_legend_caption()
 
     # ===== INDIKATORER =====
     with main_tabs[1]:
@@ -3254,7 +3304,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 st.cache_data.clear()
                 st.rerun()
 
-    # ===== 🆕 EARNINGS (NY TAB) =====
+    # ===== 🆕 EARNINGS =====
     with main_tabs[7]:
         st.markdown("### 📅 Earnings-analyse")
         st.caption(
