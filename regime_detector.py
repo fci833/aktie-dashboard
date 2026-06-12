@@ -383,7 +383,10 @@ def regime_recommendation(regime, score):
 
 
 def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
-    """🆕 Render regime-banner — viser nu kombineret lokal+global hvis relevant."""
+    """🆕 Render regime-banner — viser nu kombineret lokal+global hvis relevant.
+
+    🐛 FIXED: Bygger HTML uden indrykning så Streamlit ikke renderer det som code-block.
+    """
     color = REGIME_COLORS.get(regime, "#6b7280")
     emoji = REGIME_EMOJI.get(regime, "❓")
     desc = REGIME_DESCRIPTIONS.get(regime, "")
@@ -391,7 +394,7 @@ def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
     fund_w, tech_w = adjust_weights_for_regime(regime, asset_type)
     benchmark_label = metrics.get("benchmark_label", "S&P 500" if asset_type == "stock" else "Bitcoin")
 
-    # 🆕 Vis combined info hvis relevant
+    # Vis combined info hvis relevant
     is_combined = metrics.get("is_combined", False)
 
     if is_combined:
@@ -410,37 +413,38 @@ def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
     else:
         sub_info = ""
 
-    banner_html = f"""
-    <div style='background:linear-gradient(90deg, {color}33 0%, {color}11 100%);
-                padding:1rem 1.5rem;border-radius:12px;
-                border-left:5px solid {color};margin:0.5rem 0'>
-        <div style='display:flex;align-items:center;gap:1rem;flex-wrap:wrap'>
-            <div style='font-size:2.5rem'>{emoji}</div>
-            <div style='flex:1;min-width:200px'>
-                <div style='color:{color};font-weight:bold;font-size:1.3rem'>
-                    {regime} MARKET ({benchmark_label})
-                </div>
-                <div style='color:#aaa;font-size:0.9rem;margin-top:0.2rem'>
-                    {desc}
-                </div>
-                {sub_info}
-            </div>
-            <div style='text-align:right'>
-                <div style='font-size:0.8rem;color:#888'>CONFIDENCE</div>
-                <div style='font-size:1.5rem;font-weight:bold;color:{color}'>
-                    {confidence}%
-                </div>
-            </div>
-            <div style='text-align:right;border-left:1px solid #444;padding-left:1rem'>
-                <div style='font-size:0.8rem;color:#888'>VÆGTE</div>
-                <div style='font-size:0.9rem'>
-                    📊 Fund: <b>{int(fund_w*100)}%</b><br>
-                    🔧 Tek: <b>{int(tech_w*100)}%</b>
-                </div>
-            </div>
-        </div>
-    </div>
-    """
+    # 🐛 FIX: Bygger HTML som concateneret f-strings (ingen indrykning = ingen code block)
+    banner_html = (
+        f"<div style='background:linear-gradient(90deg, {color}33 0%, {color}11 100%);"
+        f"padding:1rem 1.5rem;border-radius:12px;"
+        f"border-left:5px solid {color};margin:0.5rem 0'>"
+        f"<div style='display:flex;align-items:center;gap:1rem;flex-wrap:wrap'>"
+        f"<div style='font-size:2.5rem'>{emoji}</div>"
+        f"<div style='flex:1;min-width:200px'>"
+        f"<div style='color:{color};font-weight:bold;font-size:1.3rem'>"
+        f"{regime} MARKET ({benchmark_label})"
+        f"</div>"
+        f"<div style='color:#aaa;font-size:0.9rem;margin-top:0.2rem'>"
+        f"{desc}"
+        f"</div>"
+        f"{sub_info}"
+        f"</div>"
+        f"<div style='text-align:right'>"
+        f"<div style='font-size:0.8rem;color:#888'>CONFIDENCE</div>"
+        f"<div style='font-size:1.5rem;font-weight:bold;color:{color}'>"
+        f"{confidence}%"
+        f"</div>"
+        f"</div>"
+        f"<div style='text-align:right;border-left:1px solid #444;padding-left:1rem'>"
+        f"<div style='font-size:0.8rem;color:#888'>VÆGTE</div>"
+        f"<div style='font-size:0.9rem'>"
+        f"📊 Fund: <b>{int(fund_w*100)}%</b><br>"
+        f"🔧 Tek: <b>{int(tech_w*100)}%</b>"
+        f"</div>"
+        f"</div>"
+        f"</div>"
+        f"</div>"
+    )
     st.markdown(banner_html, unsafe_allow_html=True)
 
     # Detaljer i expander
@@ -466,7 +470,7 @@ def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
                 tcols[1].metric("Pris > SMA200", "✅" if metrics["above_sma200"] else "❌")
                 tcols[2].metric("SMA50 > SMA200", "✅" if metrics.get("sma50_above_200") else "❌")
 
-            # 🆕 Vis combined-detaljer
+            # Vis combined-detaljer
             if is_combined:
                 st.markdown("---")
                 st.markdown("**🌐 Kombineret regime-analyse:**")
