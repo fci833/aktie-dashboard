@@ -2227,15 +2227,17 @@ elif st.session_state.active_view == "📊 Analyse":
             st.metric("Market Cap", "N/A")
 
     # ============================================================
-    # 🆕 REGIME DETECTION + REGIME-AWARE SCORING
+        # ============================================================
+    # 🆕 REGIME DETECTION + REGIME-AWARE SCORING (SMART BENCHMARK)
     # ============================================================
     from regime_detector import (
         detect_market_regime,
+        detect_combined_regime,  # 🆕 NY: Smart benchmark per ticker/country
         adjust_weights_for_regime,
         regime_recommendation,
         render_regime_banner,
     )
-    from analysis import overall_score_with_regime  # 🆕
+    from analysis import overall_score_with_regime
 
     # Performance tracking for analyse
     _analysis_start = time.time()
@@ -2246,14 +2248,23 @@ elif st.session_state.active_view == "📊 Analyse":
     f_score, f_details = fundamental_score(info)
     t_score, t_details = technical_score(df_technical)
 
-    # 🆕 REGIME-AWARE OVERALL SCORE
-    score_data = overall_score_with_regime(f_score, t_score)
+    # 🆕 REGIME-AWARE OVERALL SCORE MED SMART BENCHMARK
+    # NOVO-B.CO → OMXC25, SAP.DE → DAX, AAPL → S&P 500, etc.
+    score_data = overall_score_with_regime(
+        f_score, t_score,
+        ticker=ticker,                  # 🆕 Bruges til suffix-detection (.CO, .DE, .L)
+        country=info.get("country"),    # 🆕 Bruges til country-detection (Denmark, Germany)
+    )
     overall = score_data["overall"]
     regime = score_data["regime"]
     regime_conf = score_data["regime_confidence"]
     regime_metrics = score_data["regime_metrics"]
     fund_weight = score_data["fund_weight"]
     tech_weight = score_data["tech_weight"]
+
+    # 🆕 Hent benchmark label til UI (fx "OMXC25 + S&P 500" eller "S&P 500")
+    benchmark_label = regime_metrics.get("benchmark_label", "S&P 500")
+    is_combined_regime = regime_metrics.get("is_combined", False)
 
     # Anbefaling baseret på regime
     rec, color = recommendation(overall, regime=regime)
@@ -2262,7 +2273,7 @@ elif st.session_state.active_view == "📊 Analyse":
 
     st.markdown("---")
 
-    # 🆕 VIS REGIME BANNER ØVERST
+    # 🆕 VIS REGIME BANNER ØVERST (nu med korrekt lokalt benchmark)
     render_regime_banner(regime, regime_conf, regime_metrics, asset_type="stock")
 
     st.markdown("")  # Lille spacing
@@ -2270,13 +2281,16 @@ elif st.session_state.active_view == "📊 Analyse":
     # === SCORE CARDS (NU MED REGIME-INFO) ===
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
+        # 🆕 Vis benchmark info i score-kortet
+        bench_info = f"vs {benchmark_label}" if benchmark_label else ""
         st.markdown(
             f"<div style='background:{color}22;padding:1.2rem;border-radius:12px;"
             f"border-left:5px solid {color};text-align:center'>"
             f"<h2 style='color:{color};margin:0.3rem 0'>{rec}</h2>"
             f"<h1 style='margin:0.3rem 0;font-size:2.5rem'>{overall:.0f}"
             f"<small style='font-size:1.2rem;color:#888'>/100</small></h1>"
-            f"<small style='color:#888'>Regime-justeret score</small>"
+            f"<small style='color:#888'>Regime-justeret score</small><br>"
+            f"<small style='color:#666;font-size:0.75rem'>{bench_info}</small>"
             f"</div>",
             unsafe_allow_html=True
         )
@@ -2296,21 +2310,52 @@ elif st.session_state.active_view == "📊 Analyse":
         f"{regime_conf}% conf."
     )
 
-    # 🆕 OPLYSNINGS-BOKS OM REGIME-EFFEKT
+    # 🆕 OPLYSNINGS-BOKS OM REGIME-EFFEKT (nu med benchmark-info)
     if regime in ("BEAR", "VOLATILE"):
         st.info(
-            f"💡 **{regime} marked detected:** Vægtning er flyttet mod fundamentals "
+            f"💡 **{regime} marked detected** ({benchmark_label}): "
+            f"Vægtning er flyttet mod fundamentals "
             f"({int(fund_weight*100)}% vs standard 60%). "
             f"Tærskler for KØB er hævet for at være mere konservativ. "
             f"En score på 65 giver derfor måske kun 'HOLD' i stedet for 'KØB'."
         )
     elif regime == "BULL":
         st.success(
-            f"💡 **BULL marked detected:** Vægtning er flyttet mod teknisk "
+            f"💡 **BULL marked detected** ({benchmark_label}): "
+            f"Vægtning er flyttet mod teknisk "
             f"({int(tech_weight*100)}% vs standard 40%). "
             f"Momentum-strategier virker bedre i bull markets."
         )
+    elif regime == "SIDEWAYS":
+        st.info(
+            f"💡 **SIDEWAYS marked detected** ({benchmark_label}): "
+            f"Markedet trender ikke klart — balanceret tilgang anbefales. "
+            f"Range-trading og mean reversion strategier kan virke bedre end momentum."
+        )
 
+    # 🆕 EKSTRA INFO: Vis hvis vi bruger combined regime (lokal + global)
+    if is_combined_regime:
+        local_reg = regime_metrics.get("local_regime", "?")
+        local_label = regime_metrics.get("local_label", "Local")
+        global_reg = regime_metrics.get("global_regime", "?")
+        local_conf = regime_metrics.get("local_confidence", 0)
+        global_conf = regime_metrics.get("global_confidence", 0)
+
+        regime_emojis = {
+            "BULL": "🐂", "BEAR": "🐻",
+            "SIDEWAYS": "➡️", "VOLATILE": "⚡", "UNKNOWN": "❓"
+        }
+        local_emj = regime_emojis.get(local_reg, "")
+        global_emj = regime_emojis.get(global_reg, "")
+
+        # Vis kun hvis local og global er forskellige (interessant info)
+        if local_reg != global_reg:
+            st.warning(
+                f"🌐 **Divergerende markeder:** "
+                f"📍 {local_label} er {local_emj} **{local_reg}** ({local_conf}% conf.) — "
+                f"🌍 men globalt (S&P 500) er {global_emj} **{global_reg}** ({global_conf}% conf.). "
+                f"Vi bruger **{regime}** (forsigtighedsprincip: vægter 70% lokal + 30% global)."
+            )
        # ============ ACTION PLAN ============
 
     try:
