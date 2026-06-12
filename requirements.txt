@@ -1,5 +1,5 @@
 streamlit>=1.30
-yfinance
+yfinance>=0.2.40
 pandas
 numpy
 plotly
@@ -9,3 +9,8 @@ finnhub-python
 requests
 pytest
 vaderSentiment>=3.3.2
+
+# 🆕 Yfinance dependencies (krævet for earnings-data)
+lxml>=4.9.0
+beautifulsoup4>=4.12.0
+html5lib>=1.1
