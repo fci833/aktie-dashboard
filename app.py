@@ -2441,14 +2441,15 @@ elif st.session_state.active_view == "📊 Analyse":
     st.markdown(f"_{plan['summary']}_")
 
     # 🆕 EARNINGS-BASERET ADVARSEL I ACTION PLAN
-    earnings_warning_msg = get_earnings_warning_message(earnings_data, recommendation_text=rec)
+    earnings_warning_msg = get_earnings_warning_message(earnings_data)
     if earnings_warning_msg:
-        if earnings_warning_msg["level"] == "critical":
-            st.error(earnings_warning_msg["message"])
-        elif earnings_warning_msg["level"] == "warning":
-            st.warning(earnings_warning_msg["message"])
+        level = earnings_data.get("warning_level", "none") if earnings_data else "none"
+        if level == "critical":
+            st.error(earnings_warning_msg)
+        elif level == "high":
+            st.warning(earnings_warning_msg)
         else:
-            st.info(earnings_warning_msg["message"])
+            st.info(earnings_warning_msg)
 
     # 📰 SENTIMENT-BASERET ADVARSEL I ACTION PLAN
     if sentiment_data and sentiment_data.get("article_count", 0) >= 3:
@@ -3268,7 +3269,7 @@ elif st.session_state.active_view == "📊 Analyse":
                     "Hvor meget bevægede aktien sig dagen efter sidste earnings-rapporter? "
                     "Bruges til at estimere forventet volatilitet ved næste earnings."
                 )
-                render_post_earnings_moves(earnings_data, hist=hist)
+                render_post_earnings_moves(earnings_data)
 
             with earnings_subtabs[2]:
                 st.markdown("#### ℹ️ Hvorfor er earnings vigtige?")
