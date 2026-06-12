@@ -1,6 +1,7 @@
 """Tekniske indikatorer, scoring, DCF, risk metrics, Monte Carlo
 
 OPDATERET: Integreret med regime_detector for adaptive vægte og tærskler.
+🆕 NY: Smart benchmark-detection baseret på ticker/country (NOVO-B.CO → OMXC25, etc.)
 """
 import numpy as np
 import pandas as pd
@@ -13,6 +14,7 @@ from ta.volatility import BollingerBands, AverageTrueRange
 try:
     from regime_detector import (
         detect_market_regime,
+        detect_combined_regime,  # 🆕 NY: Smart benchmark per ticker/country
         adjust_weights_for_regime,
         regime_recommendation,
     )
@@ -216,15 +218,23 @@ def technical_score(df):
 # 🆕 REGIME-AWARE SCORING
 # ============================================================
 
-def overall_score_with_regime(f_score, t_score, regime=None):
+def overall_score_with_regime(f_score, t_score, regime=None, ticker=None, country=None):
     """
     🆕 Beregn overall score MED regime-justerede vægte.
+
+    🆕 OPDATERET: Bruger nu smart benchmark-detection baseret på ticker/country.
+    - US-aktier (AAPL, NVO) → SPY (S&P 500)
+    - Danske (.CO, country=Denmark) → OMXC25
+    - Tyske (.DE) → DAX
+    - UK (.L) → FTSE 100
+    - Etc.
 
     Args:
         f_score: fundamental score (0-100)
         t_score: technical score (0-100)
-        regime: optional - "BULL"/"BEAR"/"SIDEWAYS"/"VOLATILE"/"UNKNOWN"
-                Hvis None: auto-detect via regime_detector
+        regime: optional - hvis None auto-detect
+        ticker: optional - bruges til at finde rigtigt benchmark
+        country: optional - bruges til at finde rigtigt benchmark
 
     Returns:
         dict med:
@@ -233,7 +243,7 @@ def overall_score_with_regime(f_score, t_score, regime=None):
             tech_weight: float
             regime: str
             regime_confidence: int
-            regime_metrics: dict
+            regime_metrics: dict (incl. benchmark_label, local/global info)
     """
     # Default fallback hvis regime detector ikke er tilgængelig
     if not REGIME_AVAILABLE:
@@ -252,7 +262,12 @@ def overall_score_with_regime(f_score, t_score, regime=None):
     regime_conf = 0
     if regime is None:
         try:
-            regime, regime_conf, regime_metrics = detect_market_regime()
+            # 🆕 Brug smart combined regime hvis ticker/country er angivet
+            if ticker or country:
+                regime, regime_conf, regime_metrics = detect_combined_regime(ticker, country)
+            else:
+                # Fallback: bare SPY
+                regime, regime_conf, regime_metrics = detect_market_regime()
         except Exception as e:
             print(f"[overall_score_with_regime] regime detection failed: {e}")
             regime = "UNKNOWN"
