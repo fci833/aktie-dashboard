@@ -122,7 +122,6 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
                 ed.index = ed.index.tz_localize("UTC")
             future = ed[ed.index > now]
             if not future.empty:
-                # Tag tidligste fremtidige
                 next_date = future.index.min()
                 candidates.append(_safe_to_datetime(next_date))
     except Exception:
@@ -352,23 +351,23 @@ def _calc_post_earnings_volatility(
 def get_earnings_info(ticker: str) -> Optional[Dict]:
     """
     Henter komplet earnings-info for en ticker.
-
-    Returns dict med:
-        - next_date: datetime eller None
-        - days_until: int eller None
-        - warning_level: "critical"/"high"/"medium"/"low"/"none"
-        - history: list[dict] med EPS surprise-historik
-        - volatility: dict med post-earnings move statistik
-        - beat_rate: float (% af kvartaler hvor de slog forventningen)
+    Robust version - returnerer altid noget hvis ticker er valid.
     """
     if not ticker or not YF_AVAILABLE:
+        print(f"[earnings] Ticker mangler eller yfinance ikke installeret")
         return None
 
     try:
         tk = yf.Ticker(ticker)
+        print(f"[earnings] Henter data for {ticker}...")
 
-        # Næste earnings
-        next_date = _fetch_next_earnings_date(tk)
+        # Næste earnings (hvis muligt)
+        next_date = None
+        try:
+            next_date = _fetch_next_earnings_date(tk)
+        except Exception as e:
+            print(f"[earnings] _fetch_next_earnings_date fejl: {e}")
+
         days_until = _calc_days_until(next_date)
 
         # Warning level
@@ -383,8 +382,12 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
             elif days_until <= WARNING_THRESHOLDS["low"]:
                 warning_level = "low"
 
-        # Historik
-        history = _fetch_earnings_history(tk, n_quarters=8)
+        # Historik (hvis muligt)
+        history = []
+        try:
+            history = _fetch_earnings_history(tk, n_quarters=8)
+        except Exception as e:
+            print(f"[earnings] _fetch_earnings_history fejl: {e}")
 
         # Beat rate
         beats = [h for h in history if h.get("beat") is True]
@@ -401,15 +404,16 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
 
         # Post-earnings volatility (kræver hist data)
         volatility = None
-        try:
-            hist_df = tk.history(period="3y", auto_adjust=False)
-            if not hist_df.empty:
-                past_dates = [h["date"] for h in history if h.get("date")]
-                volatility = _calc_post_earnings_volatility(hist_df, past_dates)
-        except Exception:
-            pass
+        if history:
+            try:
+                hist_df = tk.history(period="3y", auto_adjust=False)
+                if not hist_df.empty:
+                    past_dates = [h["date"] for h in history if h.get("date")]
+                    volatility = _calc_post_earnings_volatility(hist_df, past_dates)
+            except Exception as e:
+                print(f"[earnings] Volatility fejl: {e}")
 
-        return {
+        result = {
             "ticker": ticker,
             "next_date": next_date,
             "days_until": days_until,
@@ -422,9 +426,31 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
             "volatility": volatility,
             "fetched_at": datetime.now(),
         }
+
+        print(f"[earnings] ✓ Result: next_date={next_date}, days={days_until}, "
+              f"history={len(history)}, beat_rate={beat_rate}")
+
+        return result
+
     except Exception as e:
-        print(f"[earnings] Fejl for {ticker}: {e}")
-        return None
+        print(f"[earnings] ❌ KRITISK fejl for {ticker}: {e}")
+        import traceback
+        traceback.print_exc()
+        # Returnér tom data i stedet for None - så vi kan vise en message
+        return {
+            "ticker": ticker,
+            "next_date": None,
+            "days_until": None,
+            "warning_level": "none",
+            "history": [],
+            "beat_rate": None,
+            "n_quarters": 0,
+            "avg_surprise_pct": None,
+            "median_surprise_pct": None,
+            "volatility": None,
+            "fetched_at": datetime.now(),
+            "error": str(e),
+        }
 
 
 # ============ HJÆLPE-FUNKTIONER ============
@@ -512,6 +538,17 @@ def render_earnings_warning(
                  Hvis False, vis fuld banner
     """
     if data is None:
+        # Vis fallback-besked så brugeren ved hvad der sker
+        if not compact:
+            st.info("📅 Kunne ikke hente earnings-data fra Yahoo Finance")
+        else:
+            st.markdown(
+                "<div style='background:#6b728022;padding:0.6rem 1rem;border-radius:8px;"
+                "border-left:4px solid #6b7280'>"
+                "<small>📅 Earnings-data ikke tilgængelig for denne ticker</small>"
+                "</div>",
+                unsafe_allow_html=True
+            )
         return
 
     days = data.get("days_until")
@@ -521,10 +558,23 @@ def render_earnings_warning(
     if days is None or next_date is None:
         if not compact:
             st.info("📅 Ingen earnings-dato tilgængelig (yfinance returnerede ingen data)")
+        else:
+            st.markdown(
+                "<div style='background:#6b728022;padding:0.6rem 1rem;border-radius:8px;"
+                "border-left:4px solid #6b7280'>"
+                "<small>📅 Ingen kommende earnings-dato fundet</small>"
+                "</div>",
+                unsafe_allow_html=True
+            )
         return
 
     if days < 0:
         # Earnings allerede passeret
+        if not compact:
+            st.info(
+                f"📅 Sidste earnings var {abs(days)} dage siden "
+                f"({_format_date_dk(next_date)})"
+            )
         return
 
     color = _warning_color(level)
@@ -542,8 +592,31 @@ def render_earnings_warning(
     avg_surp = data.get("avg_surprise_pct")
 
     if compact:
-        # Kompakt: 4 kolonner med vigtigste tal
-        cols = st.columns([2, 1, 1, 1])
+        # Tæl hvor mange felter der har data
+        has_swing = avg_abs is not None
+        has_beat = beat_rate is not None
+        has_surp = avg_surp is not None
+
+        n_data_fields = sum([has_swing, has_beat, has_surp])
+
+        if n_data_fields == 0:
+            # Ingen historik — vis kun næste earnings i fuld bredde
+            st.markdown(
+                f"<div style='background:{color}22;padding:0.8rem;border-radius:10px;"
+                f"border-left:5px solid {color}'>"
+                f"<small style='color:#888'>📅 NÆSTE EARNINGS</small>"
+                f"<h3 style='margin:0.2rem 0;color:{color}'>{emoji} Om {days} dage · {date_str}</h3>"
+                f"<small style='color:#aaa'>"
+                f"⚠️ Ingen EPS-historik tilgængelig fra Yahoo Finance for denne ticker"
+                f"</small>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            return
+
+        # Vis dynamisk antal kolonner baseret på tilgængelig data
+        col_widths = [2] + [1] * n_data_fields
+        cols = st.columns(col_widths)
 
         cols[0].markdown(
             f"<div style='background:{color}22;padding:0.8rem;border-radius:10px;"
@@ -555,32 +628,29 @@ def render_earnings_warning(
             unsafe_allow_html=True
         )
 
-        if avg_abs is not None:
-            cols[1].metric(
+        col_idx = 1
+        if has_swing:
+            cols[col_idx].metric(
                 "📊 Hist. swing",
                 f"±{avg_abs:.1f}%",
                 f"{n_obs} kvartaler" if n_obs else None
             )
-        else:
-            cols[1].metric("📊 Hist. swing", "N/A")
+            col_idx += 1
 
-        if beat_rate is not None:
-            cols[2].metric(
+        if has_beat:
+            cols[col_idx].metric(
                 "🎯 Beat rate",
                 f"{beat_rate:.0f}%",
                 f"{n_quarters} kvartaler"
             )
-        else:
-            cols[2].metric("🎯 Beat rate", "N/A")
+            col_idx += 1
 
-        if avg_surp is not None:
+        if has_surp:
             arrow = "📈" if avg_surp > 0 else "📉"
-            cols[3].metric(
+            cols[col_idx].metric(
                 f"{arrow} Avg surprise",
                 f"{avg_surp:+.1f}%"
             )
-        else:
-            cols[3].metric("Avg surprise", "N/A")
 
     else:
         # Fuld visning
@@ -617,30 +687,36 @@ def render_earnings_warning(
             unsafe_allow_html=True
         )
 
-        # Detaljerede metrics
-        det_cols = st.columns(4)
+        # Detaljerede metrics (kun hvis vi har data)
+        has_any = (avg_abs is not None or max_up is not None or
+                   max_down is not None or beat_rate is not None)
 
-        if avg_abs is not None:
-            det_cols[0].metric(
-                "📊 Avg post-earnings swing",
-                f"±{avg_abs:.1f}%",
-                f"{n_obs} kvartaler"
-            )
+        if has_any:
+            det_cols = st.columns(4)
+
+            if avg_abs is not None:
+                det_cols[0].metric(
+                    "📊 Avg post-earnings swing",
+                    f"±{avg_abs:.1f}%",
+                    f"{n_obs} kvartaler"
+                )
+            else:
+                det_cols[0].metric("Avg swing", "N/A")
+
+            if max_up is not None:
+                det_cols[1].metric("📈 Største op-move", f"+{max_up:.1f}%")
+            if max_down is not None:
+                det_cols[2].metric("📉 Største ned-move", f"{max_down:.1f}%")
+
+            if beat_rate is not None:
+                beat_emoji = "🎯" if beat_rate >= 70 else "⚖️" if beat_rate >= 50 else "⚠️"
+                det_cols[3].metric(
+                    f"{beat_emoji} Beat rate",
+                    f"{beat_rate:.0f}%",
+                    f"{n_quarters} kvartaler"
+                )
         else:
-            det_cols[0].metric("Avg swing", "N/A")
-
-        if max_up is not None:
-            det_cols[1].metric("📈 Største op-move", f"+{max_up:.1f}%")
-        if max_down is not None:
-            det_cols[2].metric("📉 Største ned-move", f"{max_down:.1f}%")
-
-        if beat_rate is not None:
-            beat_emoji = "🎯" if beat_rate >= 70 else "⚖️" if beat_rate >= 50 else "⚠️"
-            det_cols[3].metric(
-                f"{beat_emoji} Beat rate",
-                f"{beat_rate:.0f}%",
-                f"{n_quarters} kvartaler"
-            )
+            st.caption("ℹ️ Ingen historisk EPS-data tilgængelig fra Yahoo Finance")
 
 
 def render_earnings_history(data: Optional[Dict]) -> None:
