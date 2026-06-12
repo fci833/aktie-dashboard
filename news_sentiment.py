@@ -1,465 +1,570 @@
-"""News sentiment analyzer.
-
-Henter nyheder fra Finnhub + yfinance og analyserer sentiment med VADER.
-Gratis, ingen API-key til VADER, lynhurtigt.
 """
-import os
-import time
-import requests
-import pandas as pd
-import streamlit as st
-from datetime import datetime, timedelta
+News Sentiment Analysis
+=======================
+Henter nyhedsartikler og analyserer sentiment for aktier.
 
-# VADER sentiment - lazy import for at undgå crash hvis ikke installeret
+Krav:
+- yfinance (allerede installeret) — primær nyhedskilde
+- vaderSentiment (anbefales) — sentiment-analyse
+  → pip install vaderSentiment
+- finnhub (valgfri) — fallback nyhedskilde
+
+Hvis VADER ikke er installeret bruges keyword-baseret fallback.
+"""
+import streamlit as st
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, List
+
+# ============ VADER SENTIMENT (anbefalet) ============
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-    _vader = SentimentIntensityAnalyzer()
     VADER_AVAILABLE = True
+    _vader = SentimentIntensityAnalyzer()
 except ImportError:
     VADER_AVAILABLE = False
     _vader = None
-    print("[news_sentiment] vaderSentiment ikke installeret - kør: pip install vaderSentiment")
+
+# ============ YFINANCE ============
+try:
+    import yfinance as yf
+    YF_AVAILABLE = True
+except ImportError:
+    YF_AVAILABLE = False
 
 
-# Finansielle keyword-justeringer for VADER
-# (VADER er trænet på generel tekst, så vi booster financial keywords)
-FINANCIAL_LEXICON = {
-    "beat": 3.0, "beats": 3.0, "beaten": 2.5, "exceeded": 3.0, "exceeds": 3.0,
-    "surge": 3.0, "surges": 3.0, "surged": 3.0, "soar": 3.5, "soars": 3.5, "soared": 3.5,
-    "rally": 2.5, "rallied": 2.5, "jumped": 2.5, "jumps": 2.5,
-    "upgrade": 2.5, "upgraded": 2.5, "outperform": 2.5,
-    "buy": 2.0, "bullish": 3.0, "strong": 1.5, "growth": 1.5, "profit": 2.0,
-    "record": 2.0, "high": 1.0, "gains": 2.0, "gained": 2.0,
+# ============ FINANCE KEYWORDS ============
+# Custom finance-specifik vægtning (boost VADER score)
 
-    "miss": -3.0, "missed": -3.0, "missing": -2.5, "disappoints": -3.0, "disappointed": -3.0,
-    "plunge": -3.5, "plunges": -3.5, "plunged": -3.5, "tumble": -3.0, "tumbled": -3.0,
-    "crash": -3.5, "crashed": -3.5, "crashes": -3.5, "drop": -2.0, "dropped": -2.0,
-    "downgrade": -2.5, "downgraded": -2.5, "underperform": -2.5,
-    "sell": -2.0, "bearish": -3.0, "weak": -2.0, "loss": -2.5, "losses": -2.5,
-    "lawsuit": -2.5, "investigation": -2.0, "probe": -2.0, "fraud": -3.5,
-    "warning": -2.5, "concerns": -1.5, "concerned": -1.5, "fears": -2.0,
-    "decline": -2.0, "declines": -2.0, "declined": -2.0,
-    "cut": -1.5, "slashed": -2.5, "layoffs": -2.5, "layoff": -2.5,
+POSITIVE_KEYWORDS = {
+    # Earnings/performance
+    "beat", "beats", "exceed", "exceeds", "outperform", "outperforms", "tops",
+    "record", "all-time high", "ath", "rally", "surge", "soar", "jump",
+    # Growth
+    "growth", "expansion", "expanding", "boom", "thriving", "robust",
+    # Analyst actions
+    "upgrade", "upgraded", "buy rating", "overweight", "outperform rating",
+    # Corporate actions
+    "buyback", "dividend increase", "dividend hike", "acquisition", "merger",
+    "partnership", "deal", "contract win", "approval", "fda approval",
+    # Sentiment words
+    "strong", "bullish", "optimistic", "confident", "innovative", "breakthrough",
+    "profit", "gains", "rose", "rises", "boosts", "winning", "successful",
+}
+
+NEGATIVE_KEYWORDS = {
+    # Earnings/performance
+    "miss", "misses", "missed", "underperform", "underperforms", "disappoint",
+    "plunge", "tumble", "crash", "slump", "slide", "fall", "drop",
+    # Decline
+    "decline", "shrink", "weak", "weakness", "slowdown", "recession",
+    # Analyst actions
+    "downgrade", "downgraded", "sell rating", "underweight",
+    # Bad news
+    "lawsuit", "investigation", "probe", "fraud", "scandal", "recall",
+    "warning", "guidance cut", "earnings cut", "layoffs", "fired", "resign",
+    "bankruptcy", "default", "fine", "penalty", "settlement",
+    # Sentiment words
+    "bearish", "pessimistic", "concerns", "fears", "worry", "uncertain",
+    "loss", "losses", "fell", "drops", "dropped", "missed",
 }
 
 
-def _enhance_vader():
-    """Tilføj finansielle ord til VADER's lexicon"""
-    if _vader and VADER_AVAILABLE:
-        _vader.lexicon.update(FINANCIAL_LEXICON)
+def _keyword_boost(text: str) -> float:
+    """Beregn finance-keyword boost (-0.3 til +0.3)"""
+    if not text:
+        return 0.0
+    text_lower = text.lower()
+    pos = sum(1 for kw in POSITIVE_KEYWORDS if kw in text_lower)
+    neg = sum(1 for kw in NEGATIVE_KEYWORDS if kw in text_lower)
+    if pos == 0 and neg == 0:
+        return 0.0
+    total = pos + neg
+    return ((pos - neg) / max(total, 1)) * 0.3
 
 
-# Kør én gang ved import
-_enhance_vader()
+def _analyze_sentiment(text: str) -> dict:
+    """Analyser sentiment med VADER + finance keyword boost"""
+    if not text or not text.strip():
+        return {"score": 0.0, "label": "Neutralt", "emoji": "🟡"}
 
-
-# ============================================================
-# NYHEDS-HENTNING
-# ============================================================
-
-@st.cache_data(ttl=900, show_spinner=False)  # 15 min cache
-def fetch_finnhub_news(ticker: str, days: int = 7):
-    """Hent nyheder fra Finnhub (gratis tier: 60 calls/min)"""
-    api_key = os.getenv("FINNHUB_API_KEY") or st.secrets.get("FINNHUB_API_KEY", None)
-    if not api_key:
-        return []
-
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-
-    url = "https://finnhub.io/api/v1/company-news"
-    params = {
-        "symbol": ticker.upper(),
-        "from": start_date,
-        "to": end_date,
-        "token": api_key,
-    }
-
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        if not isinstance(data, list):
-            return []
-
-        articles = []
-        for item in data[:30]:  # max 30 nyheder
-            articles.append({
-                "title": item.get("headline", ""),
-                "summary": item.get("summary", ""),
-                "url": item.get("url", ""),
-                "source": item.get("source", "Finnhub"),
-                "date": datetime.fromtimestamp(item.get("datetime", 0)),
-                "image": item.get("image", ""),
-            })
-        return articles
-    except Exception as e:
-        print(f"[fetch_finnhub_news] {e}")
-        return []
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_yfinance_news(ticker: str):
-    """Hent nyheder fra yfinance (fallback)"""
-    try:
-        import yfinance as yf
-        t = yf.Ticker(ticker)
-        news = t.news or []
-
-        articles = []
-        for item in news[:20]:
-            content = item.get("content", item)
-            articles.append({
-                "title": content.get("title", ""),
-                "summary": content.get("summary", "") or content.get("description", ""),
-                "url": (content.get("canonicalUrl", {}) or {}).get("url", "") or content.get("link", ""),
-                "source": (content.get("provider", {}) or {}).get("displayName", "Yahoo Finance"),
-                "date": _parse_yf_date(content),
-                "image": _parse_yf_image(content),
-            })
-        return articles
-    except Exception as e:
-        print(f"[fetch_yfinance_news] {e}")
-        return []
-
-
-def _parse_yf_date(content):
-    """Parse yfinance date format"""
-    try:
-        ts = content.get("pubDate") or content.get("providerPublishTime")
-        if isinstance(ts, str):
-            return datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(tzinfo=None)
-        elif isinstance(ts, (int, float)):
-            return datetime.fromtimestamp(ts)
-    except Exception:
-        pass
-    return datetime.now()
-
-
-def _parse_yf_image(content):
-    """Parse yfinance image"""
-    try:
-        thumb = content.get("thumbnail") or {}
-        resolutions = thumb.get("resolutions") or []
-        if resolutions:
-            return resolutions[0].get("url", "")
-    except Exception:
-        pass
-    return ""
-
-
-def fetch_all_news(ticker: str, days: int = 7):
-    """Hent fra både Finnhub og yfinance, dedupliker, sortér efter dato"""
-    all_news = []
-
-    # Prøv Finnhub først
-    finnhub_news = fetch_finnhub_news(ticker, days)
-    all_news.extend(finnhub_news)
-
-    # Hvis vi har under 5 fra Finnhub, supplér med yfinance
-    if len(finnhub_news) < 5:
-        yf_news = fetch_yfinance_news(ticker)
-        all_news.extend(yf_news)
-
-    # Dedupliker baseret på titel
-    seen_titles = set()
-    deduped = []
-    for art in all_news:
-        title_key = art["title"][:80].lower().strip()
-        if title_key and title_key not in seen_titles:
-            seen_titles.add(title_key)
-            deduped.append(art)
-
-    # Sortér efter dato (nyeste først)
-    deduped.sort(key=lambda x: x["date"], reverse=True)
-    return deduped[:25]  # Returnér max 25
-
-
-# ============================================================
-# SENTIMENT ANALYSE
-# ============================================================
-
-def analyze_sentiment(text: str) -> dict:
-    """Analysér en tekst med VADER + return scores 0-100"""
-    if not VADER_AVAILABLE or not text:
-        return {"score": 50, "compound": 0, "label": "NEUTRAL", "color": "#6b7280"}
-
-    scores = _vader.polarity_scores(text)
-    compound = scores["compound"]  # -1 til +1
-
-    # Konverter til 0-100 skala
-    score_100 = (compound + 1) * 50
-
-    if compound >= 0.5:
-        label = "MEGET POSITIV"
-        color = "#16a34a"
-        emoji = "🚀"
-    elif compound >= 0.15:
-        label = "POSITIV"
-        color = "#22c55e"
-        emoji = "✅"
-    elif compound > -0.15:
-        label = "NEUTRAL"
-        color = "#6b7280"
-        emoji = "➖"
-    elif compound > -0.5:
-        label = "NEGATIV"
-        color = "#f97316"
-        emoji = "⚠️"
+    # VADER base score
+    if VADER_AVAILABLE:
+        scores = _vader.polarity_scores(text)
+        base_score = scores["compound"]  # -1 til +1
     else:
-        label = "MEGET NEGATIV"
-        color = "#ef4444"
+        # Fallback: kun keyword-baseret (boost mere)
+        base_score = _keyword_boost(text) * 3.0
+
+    # Tilføj finance-specifik boost
+    boost = _keyword_boost(text)
+    final_score = max(-1.0, min(1.0, base_score + boost))
+
+    if final_score >= 0.15:
+        label = "Positivt"
+        emoji = "🟢"
+    elif final_score <= -0.15:
+        label = "Negativt"
         emoji = "🔴"
+    else:
+        label = "Neutralt"
+        emoji = "🟡"
 
-    return {
-        "score": round(score_100, 1),
-        "compound": round(compound, 3),
-        "label": label,
-        "color": color,
-        "emoji": emoji,
-        "positive": round(scores["pos"] * 100, 1),
-        "negative": round(scores["neg"] * 100, 1),
-        "neutral": round(scores["neu"] * 100, 1),
-    }
+    return {"score": final_score, "label": label, "emoji": emoji}
 
 
-def analyze_articles(articles: list) -> list:
-    """Tilføj sentiment til alle artikler"""
-    for art in articles:
-        # Vægt titel højere end summary (titel er mere koncentreret signal)
-        title_text = art.get("title", "")
-        summary_text = art.get("summary", "")
-        combined = f"{title_text}. {title_text}. {summary_text}"  # Titel tæller dobbelt
-        art["sentiment"] = analyze_sentiment(combined)
-    return articles
+# ============ NYHEDSKILDER ============
+
+def _fetch_yfinance_news(ticker: str, limit: int = 20) -> List[Dict]:
+    """Hent nyheder via yfinance.Ticker.news"""
+    if not YF_AVAILABLE:
+        return []
+
+    try:
+        tk = yf.Ticker(ticker)
+        news_raw = tk.news or []
+        articles = []
+
+        for item in news_raw[:limit]:
+            # yfinance returnerer enten gammel eller ny format
+            content = item.get("content", item)
+
+            title = content.get("title") or item.get("title", "")
+            if not title:
+                continue
+
+            # URL
+            url = ""
+            if isinstance(content.get("canonicalUrl"), dict):
+                url = content["canonicalUrl"].get("url", "")
+            elif isinstance(content.get("clickThroughUrl"), dict):
+                url = content["clickThroughUrl"].get("url", "")
+            else:
+                url = item.get("link", "") or content.get("link", "")
+
+            # Publisher
+            publisher = ""
+            if isinstance(content.get("provider"), dict):
+                publisher = content["provider"].get("displayName", "")
+            else:
+                publisher = item.get("publisher", "") or content.get("publisher", "")
+
+            # Published time
+            pub_time = None
+            if "pubDate" in content:
+                try:
+                    pub_time = datetime.fromisoformat(
+                        content["pubDate"].replace("Z", "+00:00")
+                    )
+                except Exception:
+                    pass
+            elif "providerPublishTime" in item:
+                try:
+                    pub_time = datetime.fromtimestamp(
+                        item["providerPublishTime"], tz=timezone.utc
+                    )
+                except Exception:
+                    pass
+
+            # Summary
+            summary = (
+                content.get("summary")
+                or content.get("description")
+                or item.get("summary", "")
+                or ""
+            )
+
+            articles.append({
+                "title": title.strip(),
+                "publisher": (publisher or "Unknown").strip(),
+                "url": url,
+                "published": pub_time,
+                "summary": summary[:400],
+            })
+
+        return articles
+    except Exception as e:
+        print(f"[news_sentiment] yfinance fejl for {ticker}: {e}")
+        return []
 
 
-def aggregate_sentiment(articles: list) -> dict:
+def _fetch_finnhub_news(ticker: str, limit: int = 20) -> List[Dict]:
+    """Hent nyheder via Finnhub (kun US-tickers)"""
+    if "." in ticker:  # ikke-US ticker
+        return []
+
+    try:
+        from data_sources import get_api_keys
+        finnhub_key, _ = get_api_keys()
+        if not finnhub_key:
+            return []
+
+        import finnhub
+        client = finnhub.Client(api_key=finnhub_key)
+
+        end = datetime.now()
+        start = end - timedelta(days=14)
+
+        news = client.company_news(
+            ticker,
+            _from=start.strftime("%Y-%m-%d"),
+            to=end.strftime("%Y-%m-%d"),
+        )
+
+        articles = []
+        for item in news[:limit]:
+            pub_time = None
+            if item.get("datetime"):
+                try:
+                    pub_time = datetime.fromtimestamp(
+                        item["datetime"], tz=timezone.utc
+                    )
+                except Exception:
+                    pass
+
+            articles.append({
+                "title": (item.get("headline") or "").strip(),
+                "publisher": (item.get("source") or "Finnhub").strip(),
+                "url": item.get("url", ""),
+                "published": pub_time,
+                "summary": (item.get("summary") or "")[:400],
+            })
+
+        return [a for a in articles if a["title"]]
+    except Exception as e:
+        print(f"[news_sentiment] Finnhub fejl for {ticker}: {e}")
+        return []
+
+
+# ============ HOVED-FUNKTION ============
+
+@st.cache_data(ttl=900, show_spinner=False)  # Cache 15 min
+def get_news_sentiment(
+    ticker: str,
+    company_name: Optional[str] = None,
+    limit: int = 20
+) -> Optional[Dict]:
     """
-    Beregn samlet sentiment-score på 0-100 for hele nyhedsfeed.
-    
-    Vægter nyere artikler højere (eksponentielt henfald).
+    Henter nyheder for ticker og analyserer sentiment.
+
+    Returns:
+        Dict med sentiment-score, artikler og statistik, eller None ved fejl.
     """
+    if not ticker:
+        return None
+
+    # Forsøg yfinance først
+    articles = _fetch_yfinance_news(ticker, limit=limit)
+    source = "Yahoo Finance"
+
+    # Fallback til Finnhub
+    if not articles:
+        articles = _fetch_finnhub_news(ticker, limit=limit)
+        source = "Finnhub"
+
     if not articles:
         return {
-            "score": 50,
-            "label": "INGEN NYHEDER",
-            "color": "#6b7280",
-            "emoji": "❓",
-            "count": 0,
+            "ticker": ticker,
+            "company_name": company_name or ticker,
+            "article_count": 0,
+            "sentiment_score": 0.0,
+            "label": "Ingen data",
+            "label_emoji": "❓",
+            "color": "#888888",
             "positive_count": 0,
-            "negative_count": 0,
             "neutral_count": 0,
-            "score_adjustment": 0,
+            "negative_count": 0,
+            "articles": [],
+            "source": "Ingen kilder fungerede",
+            "fetched_at": datetime.now(),
         }
 
-    now = datetime.now()
-    total_weight = 0
-    weighted_score = 0
-
-    pos_count = neg_count = neu_count = 0
+    # Analyser hver artikel
+    pos_count = 0
+    neu_count = 0
+    neg_count = 0
+    weighted_sum = 0.0
+    total_weight = 0.0
 
     for art in articles:
-        if "sentiment" not in art:
-            continue
-        sent = art["sentiment"]
-        score = sent["score"]
+        # Kombiner titel + summary for bedre context
+        text = (art["title"] or "") + ". " + (art.get("summary") or "")
+        sent = _analyze_sentiment(text)
+        art["sentiment_score"] = sent["score"]
+        art["sentiment_label"] = sent["label"]
+        art["sentiment_emoji"] = sent["emoji"]
 
-        # Tids-vægt: nyere artikler vejer mere
-        try:
-            age_days = max(0, (now - art["date"]).days)
-        except Exception:
-            age_days = 0
-        time_weight = max(0.3, 1.0 - (age_days / 14))  # 14 dage til min vægt
+        # Vægt efter alder (nyere = højere vægt)
+        weight = 0.7  # default for ukendt alder
+        if art.get("published"):
+            try:
+                age_hours = (
+                    datetime.now(timezone.utc) - art["published"]
+                ).total_seconds() / 3600
+                if age_hours < 24:
+                    weight = 1.0
+                elif age_hours < 72:
+                    weight = 0.85
+                elif age_hours < 168:  # 7 dage
+                    weight = 0.65
+                elif age_hours < 720:  # 30 dage
+                    weight = 0.45
+                else:
+                    weight = 0.25
+            except Exception:
+                weight = 0.7
 
-        weighted_score += score * time_weight
-        total_weight += time_weight
+        weighted_sum += sent["score"] * weight
+        total_weight += weight
 
-        # Tæl op
-        if sent["compound"] >= 0.15:
+        if sent["label"] == "Positivt":
             pos_count += 1
-        elif sent["compound"] <= -0.15:
+        elif sent["label"] == "Negativt":
             neg_count += 1
         else:
             neu_count += 1
 
-    if total_weight == 0:
-        avg_score = 50
-    else:
-        avg_score = weighted_score / total_weight
+    # Samlet vægtet sentiment
+    overall_score = weighted_sum / total_weight if total_weight > 0 else 0.0
 
-    # Label
-    if avg_score >= 70:
-        label, color, emoji = "MEGET POSITIV", "#16a34a", "🚀"
-    elif avg_score >= 58:
-        label, color, emoji = "POSITIV", "#22c55e", "✅"
-    elif avg_score >= 42:
-        label, color, emoji = "NEUTRAL", "#eab308", "➖"
-    elif avg_score >= 30:
-        label, color, emoji = "NEGATIV", "#f97316", "⚠️"
+    if overall_score >= 0.15:
+        overall_label = "Positivt"
+        overall_emoji = "🟢"
+        overall_color = "#16a34a"
+    elif overall_score <= -0.15:
+        overall_label = "Negativt"
+        overall_emoji = "🔴"
+        overall_color = "#ef4444"
     else:
-        label, color, emoji = "MEGET NEGATIV", "#ef4444", "🔴"
-
-    # Score adjustment til overall: -5 til +5 point
-    # 50 = neutral = 0 adjustment
-    # 100 = max positiv = +5
-    # 0 = max negativ = -5
-    score_adjustment = round((avg_score - 50) / 10, 1)
+        overall_label = "Neutralt"
+        overall_emoji = "🟡"
+        overall_color = "#eab308"
 
     return {
-        "score": round(avg_score, 1),
-        "label": label,
-        "color": color,
-        "emoji": emoji,
-        "count": len(articles),
+        "ticker": ticker,
+        "company_name": company_name or ticker,
+        "article_count": len(articles),
+        "sentiment_score": overall_score,
+        "label": overall_label,
+        "label_emoji": overall_emoji,
+        "color": overall_color,
         "positive_count": pos_count,
-        "negative_count": neg_count,
         "neutral_count": neu_count,
-        "score_adjustment": score_adjustment,
+        "negative_count": neg_count,
+        "articles": articles,
+        "source": source,
+        "fetched_at": datetime.now(),
+        "vader_available": VADER_AVAILABLE,
     }
 
 
-# ============================================================
-# UI RENDERING
-# ============================================================
+# ============ UI RENDERERS ============
 
-def render_sentiment_summary(agg: dict):
-    """Render samlet sentiment som card"""
-    color = agg["color"]
-    emoji = agg["emoji"]
+def render_sentiment_summary(data: Optional[Dict], compact: bool = False) -> None:
+    """
+    Renderer sentiment-summary i Streamlit.
 
-    summary_html = (
-        f"<div style='background:linear-gradient(90deg, {color}33 0%, {color}11 100%);"
-        f"padding:1rem 1.5rem;border-radius:12px;"
-        f"border-left:5px solid {color};margin:0.5rem 0'>"
-        f"<div style='display:flex;align-items:center;gap:1rem;flex-wrap:wrap'>"
-        f"<div style='font-size:2.5rem'>{emoji}</div>"
-        f"<div style='flex:1;min-width:200px'>"
-        f"<div style='color:{color};font-weight:bold;font-size:1.3rem'>"
-        f"{agg['label']} SENTIMENT"
-        f"</div>"
-        f"<div style='color:#aaa;font-size:0.9rem;margin-top:0.2rem'>"
-        f"Baseret på <b>{agg['count']}</b> nyhedsartikler "
-        f"(✅ {agg['positive_count']} pos · ➖ {agg['neutral_count']} neu · "
-        f"⚠️ {agg['negative_count']} neg)"
-        f"</div>"
-        f"</div>"
-        f"<div style='text-align:right'>"
-        f"<div style='font-size:0.8rem;color:#888'>SCORE</div>"
-        f"<div style='font-size:1.5rem;font-weight:bold;color:{color}'>"
-        f"{agg['score']:.0f}<small style='color:#888;font-size:0.8rem'>/100</small>"
-        f"</div>"
-        f"</div>"
-        f"<div style='text-align:right;border-left:1px solid #444;padding-left:1rem'>"
-        f"<div style='font-size:0.8rem;color:#888'>SCORE EFFEKT</div>"
-        f"<div style='font-size:1.2rem;font-weight:bold;color:{color}'>"
-        f"{agg['score_adjustment']:+.1f}"
-        f"</div>"
-        f"</div>"
-        f"</div>"
-        f"</div>"
-    )
-    st.markdown(summary_html, unsafe_allow_html=True)
-
-
-def render_news_feed(articles: list, max_show: int = 10):
-    """Render nyheder med sentiment-farver"""
-    if not articles:
-        st.info("📭 Ingen nyheder fundet for denne aktie i de seneste 7 dage.")
+    Args:
+        data: Output fra get_news_sentiment()
+        compact: Hvis True, vises i kompakt 4-kolonne layout (analyse-view)
+                 Hvis False, vises fuldt med chart (Nyheder-tab)
+    """
+    if data is None or data.get("article_count", 0) == 0:
+        st.info(
+            "📰 **Ingen nyheder fundet.** Mulige årsager:\n"
+            "- Ticker er for niche (få store nyheder)\n"
+            "- Yahoo Finance / Finnhub har midlertidige issues\n"
+            "- Tjek `vaderSentiment` er installeret: `pip install vaderSentiment`"
+        )
         return
 
-    st.markdown(f"### 📰 Seneste nyheder ({len(articles)})")
+    score = data["sentiment_score"]
+    label = data["label"]
+    emoji = data["label_emoji"]
+    color = data["color"]
+    n = data["article_count"]
+    pos = data["positive_count"]
+    neu = data["neutral_count"]
+    neg = data["negative_count"]
 
-    show_all = st.checkbox("Vis alle nyheder", value=False, key=f"news_show_all_{id(articles)}")
-    n_show = len(articles) if show_all else min(max_show, len(articles))
+    if compact:
+        # Kompakt: 4 kolonner
+        cols = st.columns([2, 1, 1, 1])
+        cols[0].markdown(
+            f"<div style='background:{color}22;padding:0.8rem;border-radius:10px;"
+            f"border-left:5px solid {color}'>"
+            f"<small style='color:#888'>📰 NYHEDS-SENTIMENT (sidste {n} artikler)</small>"
+            f"<h3 style='margin:0.2rem 0;color:{color}'>{emoji} {label}</h3>"
+            f"<small>Score: {score:+.2f} (-1 til +1) · {data.get('source', '?')}</small>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+        cols[1].metric("🟢 Positive", pos, f"{pos/n*100:.0f}%" if n else "")
+        cols[2].metric("🟡 Neutrale", neu, f"{neu/n*100:.0f}%" if n else "")
+        cols[3].metric("🔴 Negative", neg, f"{neg/n*100:.0f}%" if n else "")
 
-    for i, art in enumerate(articles[:n_show]):
-        sent = art.get("sentiment", {})
-        color = sent.get("color", "#6b7280")
-        emoji = sent.get("emoji", "➖")
-        label = sent.get("label", "NEUTRAL")
-        score = sent.get("score", 50)
+    else:
+        # Fuld visning
+        st.markdown(
+            f"<div style='background:{color}15;padding:1.2rem;border-radius:12px;"
+            f"border-left:5px solid {color};margin-bottom:1rem'>"
+            f"<small style='color:#888'>📰 SAMLET NYHEDS-SENTIMENT (vægtet efter alder)</small>"
+            f"<h2 style='margin:0.5rem 0;color:{color}'>{emoji} {label}</h2>"
+            f"<h3 style='margin:0.3rem 0'>Score: {score:+.3f} "
+            f"<small style='color:#888;font-size:1rem'>(-1 til +1)</small></h3>"
+            f"<small>📊 {n} artikler analyseret · 🔍 Kilde: {data.get('source', '?')}"
+            + (f" · ⚙️ VADER: {'✅' if data.get('vader_available') else '⚠️ keyword fallback'}")
+            + f"</small></div>",
+            unsafe_allow_html=True
+        )
 
+        cols = st.columns(3)
+        cols[0].metric("🟢 Positive", pos, f"{pos/n*100:.0f}% af artikler" if n else "")
+        cols[1].metric("🟡 Neutrale", neu, f"{neu/n*100:.0f}% af artikler" if n else "")
+        cols[2].metric("🔴 Negative", neg, f"{neg/n*100:.0f}% af artikler" if n else "")
+
+        # Distribution chart
         try:
-            date_str = art["date"].strftime("%d. %b %Y · %H:%M")
-            age_days = (datetime.now() - art["date"]).days
-            if age_days == 0:
-                age_str = "🕐 I dag"
-            elif age_days == 1:
-                age_str = "🕐 I går"
-            else:
-                age_str = f"🕐 {age_days}d siden"
+            import plotly.graph_objects as go
+            fig = go.Figure(data=[
+                go.Bar(
+                    x=["🟢 Positive", "🟡 Neutrale", "🔴 Negative"],
+                    y=[pos, neu, neg],
+                    marker_color=["#16a34a", "#eab308", "#ef4444"],
+                    text=[pos, neu, neg],
+                    textposition="outside",
+                    textfont=dict(size=14, color="white"),
+                )
+            ])
+            fig.update_layout(
+                template="plotly_dark",
+                height=280,
+                title="Sentiment-fordeling i artikler",
+                showlegend=False,
+                margin=dict(t=50, b=20, l=20, r=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
         except Exception:
-            date_str = "Ukendt"
-            age_str = ""
+            pass
+
+
+def render_news_feed(
+    data: Optional[Dict],
+    filter_type: str = "Alle",
+    sort_by: str = "Nyeste først",
+    max_items: int = 15,
+) -> None:
+    """
+    Renderer artikel-feed med filtre.
+
+    Args:
+        data: Output fra get_news_sentiment()
+        filter_type: "Alle", "🟢 Kun positive", "🔴 Kun negative", "🟡 Kun neutrale"
+        sort_by: "Nyeste først", "Mest positive", "Mest negative"
+        max_items: Max artikler at vise
+    """
+    if data is None or not data.get("articles"):
+        st.info("Ingen artikler at vise.")
+        return
+
+    articles = list(data["articles"])  # kopi
+
+    # Filter
+    ft = filter_type.lower()
+    if "positive" in ft:
+        articles = [a for a in articles if a.get("sentiment_label") == "Positivt"]
+    elif "negative" in ft:
+        articles = [a for a in articles if a.get("sentiment_label") == "Negativt"]
+    elif "neutral" in ft:
+        articles = [a for a in articles if a.get("sentiment_label") == "Neutralt"]
+
+    # Sort
+    if sort_by == "Mest positive":
+        articles.sort(key=lambda x: x.get("sentiment_score", 0), reverse=True)
+    elif sort_by == "Mest negative":
+        articles.sort(key=lambda x: x.get("sentiment_score", 0))
+    else:  # Nyeste først
+        def _sort_key(a):
+            pub = a.get("published")
+            if pub is None:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            return pub
+        articles.sort(key=_sort_key, reverse=True)
+
+    # Limit
+    articles = articles[:max_items]
+
+    if not articles:
+        st.info("Ingen artikler matcher filteret.")
+        return
+
+    st.caption(f"📑 Viser **{len(articles)} artikler**")
+
+    # Render
+    for art in articles:
+        sent_label = art.get("sentiment_label", "Neutralt")
+        sent_color = (
+            "#16a34a" if sent_label == "Positivt"
+            else "#ef4444" if sent_label == "Negativt"
+            else "#eab308"
+        )
+        sent_emoji = art.get("sentiment_emoji", "🟡")
+        sent_score = art.get("sentiment_score", 0)
+
+        # Tid siden
+        time_str = "?"
+        if art.get("published"):
+            try:
+                age = datetime.now(timezone.utc) - art["published"]
+                if age.days > 30:
+                    time_str = f"{age.days // 30}m siden"
+                elif age.days > 0:
+                    time_str = f"{age.days}d siden"
+                elif age.seconds > 3600:
+                    time_str = f"{age.seconds // 3600}t siden"
+                elif age.seconds > 60:
+                    time_str = f"{age.seconds // 60}m siden"
+                else:
+                    time_str = "lige nu"
+            except Exception:
+                time_str = "?"
 
         title = art.get("title", "Ingen titel")
-        source = art.get("source", "Ukendt")
-        url = art.get("url", "#")
+        publisher = art.get("publisher", "?")
         summary = art.get("summary", "")
+        url = art.get("url", "")
+
+        # Trunkér summary
         if len(summary) > 250:
-            summary = summary[:250] + "..."
+            summary_display = summary[:250].rsplit(" ", 1)[0] + "..."
+        else:
+            summary_display = summary
 
-        article_html = (
-            f"<div style='background:{color}11;padding:0.8rem 1rem;border-radius:8px;"
-            f"border-left:4px solid {color};margin-bottom:0.6rem'>"
-            f"<div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>"
-            f"<div style='flex:1;min-width:300px'>"
-            f"<div style='font-size:1rem;font-weight:bold;margin-bottom:0.3rem'>"
-            f"<a href='{url}' target='_blank' style='color:#fff;text-decoration:none'>{title}</a>"
-            f"</div>"
+        # Link-knap
+        link_html = ""
+        if url:
+            link_html = (
+                f"<div style='margin-top:0.6rem'>"
+                f"<a href='{url}' target='_blank' "
+                f"style='color:#0099ff;font-size:0.85rem;text-decoration:none'>"
+                f"🔗 Læs hele artiklen →</a></div>"
+            )
+
+        st.markdown(
+            f"<div style='background:{sent_color}10;padding:1rem;border-radius:10px;"
+            f"border-left:4px solid {sent_color};margin-bottom:0.6rem'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem'>"
+            f"<div style='flex:1'>"
+            f"<div style='font-weight:bold;font-size:1.05rem;margin-bottom:0.3rem;line-height:1.3'>"
+            f"{sent_emoji} {title}</div>"
             f"<div style='color:#aaa;font-size:0.85rem;margin-bottom:0.4rem'>"
-            f"📰 {source} · {date_str} · {age_str}"
+            f"📰 {publisher} · ⏰ {time_str}</div>"
+            f"<div style='color:#ccc;font-size:0.9rem;line-height:1.4'>{summary_display}</div>"
+            f"{link_html}"
             f"</div>"
-            f"<div style='color:#bbb;font-size:0.9rem'>{summary}</div>"
-            f"</div>"
-            f"<div style='text-align:right;min-width:120px'>"
-            f"<div style='background:{color}33;padding:0.3rem 0.6rem;border-radius:6px;display:inline-block'>"
-            f"<div style='font-size:0.7rem;color:#aaa'>SENTIMENT</div>"
-            f"<div style='color:{color};font-weight:bold;font-size:0.9rem'>{emoji} {label}</div>"
-            f"<div style='color:{color};font-size:1.1rem;font-weight:bold'>{score:.0f}/100</div>"
-            f"</div>"
-            f"</div>"
-            f"</div>"
-            f"</div>"
+            f"<div style='text-align:right;min-width:80px'>"
+            f"<div style='background:{sent_color}33;padding:0.4rem 0.7rem;border-radius:8px;"
+            f"font-weight:bold;color:{sent_color};font-size:0.95rem'>{sent_score:+.2f}</div>"
+            f"<small style='color:#888;font-size:0.75rem'>{sent_label}</small>"
+            f"</div></div></div>",
+            unsafe_allow_html=True
         )
-        st.markdown(article_html, unsafe_allow_html=True)
-
-
-# ============================================================
-# HOVED-FUNKTION
-# ============================================================
-
-def get_news_sentiment(ticker: str, days: int = 7) -> dict:
-    """
-    Henter nyheder + analyserer sentiment + returnerer alt.
-
-    Returns:
-        dict med:
-            articles: list af artikler med sentiment
-            aggregate: samlet sentiment dict
-            score_adjustment: -5 til +5 (til at justere overall score)
-    """
-    if not VADER_AVAILABLE:
-        return {
-            "articles": [],
-            "aggregate": {
-                "score": 50, "label": "VADER IKKE INSTALLERET",
-                "color": "#6b7280", "emoji": "❓", "count": 0,
-                "positive_count": 0, "negative_count": 0, "neutral_count": 0,
-                "score_adjustment": 0,
-            },
-            "score_adjustment": 0,
-            "error": "vaderSentiment ikke installeret. Kør: pip install vaderSentiment",
-        }
-
-    articles = fetch_all_news(ticker, days=days)
-    articles = analyze_articles(articles)
-    agg = aggregate_sentiment(articles)
-
-    return {
-        "articles": articles,
-        "aggregate": agg,
-        "score_adjustment": agg["score_adjustment"],
-    }
