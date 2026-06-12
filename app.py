@@ -275,13 +275,40 @@ st.markdown("---")
 # ============ HJEM (DAILY BRIEF) ============
 
 if st.session_state.active_view == "🏠 Hjem":
-    today = datetime.now()
+    # 🆕 BRUG DANSK TID (Europe/Copenhagen) - fixer 2-timers offset
+    try:
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("Europe/Copenhagen"))
+    except ImportError:
+        # Fallback for ældre Python
+        try:
+            import pytz
+            today = datetime.now(pytz.timezone("Europe/Copenhagen"))
+        except ImportError:
+            # Sidste fallback - manuel +2 timer (sommertid) / +1 (vintertid)
+            today = datetime.utcnow() + timedelta(hours=2)
+
     weekday_dk = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"][today.weekday()]
     month_dk = ["januar", "februar", "marts", "april", "maj", "juni",
                 "juli", "august", "september", "oktober", "november", "december"][today.month - 1]
 
+    # 🆕 DYNAMISK HILSEN BASERET PÅ TIDSPUNKT
+    hour = today.hour
+    if 5 <= hour < 10:
+        greeting = "🌅 God morgen!"
+    elif 10 <= hour < 12:
+        greeting = "☀️ God formiddag!"
+    elif 12 <= hour < 14:
+        greeting = "🌞 God middag!"
+    elif 14 <= hour < 18:
+        greeting = "🌤️ God eftermiddag!"
+    elif 18 <= hour < 22:
+        greeting = "🌆 God aften!"
+    else:
+        greeting = "🌙 God nat!"
+
     st.markdown(
-        f"<h2 style='margin-bottom:0'>☀️ God morgen!</h2>"
+        f"<h2 style='margin-bottom:0'>{greeting}</h2>"
         f"<p style='color:#888;margin-top:0'>{weekday_dk} {today.day}. {month_dk} {today.year} · "
         f"Klokken {today.strftime('%H:%M')}</p>",
         unsafe_allow_html=True
@@ -549,8 +576,7 @@ if st.session_state.active_view == "🏠 Hjem":
     st.caption(
         "⚠️ **Ikke finansiel rådgivning.** Dashboard er et analyseværktøj. "
         "Lav altid din egen research før investering. Past performance is not indicative of future results."
-    )
-    # ============ SØGE-VIEW ============
+    )    # ============ SØGE-VIEW ============
 
 elif st.session_state.active_view == "🔍 Søg ticker":
     st.subheader("🔍 Find ticker for et firma")
