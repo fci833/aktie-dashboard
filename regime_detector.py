@@ -32,60 +32,60 @@ REGIME_DESCRIPTIONS = {
     "UNKNOWN": "Kunne ikke bestemme regime. Bruger standard-vægte.",
 }
 
-# 🆕 BENCHMARK MAP: country/exchange → benchmark ticker + label
+# 🆕 BENCHMARK MAP: country → benchmark ticker + label
 BENCHMARK_MAP = {
     # USA
     "United States": ("SPY", "S&P 500"),
     "US":            ("SPY", "S&P 500"),
-    
+
     # Danmark
     "Denmark":       ("^OMXC25", "OMXC25"),
     "DK":            ("^OMXC25", "OMXC25"),
-    
+
     # Sverige
     "Sweden":        ("^OMX", "OMX Stockholm"),
     "SE":            ("^OMX", "OMX Stockholm"),
-    
+
     # Norge
     "Norway":        ("^OSEAX", "Oslo Børs"),
     "NO":            ("^OSEAX", "Oslo Børs"),
-    
+
     # Tyskland
     "Germany":       ("^GDAXI", "DAX"),
     "DE":            ("^GDAXI", "DAX"),
-    
+
     # UK
     "United Kingdom": ("^FTSE", "FTSE 100"),
     "GB":            ("^FTSE", "FTSE 100"),
-    
+
     # Frankrig
     "France":        ("^FCHI", "CAC 40"),
     "FR":            ("^FCHI", "CAC 40"),
-    
+
     # Holland
     "Netherlands":   ("^AEX", "AEX"),
     "NL":            ("^AEX", "AEX"),
-    
+
     # Schweiz
     "Switzerland":   ("^SSMI", "SMI"),
     "CH":            ("^SSMI", "SMI"),
-    
+
     # Japan
     "Japan":         ("^N225", "Nikkei 225"),
     "JP":            ("^N225", "Nikkei 225"),
-    
+
     # Hong Kong / Kina
     "Hong Kong":     ("^HSI", "Hang Seng"),
     "HK":            ("^HSI", "Hang Seng"),
     "China":         ("000001.SS", "Shanghai Comp"),
     "CN":            ("000001.SS", "Shanghai Comp"),
-    
+
     # Generel Europa fallback
     "Europe":        ("^STOXX50E", "Euro Stoxx 50"),
     "EU":            ("^STOXX50E", "Euro Stoxx 50"),
 }
 
-# Suffix-baseret fallback (når country mangler)
+# 🆕 Suffix-baseret fallback (når country mangler)
 SUFFIX_TO_BENCHMARK = {
     ".CO": ("^OMXC25", "OMXC25"),
     ".ST": ("^OMX", "OMX Stockholm"),
@@ -103,8 +103,8 @@ SUFFIX_TO_BENCHMARK = {
 
 def get_benchmark_for_ticker(ticker: str = None, country: str = None):
     """
-    Returnér (benchmark_ticker, label) baseret på country eller ticker-suffix.
-    
+    🆕 Returnér (benchmark_ticker, label) baseret på country eller ticker-suffix.
+
     Prioritet:
     1. Country (mest pålidelig)
     2. Ticker suffix (.CO → OMXC25)
@@ -113,14 +113,14 @@ def get_benchmark_for_ticker(ticker: str = None, country: str = None):
     # 1. Country baseret
     if country and country in BENCHMARK_MAP:
         return BENCHMARK_MAP[country]
-    
+
     # 2. Suffix baseret
     if ticker:
         ticker_upper = ticker.upper()
         for suffix, (bench, label) in SUFFIX_TO_BENCHMARK.items():
             if ticker_upper.endswith(suffix):
                 return bench, label
-    
+
     # 3. Default
     return "SPY", "S&P 500"
 
@@ -129,14 +129,14 @@ def get_benchmark_for_ticker(ticker: str = None, country: str = None):
 def detect_market_regime(benchmark="SPY", benchmark_label=None):
     """
     Detekterer markedsregime baseret på benchmark.
-    
+
     Args:
         benchmark: ticker for benchmark (default SPY)
         benchmark_label: pænt label til UI (default = benchmark)
     """
     if benchmark_label is None:
         benchmark_label = benchmark
-    
+
     try:
         bench = yf.Ticker(benchmark).history(period="1y")
         if bench.empty or len(bench) < 200:
@@ -224,7 +224,12 @@ def detect_market_regime(benchmark="SPY", benchmark_label=None):
 def detect_combined_regime(ticker: str = None, country: str = None):
     """
     🆕 Smart regime detection: kombinerer LOKAL + GLOBAL regime.
-    
+
+    - US-aktier (AAPL, NVO) → bare SPY
+    - Danske (.CO) → OMXC25 + S&P 500 kombineret
+    - Tyske (.DE) → DAX + S&P 500 kombineret
+    - etc.
+
     Returns:
         regime: combined regime
         confidence: 0-100
@@ -232,20 +237,19 @@ def detect_combined_regime(ticker: str = None, country: str = None):
     """
     # 1. Find lokalt benchmark
     local_bench, local_label = get_benchmark_for_ticker(ticker, country)
-    
+
     # 2. Detect lokalt
     local_regime, local_conf, local_metrics = detect_market_regime(local_bench, local_label)
-    
-    # 3. Detect global (SPY) hvis lokal ikke er SPY
+
+    # 3. Hvis lokal allerede er SPY, brug bare den
     if local_bench == "SPY":
-        # Allerede US-aktie, brug bare lokal
         local_metrics["is_combined"] = False
         return local_regime, local_conf, local_metrics
-    
+
+    # 4. Detect global (SPY)
     global_regime, global_conf, global_metrics = detect_market_regime("SPY", "S&P 500")
-    
-    # 4. Kombinér: global vægter 30%, lokal 70%
-    # Prioritér det "værste" regime hvis de er forskellige (forsigtighedsprincip)
+
+    # 5. Kombinér: prioritér det "værste" regime hvis de er forskellige
     severity = {
         "BULL": 0,
         "SIDEWAYS": 1,
@@ -253,7 +257,7 @@ def detect_combined_regime(ticker: str = None, country: str = None):
         "BEAR": 3,
         "UNKNOWN": 1,
     }
-    
+
     if severity.get(global_regime, 1) > severity.get(local_regime, 1):
         # Global er værre — flyt mod global
         combined_regime = global_regime
@@ -262,7 +266,7 @@ def detect_combined_regime(ticker: str = None, country: str = None):
         # Lokal er værre eller ens — brug lokal
         combined_regime = local_regime
         combined_conf = int(local_conf * 0.7 + global_conf * 0.3)
-    
+
     return combined_regime, combined_conf, {
         **local_metrics,
         "is_combined": True,
@@ -383,20 +387,20 @@ def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
     color = REGIME_COLORS.get(regime, "#6b7280")
     emoji = REGIME_EMOJI.get(regime, "❓")
     desc = REGIME_DESCRIPTIONS.get(regime, "")
-    
+
     fund_w, tech_w = adjust_weights_for_regime(regime, asset_type)
     benchmark_label = metrics.get("benchmark_label", "S&P 500" if asset_type == "stock" else "Bitcoin")
 
     # 🆕 Vis combined info hvis relevant
     is_combined = metrics.get("is_combined", False)
-    
+
     if is_combined:
         local_reg = metrics.get("local_regime", regime)
         local_label = metrics.get("local_label", "Local")
         global_reg = metrics.get("global_regime", "?")
         local_emoji = REGIME_EMOJI.get(local_reg, "")
         global_emoji = REGIME_EMOJI.get(global_reg, "")
-        
+
         sub_info = (
             f"<div style='font-size:0.85rem;color:#aaa;margin-top:0.4rem'>"
             f"📍 <b>{local_label}:</b> {local_emoji} {local_reg} · "
@@ -461,8 +465,8 @@ def render_regime_banner(regime, confidence, metrics, asset_type="stock"):
                 tcols[0].metric("Pris > SMA50", "✅" if metrics["above_sma50"] else "❌")
                 tcols[1].metric("Pris > SMA200", "✅" if metrics["above_sma200"] else "❌")
                 tcols[2].metric("SMA50 > SMA200", "✅" if metrics.get("sma50_above_200") else "❌")
-            
-            # Vis combined-detaljer
+
+            # 🆕 Vis combined-detaljer
             if is_combined:
                 st.markdown("---")
                 st.markdown("**🌐 Kombineret regime-analyse:**")
