@@ -943,3 +943,348 @@ def render_watchlist_earnings_calendar(tickers: List[str]) -> None:
         )
     elif medium > 0:
         st.info(f"📅 {medium} earnings inden for 2 uger")
+# ============ EARNINGS SCORE BOOST ============
+
+def calculate_earnings_score_boost(data: Optional[Dict]) -> Dict:
+    """
+    Beregn score-boost baseret på earnings-historik.
+    Returnerer dict med:
+        - boost: int (-10 til +15) - tilføjes til overall score
+        - factors: List[Dict] - breakdown af hvad der påvirker
+        - rating: str - "Excellent" / "God" / "OK" / "Dårlig"
+
+    Logik:
+    - Beat rate ≥ 90%      → +6 (excellent track record)
+    - Beat rate ≥ 75%      → +4 (god track record)
+    - Beat rate ≥ 60%      → +2 (OK)
+    - Beat rate < 40%      → -3 (dårligt track record)
+
+    - Avg surprise ≥ 5%    → +4 (markant overrasker)
+    - Avg surprise ≥ 2%    → +2 (lidt over)
+    - Avg surprise < -2%   → -3 (skuffer)
+
+    - Lav post-earnings swing (<3%)  → +2 (lav risiko)
+    - Høj post-earnings swing (>8%)  → -2 (høj risiko)
+
+    - Earnings <3 dage frem  → -3 (timing-risiko)
+    - Earnings <7 dage frem  → -1
+    """
+    factors = []
+    boost = 0
+
+    if data is None:
+        return {
+            "boost": 0,
+            "factors": [],
+            "rating": "Ukendt",
+            "rating_color": "#6b7280",
+            "explanation": "Ingen earnings-data tilgængelig"
+        }
+
+    # === BEAT RATE BOOST ===
+    beat_rate = data.get("beat_rate")
+    n_q = data.get("n_quarters", 0)
+
+    if beat_rate is not None and n_q >= 4:  # Min. 4 kvartaler for pålidelig data
+        if beat_rate >= 90:
+            boost += 6
+            factors.append({
+                "label": f"🏆 Beat rate {beat_rate:.0f}% ({n_q} kv.)",
+                "impact": +6,
+                "category": "Track record"
+            })
+        elif beat_rate >= 75:
+            boost += 4
+            factors.append({
+                "label": f"🎯 Beat rate {beat_rate:.0f}% ({n_q} kv.)",
+                "impact": +4,
+                "category": "Track record"
+            })
+        elif beat_rate >= 60:
+            boost += 2
+            factors.append({
+                "label": f"✅ Beat rate {beat_rate:.0f}% ({n_q} kv.)",
+                "impact": +2,
+                "category": "Track record"
+            })
+        elif beat_rate < 40:
+            boost -= 3
+            factors.append({
+                "label": f"⚠️ Lav beat rate {beat_rate:.0f}% ({n_q} kv.)",
+                "impact": -3,
+                "category": "Track record"
+            })
+
+    # === AVG SURPRISE BOOST ===
+    avg_surp = data.get("avg_surprise_pct")
+
+    if avg_surp is not None:
+        if avg_surp >= 5:
+            boost += 4
+            factors.append({
+                "label": f"📈 Stor positiv surprise (+{avg_surp:.1f}%)",
+                "impact": +4,
+                "category": "Surprise"
+            })
+        elif avg_surp >= 2:
+            boost += 2
+            factors.append({
+                "label": f"📊 Positiv surprise (+{avg_surp:.1f}%)",
+                "impact": +2,
+                "category": "Surprise"
+            })
+        elif avg_surp <= -2:
+            boost -= 3
+            factors.append({
+                "label": f"📉 Negative surprises ({avg_surp:.1f}%)",
+                "impact": -3,
+                "category": "Surprise"
+            })
+
+    # === VOLATILITET BOOST (risk-adjusted) ===
+    vol = data.get("volatility") or {}
+    avg_swing = vol.get("avg_abs_move_pct")
+    n_obs = vol.get("n_observations", 0)
+
+    if avg_swing is not None and n_obs >= 4:
+        if avg_swing < 3:
+            boost += 2
+            factors.append({
+                "label": f"🛡️ Lav post-earnings swing (±{avg_swing:.1f}%)",
+                "impact": +2,
+                "category": "Volatilitet"
+            })
+        elif avg_swing > 8:
+            boost -= 2
+            factors.append({
+                "label": f"⚡ Høj post-earnings swing (±{avg_swing:.1f}%)",
+                "impact": -2,
+                "category": "Volatilitet"
+            })
+
+    # === TIMING-RISIKO ===
+    days = data.get("days_until")
+    if days is not None and days >= 0:
+        if days <= 3:
+            boost -= 3
+            factors.append({
+                "label": f"🚨 Earnings KRITISK tæt på ({days} dage)",
+                "impact": -3,
+                "category": "Timing"
+            })
+        elif days <= 7:
+            boost -= 1
+            factors.append({
+                "label": f"⚠️ Earnings meget tæt på ({days} dage)",
+                "impact": -1,
+                "category": "Timing"
+            })
+
+    # === RATING ===
+    if boost >= 8:
+        rating = "Excellent"
+        rating_color = "#16a34a"
+        explanation = "Stærk earnings-historik booster scoren markant"
+    elif boost >= 4:
+        rating = "God"
+        rating_color = "#22c55e"
+        explanation = "Solid earnings-track record giver positivt boost"
+    elif boost >= 0:
+        rating = "Neutral"
+        rating_color = "#eab308"
+        explanation = "Earnings-data er neutral for scoren"
+    elif boost >= -3:
+        rating = "Svag"
+        rating_color = "#f97316"
+        explanation = "Earnings-historik trækker scoren let ned"
+    else:
+        rating = "Dårlig"
+        rating_color = "#ef4444"
+        explanation = "Dårlig earnings-historik trækker scoren betydeligt ned"
+
+    return {
+        "boost": boost,
+        "factors": factors,
+        "rating": rating,
+        "rating_color": rating_color,
+        "explanation": explanation,
+    }
+
+
+def render_earnings_score_card(data: Optional[Dict]) -> None:
+    """
+    Render et lille kort der viser earnings-score-bidrag.
+    Kald denne i Score Breakdown sektionen.
+    """
+    score_info = calculate_earnings_score_boost(data)
+    boost = score_info["boost"]
+    rating = score_info["rating"]
+    color = score_info["rating_color"]
+
+    # Sign + farve
+    if boost > 0:
+        sign = "+"
+        boost_color = "#16a34a"
+    elif boost < 0:
+        sign = ""
+        boost_color = "#ef4444"
+    else:
+        sign = ""
+        boost_color = "#6b7280"
+
+    st.markdown(
+        f"<div style='background:{color}15;padding:1rem;border-radius:10px;"
+        f"border-left:5px solid {color};margin-bottom:0.6rem'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+        f"<div>"
+        f"<small style='color:#888'>📅 EARNINGS-SCORE BIDRAG</small>"
+        f"<h3 style='margin:0.2rem 0;color:{color}'>{rating}</h3>"
+        f"<small style='color:#aaa'>{score_info['explanation']}</small>"
+        f"</div>"
+        f"<div style='text-align:right'>"
+        f"<small style='color:#888'>SCORE-EFFEKT</small>"
+        f"<h1 style='margin:0.2rem 0;color:{boost_color}'>{sign}{boost}</h1>"
+        f"</div>"
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    # Vis breakdown
+    factors = score_info["factors"]
+    if factors:
+        with st.expander(f"📊 Se breakdown ({len(factors)} faktorer)"):
+            for f in factors:
+                imp = f["impact"]
+                icon = "📈" if imp > 0 else "📉"
+                color_f = "#16a34a" if imp > 0 else "#ef4444"
+                st.markdown(
+                    f"<div style='display:flex;justify-content:space-between;"
+                    f"padding:0.4rem 0;border-bottom:1px solid #ffffff10'>"
+                    f"<span>{f['label']} <small style='color:#666'>· {f['category']}</small></span>"
+                    f"<span style='color:{color_f};font-weight:bold'>"
+                    f"{icon} {imp:+d}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+
+# ============ EARNINGS MARKERS PÅ CHART ============
+
+def add_earnings_markers_to_chart(
+    fig,
+    earnings_data: Optional[Dict],
+    hist_df: pd.DataFrame,
+    row: int = 1,
+    col: int = 1,
+) -> None:
+    """
+    Tilføj earnings-markører på et plotly chart.
+    
+    - Vertikale linjer på alle historiske earnings-datoer
+    - Grøn farve hvis "beat", rød hvis "miss"
+    - Annotation med "E" og dato
+    - Special markør for NÆSTE earnings (gul/orange, fremtid)
+    
+    Args:
+        fig: plotly figure (typisk make_subplots)
+        earnings_data: Output fra get_earnings_info()
+        hist_df: DataFrame med pris-historik (for x-axis range)
+        row: row hvor markører skal vises (default: 1, dvs. main price chart)
+        col: col (default: 1)
+    """
+    if earnings_data is None or hist_df is None or hist_df.empty:
+        return
+
+    history = earnings_data.get("history", [])
+    next_date = earnings_data.get("next_date")
+
+    # Find x-axis range fra hist
+    try:
+        hist_start = hist_df.index.min()
+        hist_end = hist_df.index.max()
+        # Konverter til naive datetime for sammenligning
+        if hasattr(hist_start, 'tz') and hist_start.tz is not None:
+            hist_start = hist_start.tz_localize(None) if hasattr(hist_start, 'tz_localize') else hist_start.replace(tzinfo=None)
+            hist_end = hist_end.tz_localize(None) if hasattr(hist_end, 'tz_localize') else hist_end.replace(tzinfo=None)
+    except Exception:
+        return
+
+    # Tilføj historiske earnings-markører
+    for entry in history:
+        ed = entry.get("date")
+        if ed is None:
+            continue
+
+        try:
+            # Konverter til naive
+            ed_naive = ed.replace(tzinfo=None) if ed.tzinfo else ed
+
+            # Skip hvis udenfor hist-range
+            if ed_naive < hist_start or ed_naive > hist_end:
+                continue
+
+            # Bestem farve baseret på beat/miss
+            beat = entry.get("beat")
+            surp = entry.get("surprise_pct")
+
+            if beat is True:
+                line_color = "rgba(34, 197, 94, 0.6)"  # grøn
+                marker_text = "✓"
+                tooltip_color = "#16a34a"
+            elif beat is False:
+                line_color = "rgba(239, 68, 68, 0.6)"  # rød
+                marker_text = "✗"
+                tooltip_color = "#ef4444"
+            else:
+                line_color = "rgba(156, 163, 175, 0.5)"  # grå
+                marker_text = "E"
+                tooltip_color = "#9ca3af"
+
+            # Surprise text
+            surp_str = f"{surp:+.1f}%" if surp is not None else "?"
+
+            # Tilføj vertikal linje
+            fig.add_vline(
+                x=ed_naive,
+                line=dict(color=line_color, width=1.5, dash="dot"),
+                row=row, col=col,
+                annotation_text=f"{marker_text} {surp_str}",
+                annotation_position="top",
+                annotation_font=dict(size=10, color=tooltip_color),
+                annotation_bgcolor="rgba(0,0,0,0.6)",
+            )
+        except Exception:
+            continue
+
+    # Tilføj NÆSTE earnings markør (fremtidig)
+    if next_date is not None:
+        try:
+            next_naive = next_date.replace(tzinfo=None) if next_date.tzinfo else next_date
+            now = datetime.now()
+
+            # Kun hvis fremtidig
+            if next_naive > now:
+                # Tjek om datoen er indenfor visning (eller lige udenfor)
+                # Vi tilføjer den uanset, plotly extender x-aksen
+                fig.add_vline(
+                    x=next_naive,
+                    line=dict(color="#fbbf24", width=2.5, dash="dash"),  # gul/orange
+                    row=row, col=col,
+                    annotation_text=f"📅 NÆSTE EARNINGS",
+                    annotation_position="top",
+                    annotation_font=dict(size=11, color="#fbbf24"),
+                    annotation_bgcolor="rgba(0,0,0,0.7)",
+                )
+        except Exception:
+            pass
+
+
+def add_earnings_legend_caption() -> None:
+    """Vis forklaring på earnings-markører under et chart"""
+    st.caption(
+        "📅 **Earnings markører:** "
+        "🟢 ✓ = EPS Beat · "
+        "🔴 ✗ = EPS Miss · "
+        "🟡 stiplet = Næste earnings"
+    )
