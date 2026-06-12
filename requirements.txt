@@ -8,3 +8,4 @@ curl_cffi
 finnhub-python
 requests
 pytest
+vaderSentiment>=3.3.2
