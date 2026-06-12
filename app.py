@@ -1295,7 +1295,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         f"ATR: ${targets['atr']:.4f}"
                     )
 
-                # ============ KRYPTO ACTION PLAN ============
+                                # ============ KRYPTO ACTION PLAN ============
                 from crypto_analysis import generate_crypto_action_plan
 
                 fx_crypto = get_fx_rate("USD", "DKK")
@@ -1487,7 +1487,8 @@ elif st.session_state.active_view == "🪙 Krypto":
                     "Krypto kan tabe 50-90% i bear markets — invester KUN hvad du har råd til at tabe. "
                     "Brug ALTID stop-loss til at beskytte din kapital."
                 )
-                                if symbol == "BTC":
+
+                if symbol == "BTC":
                     halv = btc_halving_analysis(symbol)
                     if halv:
                         st.markdown("---")
@@ -1785,7 +1786,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                 if info.get("description"):
                     with st.expander("ℹ️ Om denne krypto"):
                         st.write(info["description"])
-
     # ===== TAB 2: SCREENER =====
     with crypto_tabs[1]:
         st.markdown("### 🔎 Krypto-screener")
