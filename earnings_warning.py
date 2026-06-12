@@ -99,11 +99,27 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
     except Exception:
         pass
 
-    # Method 2: earnings_dates (full historik + future)
+    # Method 2: get_earnings_dates() - newer API
+    try:
+        ed = ticker_obj.get_earnings_dates(limit=24)
+        if ed is not None and not ed.empty:
+            now = pd.Timestamp.now(tz="UTC")
+            if ed.index.tz is None:
+                ed.index = ed.index.tz_localize("UTC")
+            future = ed[ed.index > now]
+            if not future.empty:
+                next_date = future.index.min()
+                candidates.append(_safe_to_datetime(next_date))
+    except Exception:
+        pass
+
+    # Method 3: earnings_dates property (fallback)
     try:
         ed = ticker_obj.earnings_dates
         if ed is not None and not ed.empty:
             now = pd.Timestamp.now(tz="UTC")
+            if ed.index.tz is None:
+                ed.index = ed.index.tz_localize("UTC")
             future = ed[ed.index > now]
             if not future.empty:
                 # Tag tidligste fremtidige
@@ -112,7 +128,7 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
     except Exception:
         pass
 
-    # Method 3: info dict
+    # Method 4: info dict
     try:
         info = ticker_obj.info
         for key in ["earningsTimestamp", "earningsDate"]:
@@ -134,23 +150,56 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
     # Hvis ingen fremtidige, returnér tidligste (kunne være "i dag/lige rundt")
     valid = [d for d in candidates if d is not None]
     if valid:
-        # Tag den dato der er tættest på "nu"
         return min(valid, key=lambda d: abs((d - now).total_seconds()))
 
     return None
 
 
 def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
-    """Hent historisk earnings (EPS estimat vs faktisk + surprise)"""
+    """
+    Hent historisk earnings (EPS estimat vs faktisk + surprise).
+    Robust version med flere fallbacks for forskellige yfinance versioner.
+    """
     history = []
 
+    # Method 1: get_earnings_dates() - newer yfinance API (anbefalet)
+    ed = None
     try:
-        ed = ticker_obj.earnings_dates
-        if ed is None or ed.empty:
-            return []
+        ed = ticker_obj.get_earnings_dates(limit=n_quarters * 2)
+        if ed is not None and not ed.empty:
+            print(f"[earnings] ✓ get_earnings_dates() returnerede {len(ed)} rows")
+    except Exception as e:
+        print(f"[earnings] get_earnings_dates() fejl: {e}")
+
+    # Method 2: Fallback til earnings_dates property (ældre yfinance)
+    if ed is None or (hasattr(ed, 'empty') and ed.empty):
+        try:
+            ed = ticker_obj.earnings_dates
+            if ed is not None and not ed.empty:
+                print(f"[earnings] ✓ earnings_dates property returnerede {len(ed)} rows")
+        except Exception as e:
+            print(f"[earnings] earnings_dates fejl: {e}")
+
+    if ed is None or (hasattr(ed, 'empty') and ed.empty):
+        print(f"[earnings] ⚠️ Ingen earnings-historik fundet")
+        return []
+
+    try:
+        # Print debug-info om kolonnerne
+        print(f"[earnings] Kolonner: {list(ed.columns)}")
 
         now = pd.Timestamp.now(tz="UTC")
+
+        # Sørg for at index er tz-aware
+        if ed.index.tz is None:
+            ed.index = ed.index.tz_localize("UTC")
+
+        # Filter: kun fortid (allerede rapporterede)
         past = ed[ed.index <= now].head(n_quarters)
+
+        if past.empty:
+            print(f"[earnings] ⚠️ Alle earnings er fremtidige - ingen historik endnu")
+            return []
 
         for date_idx, row in past.iterrows():
             entry = {
@@ -161,44 +210,72 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                 "beat": None,
             }
 
-            # Forskellige column-navne i yfinance versions
-            for est_col in ["EPS Estimate", "Estimate", "epsEstimate"]:
+            # Find EPS estimate (forskellige column-navne i versioner)
+            for est_col in [
+                "EPS Estimate", "Estimate", "epsEstimate", "estimate",
+                "EPS_Estimate", "eps_estimate"
+            ]:
                 if est_col in row.index:
-                    entry["eps_estimate"] = row.get(est_col)
-                    break
-            for act_col in ["Reported EPS", "Actual", "epsActual"]:
-                if act_col in row.index:
-                    entry["eps_actual"] = row.get(act_col)
-                    break
-            for surp_col in ["Surprise(%)", "Surprise %", "surprisePercent"]:
-                if surp_col in row.index:
-                    entry["surprise_pct"] = row.get(surp_col)
-                    break
+                    val = row.get(est_col)
+                    if val is not None and not pd.isna(val):
+                        try:
+                            entry["eps_estimate"] = float(val)
+                            break
+                        except (ValueError, TypeError):
+                            continue
 
-            # Konverter til float (drop NaN)
-            for k in ["eps_estimate", "eps_actual", "surprise_pct"]:
-                v = entry[k]
-                if v is None or pd.isna(v):
-                    entry[k] = None
-                else:
-                    try:
-                        entry[k] = float(v)
-                    except Exception:
-                        entry[k] = None
+            # Find faktisk EPS
+            for act_col in [
+                "Reported EPS", "Actual", "epsActual", "actual",
+                "reportedEPS", "Reported_EPS", "eps_actual"
+            ]:
+                if act_col in row.index:
+                    val = row.get(act_col)
+                    if val is not None and not pd.isna(val):
+                        try:
+                            entry["eps_actual"] = float(val)
+                            break
+                        except (ValueError, TypeError):
+                            continue
+
+            # Find surprise % (direkte fra API)
+            for surp_col in [
+                "Surprise(%)", "Surprise %", "surprisePercent",
+                "surprise(%)", "Surprise", "surprise_pct"
+            ]:
+                if surp_col in row.index:
+                    val = row.get(surp_col)
+                    if val is not None and not pd.isna(val):
+                        try:
+                            entry["surprise_pct"] = float(val)
+                            break
+                        except (ValueError, TypeError):
+                            continue
+
+            # Hvis surprise mangler men vi har estimate + actual → beregn selv
+            if (entry["eps_estimate"] is not None and
+                    entry["eps_actual"] is not None and
+                    entry["surprise_pct"] is None):
+                if entry["eps_estimate"] != 0:
+                    entry["surprise_pct"] = (
+                        (entry["eps_actual"] - entry["eps_estimate"]) /
+                        abs(entry["eps_estimate"]) * 100
+                    )
 
             # Beregn beat/miss
             if entry["eps_estimate"] is not None and entry["eps_actual"] is not None:
-                if entry["surprise_pct"] is None:
-                    if entry["eps_estimate"] != 0:
-                        entry["surprise_pct"] = (
-                            (entry["eps_actual"] - entry["eps_estimate"]) /
-                            abs(entry["eps_estimate"]) * 100
-                        )
                 entry["beat"] = entry["eps_actual"] >= entry["eps_estimate"]
 
-            history.append(entry)
+            # Tilføj kun hvis vi minimum har en dato
+            if entry["date"] is not None:
+                history.append(entry)
+
+        print(f"[earnings] ✓ Parsed {len(history)} earnings entries")
+
     except Exception as e:
-        print(f"[earnings] Historik fejl: {e}")
+        print(f"[earnings] Historik parsing fejl: {e}")
+        import traceback
+        traceback.print_exc()
 
     return history
 
