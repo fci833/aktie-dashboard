@@ -622,10 +622,11 @@ elif st.session_state.active_view == "🔧 Diagnose":
     st.subheader("🔧 Diagnose - Test datakilder & ML")
 
     diag_tabs = st.tabs([
-    "🌐 Data sources",
-    "🤖 ML Data Pipeline",
-    "🚀 Backfill (genvej)"
-])
+        "🌐 Data sources",
+        "🤖 ML Data Pipeline",
+        "🚀 Backfill (genvej)",
+        "🎯 Træn ML"
+    ])
 
     # ===== TAB 1: Original data source diagnose =====
     with diag_tabs[0]:
@@ -646,166 +647,8 @@ elif st.session_state.active_view == "🔧 Diagnose":
             "Tester om ML data pipelinen kan læse dine snapshots og forberede "
             "training data til machine learning modellen."
         )
-            # ===== TAB 3: ML Backfill =====
-    with diag_tabs[2]:
-        st.markdown("### 🚀 ML Backfill — Generer historisk training data")
-        st.caption(
-            "🪄 **Tidsmaskine!** Genererer 'snapshots' bagudrettet fra historisk pris-data, "
-            "så du kan træne ML modellen i dag — uden at vente 6 måneder på forward returns."
-        )
 
-        st.info(
-            "💡 **Sådan virker det:**\n"
-            "1. Vi tager populære tickers (AAPL, MSFT, NVDA, etc.)\n"
-            "2. Går tilbage i tiden (fx 24 måneder)\n"
-            "3. På hver dato beregner vi scores AS IF vi havde screenet dengang\n"
-            "4. Vi bruger den NUVÆRENDE pris til at beregne forward returns\n"
-            "5. Bom! Hundredevis af training samples på 2-5 minutter ⚡"
-        )
-
-        bf_cols = st.columns(3)
-        bf_asset = bf_cols[0].selectbox(
-            "Asset class", ["stock", "crypto"], key="bf_asset"
-        )
-        bf_months = bf_cols[1].slider(
-            "Måneder tilbage", 12, 36, 24, 6, key="bf_months",
-            help="Hvor langt tilbage i tiden skal vi generere snapshots?"
-        )
-        bf_interval = bf_cols[2].slider(
-            "Dage mellem snapshots", 14, 60, 30, key="bf_interval",
-            help="Mindre = flere samples men mere overlap"
-        )
-
-        # Estimated samples
-        n_dates = (bf_months * 30 - 200) // bf_interval
-        n_tickers_est = 50 if bf_asset == "stock" else 15
-        n_samples_est = n_dates * n_tickers_est
-
-        st.caption(
-            f"📊 **Forventet output:** ~{n_dates} snapshot-datoer × ~{n_tickers_est} tickers "
-            f"= ~{n_samples_est} samples (afhængigt af data-kvalitet)"
-        )
-
-        if st.button(
-            "🚀 KØR BACKFILL",
-            type="primary",
-            use_container_width=True,
-            key="btn_run_backfill"
-        ):
-            try:
-                from ml_backfill import build_backfill_dataset, save_backfill_as_snapshots, DEFAULT_TICKERS
-
-                # Choose tickers based on asset class
-                if bf_asset == "crypto":
-                    tickers = DEFAULT_TICKERS["crypto"]
-                else:
-                    tickers = (
-                        DEFAULT_TICKERS["us_large_cap"]
-                        + DEFAULT_TICKERS["us_growth"][:10]
-                        + DEFAULT_TICKERS["european"][:10]
-                    )
-                    tickers = list(set(tickers))
-
-                progress = st.progress(0, text="Starter backfill...")
-                status_box = st.empty()
-
-                def update_progress(current, total, ticker):
-                    progress.progress(
-                        current / total,
-                        text=f"📈 [{current}/{total}] Henter {ticker}..."
-                    )
-
-                status_box.info(f"⏳ Genererer historisk data for {len(tickers)} tickers...")
-
-                with st.spinner(""):
-                    result = build_backfill_dataset(
-                        tickers=tickers,
-                        asset_class=bf_asset,
-                        months_back=bf_months,
-                        snapshot_interval_days=bf_interval,
-                        progress_callback=update_progress,
-                    )
-
-                progress.empty()
-
-                if "error" in result:
-                    status_box.empty()
-                    st.error(f"❌ {result['error']}")
-                else:
-                    df = result["df"]
-                    status_box.success(f"✅ Genereret {result['n_rows']} samples!")
-
-                    # Stats
-                    stats_cols = st.columns(4)
-                    stats_cols[0].metric("📊 Total samples", result['n_rows'])
-                    stats_cols[1].metric("🏷️ Tickers", result['n_tickers'])
-                    stats_cols[2].metric("📅 Snapshots", result['n_snapshots'])
-
-                    # Forward returns coverage
-                    valid_30 = df["future_return_30d"].notna().sum() if "future_return_30d" in df.columns else 0
-                    stats_cols[3].metric("✅ 30d valid", valid_30)
-
-                    # Detail per horizon
-                    st.markdown("##### 📅 Coverage per horisont")
-                    cov_data = []
-                    for h in [30, 90, 180]:
-                        col = f"future_return_{h}d"
-                        if col in df.columns:
-                            valid = df[col].notna().sum()
-                            avg_ret = df[col].mean() if valid > 0 else 0
-                            cov_data.append({
-                                "Horisont": f"{h} dage",
-                                "Valid samples": valid,
-                                "Coverage %": f"{valid/len(df)*100:.0f}%",
-                                "Gns. afkast": f"{avg_ret:+.2f}%",
-                            })
-                    st.dataframe(pd.DataFrame(cov_data), use_container_width=True, hide_index=True)
-
-                                        # 🆕 STORE IN SESSION STATE (Streamlit Cloud workaround)
-                    from ml_backfill import store_backfill_in_session
-                    store_backfill_in_session(df)
-
-                    st.markdown("---")
-                    st.success(
-                        "✅ **Data gemt automatisk i session!** ML pipelinen kan nu læse den direkte. "
-                        "Gå til **🤖 ML Data Pipeline** → klik **'Hent oversigt'** → "
-                        "så kan du træne modellen 🚀"
-                    )
-                    st.balloons()
-
-                    st.markdown("##### 💾 Optional: Gem også som CSV (lokalt)")
-                    save_cols = st.columns([3, 1])
-                    save_cols[0].caption(
-                        "ℹ️ På Streamlit Cloud forsvinder CSV-filer ved rebuild. "
-                        "Brug session state (allerede gemt!) til træning. "
-                        "CSV-gem er kun nyttigt hvis du kører lokalt."
-                    )
-
-                    if save_cols[1].button(
-                        "💾 GEM CSV",
-                        use_container_width=True,
-                        key="btn_save_backfill_csv"
-                    ):
-                        try:
-                            n_saved = save_backfill_as_snapshots(df)
-                            st.info(f"📁 Gemt {n_saved} CSV-filer (kun lokalt nyttigt)")
-                        except Exception as e:
-                            st.warning(f"⚠️ CSV-gem fejlede: {e}")
-
-                    # Preview
-                    with st.expander("👀 Preview af data"):
-                        st.dataframe(df.head(20), use_container_width=True)
-
-            except ImportError as e:
-                st.error(f"❌ Kunne ikke importere ml_backfill: {e}")
-                st.info("💡 Tjek at `ml_backfill.py` er gemt i samme mappe som `app.py`")
-            except Exception as e:
-                st.error(f"❌ Backfill fejlede: {e}")
-                import traceback
-                with st.expander("🐛 Full traceback"):
-                    st.code(traceback.format_exc())
-
-                # ---- Quick summary ----
+        # ---- Quick summary ----
         st.markdown("#### 📊 Tilgængelig data")
 
         # 🆕 Vis session-state backfill status
@@ -1027,6 +870,479 @@ elif st.session_state.active_view == "🔧 Diagnose":
                 import traceback
                 with st.expander("🐛 Full traceback"):
                     st.code(traceback.format_exc())
+
+    # ===== TAB 3: ML Backfill =====
+    with diag_tabs[2]:
+        st.markdown("### 🚀 ML Backfill — Generer historisk training data")
+        st.caption(
+            "🪄 **Tidsmaskine!** Genererer 'snapshots' bagudrettet fra historisk pris-data, "
+            "så du kan træne ML modellen i dag — uden at vente 6 måneder på forward returns."
+        )
+
+        st.info(
+            "💡 **Sådan virker det:**\n"
+            "1. Vi tager populære tickers (AAPL, MSFT, NVDA, etc.)\n"
+            "2. Går tilbage i tiden (fx 24 måneder)\n"
+            "3. På hver dato beregner vi scores AS IF vi havde screenet dengang\n"
+            "4. Vi bruger den NUVÆRENDE pris til at beregne forward returns\n"
+            "5. Bom! Hundredevis af training samples på 2-5 minutter ⚡"
+        )
+
+        bf_cols = st.columns(3)
+        bf_asset = bf_cols[0].selectbox(
+            "Asset class", ["stock", "crypto"], key="bf_asset"
+        )
+        bf_months = bf_cols[1].slider(
+            "Måneder tilbage", 12, 36, 24, 6, key="bf_months",
+            help="Hvor langt tilbage i tiden skal vi generere snapshots?"
+        )
+        bf_interval = bf_cols[2].slider(
+            "Dage mellem snapshots", 14, 60, 30, key="bf_interval",
+            help="Mindre = flere samples men mere overlap"
+        )
+
+        # Estimated samples
+        n_dates = (bf_months * 30 - 200) // bf_interval
+        n_tickers_est = 50 if bf_asset == "stock" else 15
+        n_samples_est = n_dates * n_tickers_est
+
+        st.caption(
+            f"📊 **Forventet output:** ~{n_dates} snapshot-datoer × ~{n_tickers_est} tickers "
+            f"= ~{n_samples_est} samples (afhængigt af data-kvalitet)"
+        )
+
+        if st.button(
+            "🚀 KØR BACKFILL",
+            type="primary",
+            use_container_width=True,
+            key="btn_run_backfill"
+        ):
+            try:
+                from ml_backfill import build_backfill_dataset, save_backfill_as_snapshots, DEFAULT_TICKERS
+
+                # Choose tickers based on asset class
+                if bf_asset == "crypto":
+                    tickers = DEFAULT_TICKERS["crypto"]
+                else:
+                    tickers = (
+                        DEFAULT_TICKERS["us_large_cap"]
+                        + DEFAULT_TICKERS["us_growth"][:10]
+                        + DEFAULT_TICKERS["european"][:10]
+                    )
+                    tickers = list(set(tickers))
+
+                progress = st.progress(0, text="Starter backfill...")
+                status_box = st.empty()
+
+                def update_progress(current, total, ticker):
+                    progress.progress(
+                        current / total,
+                        text=f"📈 [{current}/{total}] Henter {ticker}..."
+                    )
+
+                status_box.info(f"⏳ Genererer historisk data for {len(tickers)} tickers...")
+
+                with st.spinner(""):
+                    result = build_backfill_dataset(
+                        tickers=tickers,
+                        asset_class=bf_asset,
+                        months_back=bf_months,
+                        snapshot_interval_days=bf_interval,
+                        progress_callback=update_progress,
+                    )
+
+                progress.empty()
+
+                if "error" in result:
+                    status_box.empty()
+                    st.error(f"❌ {result['error']}")
+                else:
+                    df = result["df"]
+                    status_box.success(f"✅ Genereret {result['n_rows']} samples!")
+
+                    # Stats
+                    stats_cols = st.columns(4)
+                    stats_cols[0].metric("📊 Total samples", result['n_rows'])
+                    stats_cols[1].metric("🏷️ Tickers", result['n_tickers'])
+                    stats_cols[2].metric("📅 Snapshots", result['n_snapshots'])
+
+                    # Forward returns coverage
+                    valid_30 = df["future_return_30d"].notna().sum() if "future_return_30d" in df.columns else 0
+                    stats_cols[3].metric("✅ 30d valid", valid_30)
+
+                    # Detail per horizon
+                    st.markdown("##### 📅 Coverage per horisont")
+                    cov_data = []
+                    for h in [30, 90, 180]:
+                        col = f"future_return_{h}d"
+                        if col in df.columns:
+                            valid = df[col].notna().sum()
+                            avg_ret = df[col].mean() if valid > 0 else 0
+                            cov_data.append({
+                                "Horisont": f"{h} dage",
+                                "Valid samples": valid,
+                                "Coverage %": f"{valid/len(df)*100:.0f}%",
+                                "Gns. afkast": f"{avg_ret:+.2f}%",
+                            })
+                    st.dataframe(pd.DataFrame(cov_data), use_container_width=True, hide_index=True)
+
+                    # 🆕 STORE IN SESSION STATE (Streamlit Cloud workaround)
+                    from ml_backfill import store_backfill_in_session
+                    store_backfill_in_session(df)
+
+                    st.markdown("---")
+                    st.success(
+                        "✅ **Data gemt automatisk i session!** ML pipelinen kan nu læse den direkte. "
+                        "Gå til **🤖 ML Data Pipeline** → klik **'Hent oversigt'** → "
+                        "så kan du træne modellen 🚀"
+                    )
+                    st.balloons()
+
+                    st.markdown("##### 💾 Optional: Gem også som CSV (lokalt)")
+                    save_cols = st.columns([3, 1])
+                    save_cols[0].caption(
+                        "ℹ️ På Streamlit Cloud forsvinder CSV-filer ved rebuild. "
+                        "Brug session state (allerede gemt!) til træning. "
+                        "CSV-gem er kun nyttigt hvis du kører lokalt."
+                    )
+
+                    if save_cols[1].button(
+                        "💾 GEM CSV",
+                        use_container_width=True,
+                        key="btn_save_backfill_csv"
+                    ):
+                        try:
+                            n_saved = save_backfill_as_snapshots(df)
+                            st.info(f"📁 Gemt {n_saved} CSV-filer (kun lokalt nyttigt)")
+                        except Exception as e:
+                            st.warning(f"⚠️ CSV-gem fejlede: {e}")
+
+                    # Preview
+                    with st.expander("👀 Preview af data"):
+                        st.dataframe(df.head(20), use_container_width=True)
+
+            except ImportError as e:
+                st.error(f"❌ Kunne ikke importere ml_backfill: {e}")
+                st.info("💡 Tjek at `ml_backfill.py` er gemt i samme mappe som `app.py`")
+            except Exception as e:
+                st.error(f"❌ Backfill fejlede: {e}")
+                import traceback
+                with st.expander("🐛 Full traceback"):
+                    st.code(traceback.format_exc())
+
+    # ===== TAB 4: ML Training =====
+    with diag_tabs[3]:
+        st.markdown("### 🎯 Træn ML Model")
+        st.caption(
+            "Træner Random Forest, XGBoost og LightGBM på dine training data. "
+            "Modellerne gemmes som `.joblib` filer der overlever GitHub-pushes."
+        )
+
+        try:
+            from ml_train import (
+                get_available_models, list_saved_models,
+                train_all_models, MODELS_DIR
+            )
+
+            available_ml_models = get_available_models()
+            st.markdown("##### 🤖 Tilgængelige ML algoritmer")
+            avail_cols = st.columns(3)
+            avail_cols[0].metric(
+                "🌳 Random Forest",
+                "✅ Klar" if "random_forest" in available_ml_models else "❌ Mangler"
+            )
+            avail_cols[1].metric(
+                "⚡ XGBoost",
+                "✅ Klar" if "xgboost" in available_ml_models else "❌ Mangler"
+            )
+            avail_cols[2].metric(
+                "💡 LightGBM",
+                "✅ Klar" if "lightgbm" in available_ml_models else "❌ Mangler"
+            )
+
+            # ---- Show already trained models ----
+            saved = list_saved_models()
+            if saved:
+                with st.expander(f"📦 Allerede trænede modeller ({len(saved)})"):
+                    saved_df = pd.DataFrame(saved)
+                    st.dataframe(saved_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("📦 Ingen modeller trænet endnu")
+
+            st.markdown("---")
+
+            # ---- Training section ----
+            st.markdown("##### 🚀 Træn nye modeller")
+
+            train_cols = st.columns([2, 2, 2])
+            train_asset = train_cols[0].selectbox(
+                "Asset class", ["stock", "crypto"], key="ml_train_asset"
+            )
+            train_horizons = train_cols[1].multiselect(
+                "Horisonter (dage)",
+                [30, 90, 180],
+                default=[30, 90, 180],
+                key="ml_train_horizons"
+            )
+            save_models_flag = train_cols[2].checkbox(
+                "💾 Gem til disk",
+                value=True,
+                key="ml_train_save",
+                help="Gemmer modeller som .joblib filer (overlever rebuilds via GitHub)"
+            )
+
+            st.caption(
+                f"⏱️ **Estimeret tid:** ~{len(train_horizons) * len(available_ml_models) * 30}s "
+                f"({len(train_horizons)} horisonter × {len(available_ml_models)} modeller × 2 (clf+reg))"
+            )
+
+            if st.button(
+                "🚀 TRÆN ALLE MODELLER",
+                type="primary",
+                use_container_width=True,
+                key="btn_train_ml"
+            ):
+                if not train_horizons:
+                    st.error("⚠️ Vælg mindst én horisont!")
+                else:
+                    try:
+                        from ml_data import get_training_data
+
+                        # Step 1: Load data
+                        with st.spinner("📊 Henter training data..."):
+                            data = get_training_data(asset_class=train_asset, verbose=False)
+
+                        if "error" in data:
+                            st.error(f"❌ Kunne ikke hente data: {data['error']}")
+                            st.info("💡 Kør backfill først i **🚀 Backfill** tab!")
+                        else:
+                            st.success(
+                                f"✅ Data indlæst: {data.get('n_samples_30d', 0)} samples "
+                                f"med {data.get('n_features', 0)} features"
+                            )
+
+                            # Step 2: Train
+                            progress = st.progress(0, text="Starter træning...")
+
+                            def train_progress(pct, text):
+                                progress.progress(pct, text=text)
+
+                            with st.spinner("🤖 Træner ML modeller..."):
+                                results = train_all_models(
+                                    data,
+                                    asset_class=train_asset,
+                                    horizons=train_horizons,
+                                    save=save_models_flag,
+                                    progress_callback=train_progress,
+                                )
+
+                            progress.empty()
+
+                            # Step 3: Show results
+                            if "error" in results:
+                                st.error(f"❌ {results['error']}")
+                            else:
+                                n_trained = results["n_horizons_trained"]
+                                st.success(
+                                    f"🎉 **{n_trained}/{len(train_horizons)} horisonter trænet!** "
+                                    f"Modeller: {', '.join(results['available_models'])}"
+                                )
+                                st.balloons()
+
+                                # Save in session for later use
+                                st.session_state["ml_training_results"] = results
+
+                                # ---- Per-horizon results ----
+                                for h in results["horizons_trained"]:
+                                    h_res = results["results_per_horizon"][h]
+
+                                    st.markdown(f"#### 📅 Horisont: **{h} dage**")
+
+                                    # Top stats
+                                    h_cols = st.columns(4)
+                                    h_cols[0].metric("📊 Samples (clf)", h_res["n_samples_clf"])
+                                    h_cols[1].metric("📈 Samples (reg)", h_res["n_samples_reg"])
+                                    h_cols[2].metric("🔢 Features", h_res["n_features"])
+                                    h_cols[3].metric("🤖 Modeller", len(h_res.get("classifiers", {})))
+
+                                    # ---- Classifier metrics ----
+                                    classifiers = h_res.get("classifiers", {})
+                                    best_clf = None
+                                    if classifiers:
+                                        st.markdown("##### 🎯 Klassifikation (BUY/HOLD/SELL)")
+                                        clf_metrics = []
+                                        for name, clf_data in classifiers.items():
+                                            m = clf_data["metrics"]
+                                            clf_metrics.append({
+                                                "Model": name,
+                                                "Accuracy": f"{m.get('accuracy', 0):.1%}",
+                                                "F1 (macro)": f"{m.get('f1_macro', 0):.3f}",
+                                                "Precision": f"{m.get('precision_macro', 0):.3f}",
+                                                "Recall": f"{m.get('recall_macro', 0):.3f}",
+                                                "CV F1": f"{m.get('cv_f1_mean', 0):.3f} ± {m.get('cv_f1_std', 0):.3f}",
+                                            })
+                                        st.dataframe(
+                                            pd.DataFrame(clf_metrics),
+                                            use_container_width=True,
+                                            hide_index=True
+                                        )
+
+                                        # Best model highlight
+                                        best_clf = max(
+                                            classifiers.items(),
+                                            key=lambda x: x[1]["metrics"].get("f1_macro", 0)
+                                        )
+                                        best_f1 = best_clf[1]["metrics"].get("f1_macro", 0)
+                                        if best_f1 >= 0.7:
+                                            st.success(
+                                                f"🏆 **Bedste model:** {best_clf[0]} (F1={best_f1:.3f}) "
+                                                f"- **Excellent!**"
+                                            )
+                                        elif best_f1 >= 0.55:
+                                            st.info(
+                                                f"🥈 **Bedste model:** {best_clf[0]} (F1={best_f1:.3f}) "
+                                                f"- **Good**"
+                                            )
+                                        else:
+                                            st.warning(
+                                                f"⚠️ **Bedste model:** {best_clf[0]} (F1={best_f1:.3f}) "
+                                                f"- modellen kæmper. Brug forsigtigt."
+                                            )
+
+                                    # ---- Per-class metrics (best classifier) ----
+                                    if classifiers and best_clf:
+                                        with st.expander(f"📊 Per-klasse detaljer (bedste model)"):
+                                            best_clf_data = best_clf[1]
+                                            per_class = best_clf_data["metrics"].get("per_class", {})
+                                            if per_class:
+                                                pc_data = []
+                                                for label, stats in per_class.items():
+                                                    pc_data.append({
+                                                        "Klasse": label,
+                                                        "Support": stats.get("support", 0),
+                                                        "Precision": f"{stats.get('precision', 0):.3f}",
+                                                        "Recall": f"{stats.get('recall', 0):.3f}",
+                                                    })
+                                                st.dataframe(
+                                                    pd.DataFrame(pc_data),
+                                                    use_container_width=True,
+                                                    hide_index=True
+                                                )
+
+                                            # Confusion matrix
+                                            cm = best_clf_data["metrics"].get("confusion_matrix", [])
+                                            if cm:
+                                                st.markdown("**🔢 Confusion Matrix:**")
+                                                cm_df = pd.DataFrame(
+                                                    cm,
+                                                    columns=[f"Predicted {l}" for l in ["SELL", "HOLD", "BUY"]],
+                                                    index=[f"Actual {l}" for l in ["SELL", "HOLD", "BUY"]],
+                                                )
+                                                st.dataframe(cm_df, use_container_width=True)
+
+                                    # ---- Regressor metrics ----
+                                    regressors = h_res.get("regressors", {})
+                                    if regressors:
+                                        with st.expander(f"📈 Regression (forventet afkast i %)"):
+                                            reg_metrics = []
+                                            for name, reg_data in regressors.items():
+                                                m = reg_data["metrics"]
+                                                reg_metrics.append({
+                                                    "Model": name,
+                                                    "MAE": f"{m.get('mae', 0):.2f}%",
+                                                    "RMSE": f"{m.get('rmse', 0):.2f}%",
+                                                    "R²": f"{m.get('r2', 0):.3f}",
+                                                    "CV MAE": f"{m.get('cv_mae', 0):.2f}%",
+                                                })
+                                            st.dataframe(
+                                                pd.DataFrame(reg_metrics),
+                                                use_container_width=True,
+                                                hide_index=True
+                                            )
+                                            first_reg = list(regressors.values())[0]
+                                            st.caption(
+                                                f"💡 MAE = Mean Absolute Error. "
+                                                f"Lavere er bedre. "
+                                                f"Y_mean = {first_reg['metrics'].get('y_mean', 0):.2f}%, "
+                                                f"Y_std = {first_reg['metrics'].get('y_std', 0):.2f}%"
+                                            )
+
+                                    # ---- Feature importance ----
+                                    if classifiers and best_clf:
+                                        best_clf_data = best_clf[1]
+                                        fi = best_clf_data.get("feature_importance", {})
+                                        if fi:
+                                            with st.expander(f"🧬 Top 15 vigtigste features ({best_clf[0]})"):
+                                                fi_top = dict(list(fi.items())[:15])
+                                                fi_df = pd.DataFrame({
+                                                    "Feature": list(fi_top.keys()),
+                                                    "Importance": list(fi_top.values()),
+                                                })
+                                                fi_df["Importance %"] = (
+                                                    fi_df["Importance"] / fi_df["Importance"].sum() * 100
+                                                ).round(1)
+
+                                                fig_fi = px.bar(
+                                                    fi_df.sort_values("Importance"),
+                                                    x="Importance",
+                                                    y="Feature",
+                                                    orientation="h",
+                                                    color="Importance",
+                                                    color_continuous_scale="Viridis",
+                                                    title=f"Top 15 features ({best_clf[0]} på {h}d horisont)",
+                                                )
+                                                fig_fi.update_layout(
+                                                    template="plotly_dark",
+                                                    height=500,
+                                                    showlegend=False,
+                                                )
+                                                st.plotly_chart(fig_fi, use_container_width=True)
+
+                                    # ---- Saved files ----
+                                    if save_models_flag:
+                                        saved_h = results.get("saved_files", {}).get(h, {})
+                                        if saved_h:
+                                            with st.expander(f"💾 Gemte filer ({len(saved_h)})"):
+                                                for key, path in saved_h.items():
+                                                    st.code(f"{key}: {path}")
+
+                                    st.markdown("---")
+
+                                # ---- Final summary ----
+                                st.markdown("### 🎉 Træning færdig!")
+                                st.success(
+                                    f"✅ Trænet **{n_trained}** horisonter med "
+                                    f"**{len(results['available_models'])}** ML algoritmer = "
+                                    f"**{n_trained * len(results['available_models']) * 2}** modeller "
+                                    f"({n_trained * len(results['available_models'])} klassifikatorer + "
+                                    f"{n_trained * len(results['available_models'])} regressorer)"
+                                )
+
+                                if save_models_flag:
+                                    st.info(
+                                        f"💾 Modeller gemt i `{MODELS_DIR}/` mappen. "
+                                        f"Push til GitHub for at gemme dem permanent! "
+                                        f"Næste step: **STEP C - Brug ML modellerne i Analyse**"
+                                    )
+                    except ImportError as e:
+                        st.error(f"❌ Kunne ikke importere ml_train: {e}")
+                        st.info(
+                            "💡 **Tjek:**\n"
+                            "1. `ml_train.py` er gemt i samme mappe som `app.py`\n"
+                            "2. Push til GitHub og vent på rebuild\n"
+                            "3. Tjek requirements.txt har scikit-learn, xgboost, lightgbm, joblib"
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Træning fejlede: {e}")
+                        import traceback
+                        with st.expander("🐛 Full traceback"):
+                            st.code(traceback.format_exc())
+
+        except ImportError as e:
+            st.error(f"❌ Kunne ikke importere ml_train.py: {e}")
+            st.info("💡 Tjek at `ml_train.py` er gemt i samme mappe som `app.py`")
+
+
                 # ============ SCREENER-VIEW ============
 
 elif st.session_state.active_view == "🔎 Screener":
