@@ -619,14 +619,236 @@ elif st.session_state.active_view == "🔍 Søg ticker":
 # ============ DIAGNOSE-VIEW ============
 
 elif st.session_state.active_view == "🔧 Diagnose":
-    st.subheader("🔧 Diagnose - Test datakilder")
-    diag_ticker = st.text_input("Test ticker", value="AAPL", key="diag_ticker").strip().upper()
-    if st.button("🔍 Kør diagnose", type="primary"):
-        with st.spinner(f"Tester for {diag_ticker}..."):
-            results = run_diagnostics(diag_ticker)
-        for source, status, time_taken, details in results:
-            with st.expander(f"{status} **{source}** ({time_taken})", expanded=True):
-                st.code(details)
+    st.subheader("🔧 Diagnose - Test datakilder & ML")
+
+    diag_tabs = st.tabs(["🌐 Data sources", "🤖 ML Data Pipeline"])
+
+    # ===== TAB 1: Original data source diagnose =====
+    with diag_tabs[0]:
+        diag_ticker = st.text_input(
+            "Test ticker", value="AAPL", key="diag_ticker"
+        ).strip().upper()
+        if st.button("🔍 Kør diagnose", type="primary", key="btn_diag_sources"):
+            with st.spinner(f"Tester for {diag_ticker}..."):
+                results = run_diagnostics(diag_ticker)
+            for source, status, time_taken, details in results:
+                with st.expander(f"{status} **{source}** ({time_taken})", expanded=True):
+                    st.code(details)
+
+    # ===== TAB 2: ML Data Pipeline test =====
+    with diag_tabs[1]:
+        st.markdown("### 🤖 ML Data Pipeline Test")
+        st.caption(
+            "Tester om ML data pipelinen kan læse dine snapshots og forberede "
+            "training data til machine learning modellen."
+        )
+
+        # ---- Quick summary ----
+        st.markdown("#### 📊 Tilgængelig data")
+        if st.button("🔍 Hent oversigt", key="btn_ml_summary"):
+            try:
+                from ml_data import get_training_summary
+                with st.spinner("Læser snapshots..."):
+                    summary = get_training_summary()
+
+                if not summary:
+                    st.warning("⚠️ Ingen snapshots fundet")
+                else:
+                    for asset_class, stats in summary.items():
+                        emoji = "📈" if asset_class == "stock" else "🪙"
+                        with st.expander(f"{emoji} {asset_class.upper()}", expanded=True):
+                            if "error" in stats:
+                                st.error(f"Fejl: {stats['error']}")
+                            elif stats.get("snapshots", 0) == 0:
+                                st.info(f"Ingen {asset_class}-snapshots fundet")
+                            else:
+                                cols = st.columns(4)
+                                cols[0].metric("📸 Snapshots", stats["snapshots"])
+                                cols[1].metric("📋 Rows", stats["rows"])
+                                cols[2].metric("🏷️ Tickers", stats["tickers"])
+                                cols[3].metric(
+                                    "📅 Date range",
+                                    "OK",
+                                    f"{stats.get('date_min', '?')} → {stats.get('date_max', '?')}"
+                                )
+                                if stats.get("universes"):
+                                    st.caption(
+                                        f"🌍 Universer: {', '.join(stats['universes'][:5])}"
+                                        + (f" + {len(stats['universes'])-5} flere" if len(stats['universes']) > 5 else "")
+                                    )
+            except ImportError as e:
+                st.error(f"❌ Kunne ikke importere ml_data.py: {e}")
+                st.info("💡 Tjek at ml_data.py er gemt i samme mappe som app.py")
+            except Exception as e:
+                st.error(f"❌ Fejl: {e}")
+
+        st.markdown("---")
+
+        # ---- Full pipeline test ----
+        st.markdown("#### 🚀 Fuld pipeline test")
+        st.caption(
+            "Kører hele pipelinen: snapshots → forward returns → features → training data. "
+            "**Kan tage 1-3 minutter** afhængigt af antal snapshots."
+        )
+
+        ml_test_cols = st.columns(2)
+        ml_asset = ml_test_cols[0].selectbox(
+            "Asset class", ["stock", "crypto"], key="ml_asset_diag"
+        )
+
+        if ml_test_cols[1].button(
+            "🚀 Kør ML data pipeline test",
+            type="primary",
+            use_container_width=True,
+            key="btn_ml_pipeline"
+        ):
+            try:
+                from ml_data import get_training_data, HORIZONS
+
+                progress = st.progress(0, text="Starter pipeline...")
+                status_box = st.empty()
+
+                status_box.info("📊 Læser snapshots & beregner forward returns (tager længst)...")
+                progress.progress(20, text="Læser snapshots...")
+
+                with st.spinner(""):
+                    data = get_training_data(asset_class=ml_asset, verbose=False)
+
+                progress.progress(90, text="Færdiggør...")
+
+                if "error" in data:
+                    progress.empty()
+                    status_box.empty()
+                    st.error(f"❌ {data['error']}")
+                    st.info(
+                        "💡 **Mulige løsninger:**\n"
+                        f"- Kør screener på **{'kryptos' if ml_asset == 'crypto' else 'aktier'}** først\n"
+                        "- Gem mindst 2-3 snapshots\n"
+                        "- Vent et par dage før du kører pipelinen (så forward returns kan beregnes)"
+                    )
+                else:
+                    progress.progress(100, text="Færdig!")
+                    progress.empty()
+                    status_box.empty()
+
+                    st.success(f"✅ Pipeline kørte succesfuldt for **{ml_asset}**!")
+
+                    # ---- Top metrics ----
+                    top_cols = st.columns(4)
+                    top_cols[0].metric("🔢 Features", data["n_features"])
+                    top_cols[1].metric("📋 Total rows", data["total_rows_loaded"])
+                    top_cols[2].metric("📊 30d samples", data.get("n_samples_30d", 0))
+                    top_cols[3].metric("📈 90d samples", data.get("n_samples_90d", 0))
+
+                    # ---- Per-horizon breakdown ----
+                    st.markdown("##### 📅 Per horisont")
+                    hor_data = []
+                    for h in HORIZONS:
+                        n = data.get(f"n_samples_{h}d", 0)
+                        y_clf_key = f"y_clf_{h}d"
+                        if y_clf_key in data:
+                            class_dist = data[y_clf_key].value_counts().to_dict()
+                            buy_n = class_dist.get("BUY", 0)
+                            hold_n = class_dist.get("HOLD", 0)
+                            sell_n = class_dist.get("SELL", 0)
+                        else:
+                            buy_n = hold_n = sell_n = 0
+
+                        if n >= 100:
+                            status = "✅ Robust"
+                        elif n >= 50:
+                            status = "🟡 OK"
+                        elif n >= 20:
+                            status = "🟠 Lav"
+                        else:
+                            status = "🔴 For lidt"
+
+                        hor_data.append({
+                            "Horisont": f"{h} dage",
+                            "Total samples": n,
+                            "🟢 BUY": buy_n,
+                            "🟡 HOLD": hold_n,
+                            "🔴 SELL": sell_n,
+                            "Status": status,
+                        })
+
+                    st.dataframe(
+                        pd.DataFrame(hor_data),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    # ---- Feature columns preview ----
+                    with st.expander("🧬 Feature columns (alle features ML modellen ser)"):
+                        feat_cols = data.get("feature_columns", [])
+                        st.write(f"**Antal features:** {len(feat_cols)}")
+                        numeric_feats = [c for c in feat_cols if not any(
+                            c.startswith(p) for p in ["sector_", "country_", "regime_", "currency_"]
+                        )]
+                        categorical_feats = [c for c in feat_cols if any(
+                            c.startswith(p) for p in ["sector_", "country_", "regime_", "currency_"]
+                        )]
+
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.markdown(f"**📊 Numeriske ({len(numeric_feats)}):**")
+                            for f in numeric_feats:
+                                st.caption(f"• {f}")
+                        with col_b:
+                            st.markdown(f"**🏷️ Kategoriske ({len(categorical_feats)}):**")
+                            for f in categorical_feats[:20]:
+                                st.caption(f"• {f}")
+                            if len(categorical_feats) > 20:
+                                st.caption(f"... og {len(categorical_feats)-20} flere")
+
+                    # ---- Sample data preview ----
+                    with st.expander("👀 Sample data (første 5 rows)"):
+                        sample = data.get("sample_data")
+                        if sample is not None and not sample.empty:
+                            st.dataframe(sample, use_container_width=True)
+                        else:
+                            st.info("Ingen sample data")
+
+                    # ---- Recommendation ----
+                    st.markdown("##### 🎯 Klar til ML-træning?")
+                    samples_30d = data.get("n_samples_30d", 0)
+
+                    if samples_30d >= 100:
+                        st.success(
+                            f"✅ **Du er klar!** {samples_30d} samples på 30d horisont "
+                            f"er nok til at træne en robust ML model. "
+                            f"Vi kan gå videre til **FASE 2: Træn modellen**."
+                        )
+                    elif samples_30d >= 50:
+                        st.info(
+                            f"🟡 **OK at fortsætte.** {samples_30d} samples er nok til "
+                            f"en basal model, men flere data ville give bedre resultater."
+                        )
+                    elif samples_30d >= 20:
+                        st.warning(
+                            f"🟠 **For få samples.** Med kun {samples_30d} samples vil "
+                            f"modellen være ustabil. Anbefalet: Kør screeneren på "
+                            f"**3-5 forskellige universer** først."
+                        )
+                    else:
+                        st.error(
+                            f"🔴 **Ikke nok data!** {samples_30d} samples er for lidt. "
+                            f"Du skal mindst have **20+ samples**. Kør screeneren først."
+                        )
+
+            except ImportError as e:
+                st.error(f"❌ Kunne ikke importere ml_data: {e}")
+                st.info(
+                    "💡 **Tjek:**\n"
+                    "1. `ml_data.py` er gemt i samme mappe som `app.py`\n"
+                    "2. ML pakker er installeret: `scikit-learn`, `xgboost`, `lightgbm`, `joblib`\n"
+                    "3. Push til GitHub og vent på rebuild"
+                )
+            except Exception as e:
+                st.error(f"❌ Pipeline fejlede: {e}")
+                import traceback
+                with st.expander("🐛 Full traceback"):
+                    st.code(traceback.format_exc())
                 # ============ SCREENER-VIEW ============
 
 elif st.session_state.active_view == "🔎 Screener":
