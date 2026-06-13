@@ -87,7 +87,6 @@ def get_model_info(asset_class: str = "stock") -> Dict:
         if clf_count > 0:
             info["horizons"].append(h)
             info["n_models"] += clf_count
-            # Find best F1
             best_f1 = 0
             for name, clf_data in models["clf"].items():
                 f1 = clf_data.get("metrics", {}).get("f1_macro", 0)
@@ -110,10 +109,12 @@ def build_feature_row(
     overall: float,
     regime: str,
     feature_columns: List[str],
+    regime_confidence: float = 50.0,
+    dcf_upside: Optional[float] = None,
 ) -> Optional[pd.DataFrame]:
     """
-    Bygger 1-række DataFrame med præcis de features modellen blev trænet på.
-    Bruger 0.0 som default for ukendte features (sikkert for one-hot encoded).
+    Bygger 1-række DataFrame med PRÆCIS samme features som ml_data.prepare_features().
+    1:1 mapping til FEATURE_COLUMNS_NUMERIC + derived features.
     """
     if not feature_columns:
         return None
@@ -130,149 +131,149 @@ def build_feature_row(
     if prev_close is None and len(hist) >= 2:
         prev_close = float(hist["Close"].iloc[-2])
 
-    # ============ NUMERISKE FEATURES ============
-    feature_map = {}
-
-    # Pris-features
-    if last_price:
-        feature_map["price"] = last_price
-        feature_map["currentPrice"] = last_price
-    if last_price and prev_close:
-        feature_map["change_%"] = (last_price / prev_close - 1) * 100
-        feature_map["change_pct"] = (last_price / prev_close - 1) * 100
-
-    # Score-features
-    feature_map["overall"] = overall
-    feature_map["f_score"] = f_score
-    feature_map["t_score"] = t_score
-    feature_map["fundamental_score"] = f_score
-    feature_map["technical_score"] = t_score
-
-    # Tekniske indikatorer
-    if last is not None:
-        for tech_key, feature_keys in [
-            ("RSI", ["rsi", "RSI"]),
-            ("MACD", ["macd", "MACD"]),
-            ("MACD_signal", ["macd_signal", "MACD_signal"]),
-            ("ATR", ["atr", "ATR"]),
-            ("ADX", ["adx", "ADX"]),
-            ("SMA20", ["sma20", "SMA20"]),
-            ("SMA50", ["sma50", "SMA50"]),
-            ("SMA200", ["sma200", "SMA200"]),
-        ]:
-            val = last.get(tech_key)
-            if pd.notna(val):
-                for fk in feature_keys:
-                    feature_map[fk] = float(val)
-
-        # vs SMA
-        sma50 = last.get("SMA50")
-        sma200 = last.get("SMA200")
-        if pd.notna(sma50) and last_price:
-            val = (last_price / sma50 - 1) * 100
-            feature_map["vs_sma50_%"] = val
-            feature_map["vs_sma50_pct"] = val
-        if pd.notna(sma200) and last_price:
-            val = (last_price / sma200 - 1) * 100
-            feature_map["vs_sma200_%"] = val
-            feature_map["vs_sma200_pct"] = val
-
-        # Bollinger Bands position
-        bb_high = last.get("BB_high")
-        bb_low = last.get("BB_low")
-        if pd.notna(bb_high) and pd.notna(bb_low) and last_price and bb_high != bb_low:
-            bb_pos = (last_price - bb_low) / (bb_high - bb_low) * 100
-            feature_map["bb_position_%"] = bb_pos
-            feature_map["bb_position"] = bb_pos
-
-    # 52-uger range
-    if not hist.empty:
-        recent_year = hist.tail(252) if len(hist) >= 252 else hist
-        high_52 = float(recent_year["High"].max())
-        low_52 = float(recent_year["Low"].min())
-        if high_52 and last_price:
-            val = (last_price / high_52 - 1) * 100
-            feature_map["vs_52w_high_%"] = val
-            feature_map["vs_52w_high_pct"] = val
-        if low_52 and last_price and high_52 != low_52:
-            pos = (last_price - low_52) / (high_52 - low_52) * 100
-            feature_map["pos_in_52w_%"] = pos
-            feature_map["pos_in_52w_pct"] = pos
-
-    # Fundamentale features
-    fund_map = [
-        ("trailingPE", ["pe", "trailingPE", "pe_ratio"]),
-        ("forwardPE", ["forward_pe", "forwardPE"]),
-        ("priceToBook", ["pb", "priceToBook", "price_to_book"]),
-        ("pegRatio", ["peg", "pegRatio", "peg_ratio"]),
-        ("dividendYield", ["dividend_%", "dividend_yield", "dividend_pct"], lambda v: v * 100),
-        ("returnOnEquity", ["roe", "returnOnEquity"], lambda v: v * 100),
-        ("profitMargins", ["profit_margin", "profitMargins", "profit_margins"], lambda v: v * 100),
-        ("debtToEquity", ["debt_to_equity", "debtToEquity"]),
-        ("earningsGrowth", ["earnings_growth", "earningsGrowth"], lambda v: v * 100),
-        ("revenueGrowth", ["revenue_growth", "revenueGrowth"], lambda v: v * 100),
-        ("beta", ["beta"]),
-        ("marketCap", ["market_cap", "marketCap"]),
-        ("payoutRatio", ["payout_ratio", "payoutRatio"]),
-    ]
-    for entry in fund_map:
-        if len(entry) == 2:
-            info_key, feat_keys = entry
-            transform = None
-        else:
-            info_key, feat_keys, transform = entry
-        val = info.get(info_key)
-        if val is not None and not pd.isna(val):
+    def set_feat(name, value):
+        """Sæt feature hvis kolonnen findes og værdien er valid."""
+        if name in features and value is not None:
             try:
-                final_val = transform(val) if transform else val
-                for fk in feat_keys:
-                    feature_map[fk] = float(final_val)
-            except (TypeError, ValueError):
+                v = float(value)
+                if not pd.isna(v) and not np.isinf(v):
+                    features[name] = v
+            except (ValueError, TypeError):
                 pass
 
-    # Apply numeric features
-    for key, value in feature_map.items():
-        if key in features:
+    # ============ NUMERISKE FEATURES ============
+
+    # Score features
+    set_feat("f_score", f_score)
+    set_feat("t_score", t_score)
+    set_feat("overall", overall)
+    set_feat("regime_confidence", regime_confidence)
+
+    # Tekniske indicators
+    if last is not None:
+        rsi_val = last.get("RSI")
+        if pd.notna(rsi_val):
+            set_feat("rsi", rsi_val)
+
+        macd_val = last.get("MACD")
+        if pd.notna(macd_val):
+            set_feat("macd", macd_val)
+
+        # ATR pct (ml_data forventer "atr_pct" = ATR/price * 100)
+        atr_val = last.get("ATR")
+        if pd.notna(atr_val) and last_price and last_price > 0:
+            set_feat("atr_pct", (float(atr_val) / float(last_price)) * 100)
+
+        # vs SMA200
+        sma200 = last.get("SMA200")
+        if pd.notna(sma200) and last_price and float(sma200) > 0:
+            set_feat("vs_sma200_%", (float(last_price) / float(sma200) - 1) * 100)
+
+    # 52-uger high
+    if not hist.empty and last_price:
+        recent_year = hist.tail(252) if len(hist) >= 252 else hist
+        try:
+            high_52 = float(recent_year["High"].max())
+            if high_52 > 0:
+                set_feat("vs_52w_high_%", (last_price / high_52 - 1) * 100)
+        except Exception:
+            pass
+
+    # Change %
+    if last_price and prev_close and prev_close > 0:
+        set_feat("change_%", (last_price / prev_close - 1) * 100)
+
+    # Fundamentale (direkte mapping)
+    set_feat("pe", info.get("trailingPE"))
+    set_feat("pb", info.get("priceToBook"))
+    set_feat("peg", info.get("pegRatio"))
+
+    # Dividend % - yfinance giver decimal (0.005) eller procent (0.5)
+    div_yield = info.get("dividendYield")
+    if div_yield is not None:
+        try:
+            dy = float(div_yield)
+            # Hvis < 1 antag decimal, ellers procent
+            set_feat("dividend_%", dy * 100 if abs(dy) < 1 else dy)
+        except (ValueError, TypeError):
+            pass
+
+    # Profit margin
+    pm = info.get("profitMargins")
+    if pm is not None:
+        try:
+            pm_v = float(pm)
+            set_feat("profit_margin", pm_v * 100 if abs(pm_v) < 1 else pm_v)
+        except (ValueError, TypeError):
+            pass
+
+    # ROE
+    roe_v = info.get("returnOnEquity")
+    if roe_v is not None:
+        try:
+            r = float(roe_v)
+            set_feat("roe", r * 100 if abs(r) < 1 else r)
+        except (ValueError, TypeError):
+            pass
+
+    # Debt/Equity (ml_data bruger "debt_equity")
+    set_feat("debt_equity", info.get("debtToEquity"))
+
+    # DCF upside
+    if dcf_upside is not None:
+        set_feat("dcf_upside_%", dcf_upside)
+
+    # Market cap
+    mc = info.get("marketCap")
+    if mc:
+        try:
+            mc_val = float(mc)
+            set_feat("market_cap", mc_val)
+            # log_market_cap (derived)
+            set_feat("log_market_cap", np.log1p(max(mc_val, 0)))
+        except (ValueError, TypeError):
+            pass
+
+    # Score divergence (derived)
+    if f_score is not None and t_score is not None:
+        set_feat("score_divergence", float(f_score) - float(t_score))
+
+    # RSI extreme (derived)
+    if last is not None:
+        rsi_val = last.get("RSI")
+        if pd.notna(rsi_val):
             try:
-                if value is not None and not pd.isna(value):
-                    features[key] = float(value)
+                rsi_f = float(rsi_val)
+                set_feat("rsi_extreme", min(1.0, abs(rsi_f - 50) / 50))
             except (ValueError, TypeError):
                 pass
 
     # ============ KATEGORISKE FEATURES (one-hot) ============
 
-    # Sektor
-    sector = info.get("sector", "Unknown")
-    if sector:
-        # Prøv flere variant-formater
-        for sector_col in [
-            f"sector_{sector}",
-            f"sector_{sector.replace(' ', '_')}",
-            f"sector_{sector.replace(' ', '')}",
-        ]:
-            if sector_col in features:
-                features[sector_col] = 1.0
-                break
+    sector = info.get("sector") or "UNKNOWN"
+    sector_col = f"sector_{sector}"
+    if sector_col in features:
+        features[sector_col] = 1.0
+    else:
+        if "sector_UNKNOWN" in features:
+            features["sector_UNKNOWN"] = 1.0
 
-    # Land
-    country = info.get("country", "Unknown")
-    if country:
-        for country_col in [
-            f"country_{country}",
-            f"country_{country.replace(' ', '_')}",
-        ]:
-            if country_col in features:
-                features[country_col] = 1.0
-                break
+    country = info.get("country") or "UNKNOWN"
+    country_col = f"country_{country}"
+    if country_col in features:
+        features[country_col] = 1.0
+    else:
+        if "country_UNKNOWN" in features:
+            features["country_UNKNOWN"] = 1.0
 
-    # Valuta
-    currency = info.get("currency", "USD")
-    if currency:
-        currency_col = f"currency_{currency}"
-        if currency_col in features:
-            features[currency_col] = 1.0
+    currency = info.get("currency") or "USD"
+    currency_col = f"currency_{currency}"
+    if currency_col in features:
+        features[currency_col] = 1.0
+    else:
+        if "currency_USD" in features:
+            features["currency_USD"] = 1.0
 
-    # Regime
     if regime:
         regime_col = f"regime_{regime}"
         if regime_col in features:
@@ -280,14 +281,13 @@ def build_feature_row(
 
     # Build DataFrame i korrekt rækkefølge
     df = pd.DataFrame([features])[feature_columns]
-
-    # Erstat eventuelle NaN med 0
     df = df.fillna(0.0)
 
+    # Replace inf/-inf med 0
+    df = df.replace([np.inf, -np.inf], 0.0)
+
     return df
-
-
-# ==========================================
+    # ==========================================
 # PREDICTION
 # ==========================================
 
@@ -386,6 +386,8 @@ def predict_all_horizons(
     overall: float,
     regime: str,
     asset_class: str = "stock",
+    regime_confidence: float = 50.0,
+    dcf_upside: Optional[float] = None,
 ) -> Dict:
     """Forudsig for alle 3 horisonter (30d/90d/180d)."""
     if not has_trained_models(asset_class):
@@ -403,6 +405,8 @@ def predict_all_horizons(
             info, hist, indicators_df,
             f_score, t_score, overall, regime,
             models["feature_columns"],
+            regime_confidence=regime_confidence,
+            dcf_upside=dcf_upside,
         )
 
         if feature_row is None:
@@ -412,10 +416,13 @@ def predict_all_horizons(
         try:
             result = predict_single_horizon(feature_row, models)
             # 🔍 DEBUG: gem feature-info for inspection
+            non_zero_count = int((feature_row != 0).sum().sum())
+            total_count = len(models["feature_columns"])
             result["_debug_features"] = {
-                "n_features_expected": len(models["feature_columns"]),
-                "n_nonzero_features": int((feature_row != 0).sum().sum()),
-                "feature_columns": models["feature_columns"][:50],  # første 50
+                "n_features_expected": total_count,
+                "n_nonzero_features": non_zero_count,
+                "match_pct": (non_zero_count / total_count * 100) if total_count else 0,
+                "feature_columns": models["feature_columns"][:50],
                 "feature_values": feature_row.iloc[0].to_dict(),
             }
             predictions[horizon] = result
