@@ -3171,10 +3171,21 @@ elif st.session_state.active_view == "📊 Analyse":
     render_earnings_warning(earnings_data, compact=True)
     
     # ============================================================
-    # 🤖 ML FORUDSIGELSE - kompakt summary (vises HER, før action plan)
+    # 🤖 ML FORUDSIGELSE - kompakt summary
     # ============================================================
     ml_predictions_data = None
-    if ML_PREDICT_AVAILABLE and has_trained_models("stock"):
+    if not ML_PREDICT_AVAILABLE:
+        st.warning(
+            "⚠️ **ML-modul ikke tilgængeligt.** "
+            "Tjek at `ml_predict.py` er gemt i samme mappe som `app.py`."
+        )
+    elif not has_trained_models("stock"):
+        st.info(
+            "💡 **ML-modeller ikke trænet endnu.**\n\n"
+            "👉 Gå til **🔧 Diagnose** → **🚀 Backfill** → **🎯 Træn ML** "
+            "for at aktivere ML-forudsigelser."
+        )
+    else:
         with st.spinner("🤖 Beregner ML-forudsigelser..."):
             ml_predictions_data = predict_all_horizons(
                 info=info,
@@ -3187,6 +3198,8 @@ elif st.session_state.active_view == "📊 Analyse":
                 asset_class="stock",
             )
         render_ml_summary_card(ml_predictions_data, rule_based_rec=rec)
+
+    # ============ ACTION PLAN ============
 
     # ============ ACTION PLAN ============
     try:
