@@ -3165,9 +3165,14 @@ elif st.session_state.active_view == "📊 Analyse":
 
     # ============================================================
     # 🆕 EARNINGS WARNING - lige under sentiment
-    # (earnings_data er allerede hentet tidligere til score-boost)
     # ============================================================
     st.markdown("---")
+    earn_header_cols = st.columns([5, 1])
+    earn_header_cols[0].markdown("### 📅 Earnings-overblik")
+    if earn_header_cols[1].button("🔄 Refresh earnings", key=f"refresh_earn_{ticker}", use_container_width=True):
+        get_earnings_info.clear()
+        st.rerun()
+    
     render_earnings_warning(earnings_data, compact=True)
     
     # ============================================================
