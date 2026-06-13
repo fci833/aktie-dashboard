@@ -3065,6 +3065,14 @@ elif st.session_state.active_view == "📊 Analyse":
 
     st.markdown("")
 
+    # 🆕 BEREGN DCF UPSIDE TIDLIGT (bruges af ML)
+    try:
+        fv_early = dcf_valuation(info, 0.10, 0.10, 0.025)
+        dcf_upside = ((fv_early / price - 1) * 100) if fv_early and price else None
+    except Exception:
+        dcf_upside = None
+        fv_early = None
+
     # === SCORE CARDS MED EARNINGS-JUSTERING ===
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
@@ -3201,18 +3209,14 @@ elif st.session_state.active_view == "📊 Analyse":
                 overall=overall,
                 regime=regime,
                 asset_class="stock",
+                regime_confidence=float(regime_conf),
+                dcf_upside=dcf_upside,
             )
         render_ml_summary_card(ml_predictions_data, rule_based_rec=rec)
 
-    # ============ ACTION PLAN ============
-
-    # ============ ACTION PLAN ============
-    try:
-        fv_check = dcf_valuation(info, 0.10, 0.10, 0.025)
-        dcf_upside = ((fv_check / price - 1) * 100) if fv_check and price else None
-    except Exception:
-        dcf_upside = None
-        fv_check = None
+        # ============ ACTION PLAN ============
+    # dcf_upside er allerede beregnet tidligere, genbrug fv_early
+    fv_check = fv_early
 
     targets_main = calculate_price_targets(
         filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"]),
@@ -4067,6 +4071,8 @@ elif st.session_state.active_view == "📊 Analyse":
                         f_score=f_score, t_score=t_score,
                         overall=overall, regime=regime,
                         asset_class="stock",
+                        regime_confidence=float(regime_conf),
+                        dcf_upside=dcf_upside,
                     )
                 render_ml_full(
                     ml_data_local,
