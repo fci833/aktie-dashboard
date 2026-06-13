@@ -3170,7 +3170,7 @@ elif st.session_state.active_view == "📊 Analyse":
     st.markdown("---")
     render_earnings_warning(earnings_data, compact=True)
     
-        # ============================================================
+    # ============================================================
     # 🤖 ML FORUDSIGELSE - kompakt summary (vises HER, før action plan)
     # ============================================================
     ml_predictions_data = None
@@ -3187,6 +3187,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 asset_class="stock",
             )
         render_ml_summary_card(ml_predictions_data, rule_based_rec=rec)
+        
             # ============================================================
             # 🐛 DEBUG-EXPANDER (kan slettes når ML virker)
             # ============================================================
