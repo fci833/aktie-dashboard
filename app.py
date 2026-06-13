@@ -3170,24 +3170,201 @@ elif st.session_state.active_view == "📊 Analyse":
     st.markdown("---")
     render_earnings_warning(earnings_data, compact=True)
     
-    # ============================================================
-    # 🤖 ML FORUDSIGELSE - kompakt summary
-    # ============================================================
-    if ML_PREDICT_AVAILABLE and has_trained_models("stock"):
-        with st.spinner("🤖 Beregner ML-forudsigelser..."):
-            ml_predictions_data = predict_all_horizons(
-                info=info,
-                hist=hist,
-                indicators_df=df_indicators,
-                f_score=f_score,
-                t_score=t_score,
-                overall=overall,
-                regime=regime,
-                asset_class="stock",
+    # ===== 🤖 ML FORUDSIGELSE =====
+    with main_tabs[6]:
+        st.markdown("### 🤖 ML Forudsigelser - Detaljeret")
+        st.caption(
+            f"Komplet ML-analyse for **{company_name}** baseret på trænede modeller "
+            f"fra historisk data. 3 tidshorisonter × 3 algoritmer = ensemble-forudsigelse."
+        )
+
+        if not ML_PREDICT_AVAILABLE:
+            st.error(
+                "❌ **ML-modul ikke tilgængeligt.**\n\n"
+                "Tjek at `ml_predict.py` er gemt i samme mappe som `app.py`."
             )
-        render_ml_summary_card(ml_predictions_data, rule_based_rec=rec)
-    else:
-        ml_predictions_data = None
+        elif not has_trained_models("stock"):
+            st.warning(
+                "⚠️ **Ingen trænede ML-modeller fundet.**\n\n"
+                "👉 **Sådan fixer du det:**\n"
+                "1. Gå til **🔧 Diagnose** fanen\n"
+                "2. Klik **🚀 Backfill (genvej)** → vælg 'stock' → kør backfill\n"
+                "3. Gå til **🎯 Træn ML** → vælg 'stock' → træn modeller\n"
+                "4. Push til GitHub: `git add ml_models/ && git commit -m 'Add models' && git push`\n"
+                "5. Vent på Streamlit rebuild → kom tilbage hertil!"
+            )
+        else:
+            # Vis model-oversigt
+            model_info = get_model_info("stock")
+            info_cols = st.columns(4)
+            info_cols[0].metric("🤖 Total modeller", model_info["n_models"])
+            info_cols[1].metric("📅 Horisonter", len(model_info["horizons"]))
+
+            best_30d = model_info["f1_scores"].get(30, 0)
+            best_180d = model_info["f1_scores"].get(180, 0)
+            info_cols[2].metric("F1 (30d)", f"{best_30d:.3f}")
+            info_cols[3].metric("F1 (180d) ⭐", f"{best_180d:.3f}")
+
+            st.markdown("---")
+
+            # Brug eksisterende prediction hvis tilgængelig, ellers regn på ny
+            if ml_predictions_data:
+                ml_data_to_show = ml_predictions_data
+            else:
+                with st.spinner("🤖 Beregner ML-forudsigelser..."):
+                    ml_data_to_show = predict_all_horizons(
+                        info=info, hist=hist,
+                        indicators_df=df_indicators,
+                        f_score=f_score, t_score=t_score,
+                        overall=overall, regime=regime,
+                        asset_class="stock",
+                    )
+
+            render_ml_full(
+                ml_data_to_show,
+                rule_based_rec=rec,
+                rule_based_score=overall,
+            )
+
+            # ============================================================
+            # 🐛 DEBUG-EXPANDER (kan slettes når ML virker)
+            # ============================================================
+            st.markdown("---")
+            with st.expander("🐛 DEBUG: Feature-mapping (klik for at fejlsøge ML)", expanded=False):
+                if ml_data_to_show and "predictions" in ml_data_to_show:
+                    pred_180_dbg = ml_data_to_show["predictions"].get(180, {})
+                    debug_info = pred_180_dbg.get("_debug_features", {})
+
+                    if debug_info:
+                        n_expected = debug_info.get("n_features_expected", 0)
+                        n_nonzero = debug_info.get("n_nonzero_features", 0)
+                        match_pct = (n_nonzero / n_expected * 100) if n_expected else 0
+
+                        st.markdown("#### 📊 Feature-match status")
+                        dbg_cols = st.columns(3)
+                        dbg_cols[0].metric("📋 Forventede features", n_expected)
+                        dbg_cols[1].metric("✅ Features med værdi", n_nonzero)
+                        dbg_cols[2].metric("🎯 Match %", f"{match_pct:.0f}%")
+
+                        if match_pct < 50:
+                            st.error(
+                                f"🚨 **KUN {match_pct:.0f}% af features matcher!**\n\n"
+                                f"Dette er hvorfor ML gætter blindt. "
+                                f"Feature-navne i `ml_predict.py` matcher ikke "
+                                f"feature-navne fra `ml_data.py`.\n\n"
+                                f"💡 **Fix:** Send `ml_data.py` til ChatGPT så jeg kan lave en præcis mapping."
+                            )
+                        elif match_pct < 80:
+                            st.warning(
+                                f"⚠️ Kun {match_pct:.0f}% match - kan forbedres for bedre ML-præcision."
+                            )
+                        else:
+                            st.success(f"✅ {match_pct:.0f}% af features matcher godt!")
+
+                        # Vis feature-værdier
+                        st.markdown("---")
+                        st.markdown("#### 📊 Feature-værdier (første 50)")
+                        st.caption(
+                            "Feature med værdi `0.0` betyder muligvis at den ikke blev mappet korrekt. "
+                            "Real værdier (fx 65.4 for RSI) betyder den er fundet."
+                        )
+                        feat_values = debug_info.get("feature_values", {})
+
+                        # Split i numeriske og kategoriske
+                        numeric_feats = []
+                        categorical_feats = []
+                        for k, v in feat_values.items():
+                            try:
+                                v_float = float(v)
+                                is_categorical = any(
+                                    k.startswith(p) for p in
+                                    ["sector_", "country_", "regime_", "currency_"]
+                                )
+                                if is_categorical:
+                                    categorical_feats.append((k, v_float))
+                                else:
+                                    numeric_feats.append((k, v_float))
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Sorteret: dem med 0.0 først (mistænkt fejl)
+                        numeric_feats.sort(key=lambda x: (x[1] != 0.0, x[0]))
+
+                        feat_tabs = st.tabs(["📊 Numeriske", "🏷️ Kategoriske (one-hot)"])
+
+                        with feat_tabs[0]:
+                            num_df = pd.DataFrame([
+                                {
+                                    "Feature": k,
+                                    "Værdi": round(v, 4),
+                                    "Status": "🚨 0.0 (mistænkt!)" if v == 0.0 else "✅ OK"
+                                }
+                                for k, v in numeric_feats[:60]
+                            ])
+                            st.dataframe(num_df, use_container_width=True, hide_index=True)
+
+                            n_zero = sum(1 for _, v in numeric_feats if v == 0.0)
+                            st.caption(
+                                f"📊 {len(numeric_feats)} numeriske features total · "
+                                f"🚨 {n_zero} med værdi 0.0 (mistænkt ikke-mappet)"
+                            )
+
+                        with feat_tabs[1]:
+                            if categorical_feats:
+                                # Vis kun dem med værdi 1.0 (aktive)
+                                active_cats = [(k, v) for k, v in categorical_feats if v == 1.0]
+                                cat_df = pd.DataFrame([
+                                    {"Feature": k, "Aktiv": "✅"}
+                                    for k, _ in active_cats
+                                ])
+                                if not cat_df.empty:
+                                    st.dataframe(cat_df, use_container_width=True, hide_index=True)
+                                else:
+                                    st.warning("🚨 INGEN kategoriske features er aktiveret! Det er sandsynligvis et problem.")
+                                st.caption(
+                                    f"🏷️ {len(categorical_feats)} kategoriske features total · "
+                                    f"✅ {len(active_cats)} aktive"
+                                )
+
+                        # Vis Top-N features modellen forventer
+                        st.markdown("---")
+                        st.markdown("#### 🧬 Forventede features fra modellen")
+                        feat_cols_expected = debug_info.get("feature_columns", [])
+                        st.caption(f"Modellen forventer disse {n_expected} features:")
+                        with st.expander("Vis alle features"):
+                            st.write(feat_cols_expected)
+                    else:
+                        st.info("Ingen debug-info tilgængelig (modellen kunne ikke generere forudsigelse)")
+
+                # Sammenligning: model siger SELL men regression siger +X%?
+                st.markdown("---")
+                st.markdown("#### ⚖️ Logisk konsistens-tjek")
+                for h in [30, 90, 180]:
+                    h_data = ml_data_to_show["predictions"].get(h, {}) if ml_data_to_show else {}
+                    if "error" in h_data:
+                        continue
+                    ens = h_data.get("ensemble", {})
+                    label = ens.get("label", "?")
+                    exp_ret = ens.get("expected_return_%")
+
+                    if exp_ret is not None:
+                        # Tjek om classification matcher regression
+                        if label == "SELL" and exp_ret > 5:
+                            st.warning(
+                                f"⚠️ **{h}d: Modsigelse!** Classifier siger SELL, "
+                                f"men regressor siger +{exp_ret:.1f}%. "
+                                f"Tegn på at modellen er forvirret (feature-mismatch?)."
+                            )
+                        elif label == "BUY" and exp_ret < -5:
+                            st.warning(
+                                f"⚠️ **{h}d: Modsigelse!** Classifier siger BUY, "
+                                f"men regressor siger {exp_ret:.1f}%. "
+                                f"Tegn på at modellen er forvirret (feature-mismatch?)."
+                            )
+                        else:
+                            st.success(
+                                f"✅ **{h}d:** {label} + {exp_ret:+.1f}% = konsistent"
+                            )
 
     # ============ ACTION PLAN ============
     try:
