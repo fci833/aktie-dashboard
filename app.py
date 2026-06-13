@@ -3170,62 +3170,23 @@ elif st.session_state.active_view == "📊 Analyse":
     st.markdown("---")
     render_earnings_warning(earnings_data, compact=True)
     
-    # ===== 🤖 ML FORUDSIGELSE =====
-    with main_tabs[6]:
-        st.markdown("### 🤖 ML Forudsigelser - Detaljeret")
-        st.caption(
-            f"Komplet ML-analyse for **{company_name}** baseret på trænede modeller "
-            f"fra historisk data. 3 tidshorisonter × 3 algoritmer = ensemble-forudsigelse."
-        )
-
-        if not ML_PREDICT_AVAILABLE:
-            st.error(
-                "❌ **ML-modul ikke tilgængeligt.**\n\n"
-                "Tjek at `ml_predict.py` er gemt i samme mappe som `app.py`."
+        # ============================================================
+    # 🤖 ML FORUDSIGELSE - kompakt summary (vises HER, før action plan)
+    # ============================================================
+    ml_predictions_data = None
+    if ML_PREDICT_AVAILABLE and has_trained_models("stock"):
+        with st.spinner("🤖 Beregner ML-forudsigelser..."):
+            ml_predictions_data = predict_all_horizons(
+                info=info,
+                hist=hist,
+                indicators_df=df_indicators,
+                f_score=f_score,
+                t_score=t_score,
+                overall=overall,
+                regime=regime,
+                asset_class="stock",
             )
-        elif not has_trained_models("stock"):
-            st.warning(
-                "⚠️ **Ingen trænede ML-modeller fundet.**\n\n"
-                "👉 **Sådan fixer du det:**\n"
-                "1. Gå til **🔧 Diagnose** fanen\n"
-                "2. Klik **🚀 Backfill (genvej)** → vælg 'stock' → kør backfill\n"
-                "3. Gå til **🎯 Træn ML** → vælg 'stock' → træn modeller\n"
-                "4. Push til GitHub: `git add ml_models/ && git commit -m 'Add models' && git push`\n"
-                "5. Vent på Streamlit rebuild → kom tilbage hertil!"
-            )
-        else:
-            # Vis model-oversigt
-            model_info = get_model_info("stock")
-            info_cols = st.columns(4)
-            info_cols[0].metric("🤖 Total modeller", model_info["n_models"])
-            info_cols[1].metric("📅 Horisonter", len(model_info["horizons"]))
-
-            best_30d = model_info["f1_scores"].get(30, 0)
-            best_180d = model_info["f1_scores"].get(180, 0)
-            info_cols[2].metric("F1 (30d)", f"{best_30d:.3f}")
-            info_cols[3].metric("F1 (180d) ⭐", f"{best_180d:.3f}")
-
-            st.markdown("---")
-
-            # Brug eksisterende prediction hvis tilgængelig, ellers regn på ny
-            if ml_predictions_data:
-                ml_data_to_show = ml_predictions_data
-            else:
-                with st.spinner("🤖 Beregner ML-forudsigelser..."):
-                    ml_data_to_show = predict_all_horizons(
-                        info=info, hist=hist,
-                        indicators_df=df_indicators,
-                        f_score=f_score, t_score=t_score,
-                        overall=overall, regime=regime,
-                        asset_class="stock",
-                    )
-
-            render_ml_full(
-                ml_data_to_show,
-                rule_based_rec=rec,
-                rule_based_score=overall,
-            )
-
+        render_ml_summary_card(ml_predictions_data, rule_based_rec=rec)
             # ============================================================
             # 🐛 DEBUG-EXPANDER (kan slettes når ML virker)
             # ============================================================
