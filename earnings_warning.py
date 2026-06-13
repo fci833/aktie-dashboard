@@ -321,39 +321,31 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                             except (ValueError, TypeError):
                                 continue
 
-            # Surprise %
-            for surp_col in SURP_COLS:
-                if surp_col in row.index:
-                    val = row.get(surp_col)
-                    if val is not None and not pd.isna(val):
-                        try:
-                            entry["surprise_pct"] = float(val)
-                            break
-                        except (ValueError, TypeError):
-                            continue
-
-            # Case-insensitive surprise
-            if entry["surprise_pct"] is None:
-                for col in row.index:
-                    col_lower = str(col).lower().replace(" ", "").replace("_", "")
-                    if "surprise" in col_lower:
-                        val = row.get(col)
-                        if val is not None and not pd.isna(val):
-                            try:
-                                entry["surprise_pct"] = float(val)
-                                break
-                            except (ValueError, TypeError):
-                                continue
-
-            # Beregn surprise selv
+                        # 🆕 ALTID beregn surprise % fra estimate + actual (mest pålideligt)
+            # yfinance "Surprise" er ofte EPS-forskel (0.05 = $0.05), ikke procent
             if (entry["eps_estimate"] is not None and
-                    entry["eps_actual"] is not None and
-                    entry["surprise_pct"] is None):
+                    entry["eps_actual"] is not None):
                 if entry["eps_estimate"] != 0:
                     entry["surprise_pct"] = (
                         (entry["eps_actual"] - entry["eps_estimate"]) /
                         abs(entry["eps_estimate"]) * 100
                     )
+            else:
+                # Fallback: prøv surprise-kolonner hvis vi mangler estimate/actual
+                for surp_col in SURP_COLS:
+                    if surp_col in row.index:
+                        val = row.get(surp_col)
+                        if val is not None and not pd.isna(val):
+                            try:
+                                surp_val = float(val)
+                                # Hvis værdien er meget lille (<1), antag det er decimal-form
+                                # eller EPS-difference - skip den
+                                if abs(surp_val) < 1.0:
+                                    continue  # Sandsynligvis EPS-difference, ikke %
+                                entry["surprise_pct"] = surp_val
+                                break
+                            except (ValueError, TypeError):
+                                continue
 
             # Beat/miss
             if entry["eps_estimate"] is not None and entry["eps_actual"] is not None:
