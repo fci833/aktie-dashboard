@@ -28,20 +28,18 @@ except ImportError:
 # ============ KONFIGURATION ============
 
 WARNING_THRESHOLDS = {
-    "critical": 3,    # < 3 dage = KRITISK ADVARSEL
-    "high": 7,        # < 7 dage = HØJ ADVARSEL
-    "medium": 14,     # < 14 dage = MEDIUM advarsel
-    "low": 30,        # < 30 dage = info
+    "critical": 3,
+    "high": 7,
+    "medium": 14,
+    "low": 30,
 }
 
-# Threshold for "stor bevægelse" efter earnings
-BIG_MOVE_THRESHOLD_PCT = 5.0  # ±5% = stor bevægelse
+BIG_MOVE_THRESHOLD_PCT = 5.0
 
 
 # ============ DATA-FETCHING ============
 
 def _safe_to_datetime(val) -> Optional[datetime]:
-    """Konverter forskellige date-formater til datetime"""
     if val is None or pd.isna(val):
         return None
     try:
@@ -55,14 +53,12 @@ def _safe_to_datetime(val) -> Optional[datetime]:
             if val.tz is None:
                 return val.tz_localize("UTC").to_pydatetime()
             return val.to_pydatetime()
-        # String
         return pd.to_datetime(val, utc=True).to_pydatetime()
     except Exception:
         return None
 
 
 def _calc_days_until(target: Optional[datetime]) -> Optional[int]:
-    """Beregn dage indtil target-dato (kan være negativ hvis fortid)"""
     if target is None:
         return None
     try:
@@ -76,15 +72,12 @@ def _calc_days_until(target: Optional[datetime]) -> Optional[int]:
 
 
 def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
-    """Hent næste earnings-dato fra yfinance (flere fallbacks)"""
     candidates = []
 
-    # Method 1: calendar (mest pålidelig for fremtidige)
     try:
         cal = ticker_obj.calendar
         if cal is not None:
             if isinstance(cal, dict):
-                # Nyere yfinance returnerer dict
                 ed = cal.get("Earnings Date")
                 if ed:
                     if isinstance(ed, list) and ed:
@@ -92,14 +85,12 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
                     else:
                         candidates.append(_safe_to_datetime(ed))
             elif isinstance(cal, pd.DataFrame) and not cal.empty:
-                # Ældre yfinance returnerer DataFrame
                 if "Earnings Date" in cal.index:
                     val = cal.loc["Earnings Date"].iloc[0]
                     candidates.append(_safe_to_datetime(val))
     except Exception:
         pass
 
-    # Method 2: get_earnings_dates() - newer API
     try:
         ed = ticker_obj.get_earnings_dates(limit=24)
         if ed is not None and not ed.empty:
@@ -113,7 +104,6 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
     except Exception:
         pass
 
-    # Method 3: earnings_dates property (fallback)
     try:
         ed = ticker_obj.earnings_dates
         if ed is not None and not ed.empty:
@@ -127,7 +117,6 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
     except Exception:
         pass
 
-    # Method 4: info dict
     try:
         info = ticker_obj.info
         for key in ["earningsTimestamp", "earningsDate"]:
@@ -139,14 +128,12 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
     except Exception:
         pass
 
-    # Filter til kun fremtidige
     now = datetime.now(timezone.utc)
     future_dates = [d for d in candidates if d is not None and d > now]
 
     if future_dates:
-        return min(future_dates)  # tidligste fremtidige
+        return min(future_dates)
 
-    # Hvis ingen fremtidige, returnér tidligste (kunne være "i dag/lige rundt")
     valid = [d for d in candidates if d is not None]
     if valid:
         return min(valid, key=lambda d: abs((d - now).total_seconds()))
@@ -155,13 +142,7 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
 
 
 def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
-    """
-    Hent historisk earnings (EPS estimat vs faktisk + surprise).
-    Robust version med flere fallbacks for forskellige yfinance versioner.
-    """
     history = []
-
-    # Method 1: get_earnings_dates() - newer yfinance API (anbefalet)
     ed = None
     try:
         ed = ticker_obj.get_earnings_dates(limit=n_quarters * 2)
@@ -170,7 +151,6 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
     except Exception as e:
         print(f"[earnings] get_earnings_dates() fejl: {e}")
 
-    # Method 2: Fallback til earnings_dates property (ældre yfinance)
     if ed is None or (hasattr(ed, 'empty') and ed.empty):
         try:
             ed = ticker_obj.earnings_dates
@@ -184,20 +164,14 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
         return []
 
     try:
-        # Print debug-info om kolonnerne
         print(f"[earnings] Kolonner: {list(ed.columns)}")
-
         now = pd.Timestamp.now(tz="UTC")
-
-        # Sørg for at index er tz-aware
         if ed.index.tz is None:
             ed.index = ed.index.tz_localize("UTC")
-
-        # Filter: kun fortid (allerede rapporterede)
         past = ed[ed.index <= now].head(n_quarters)
 
         if past.empty:
-            print(f"[earnings] ⚠️ Alle earnings er fremtidige - ingen historik endnu")
+            print(f"[earnings] ⚠️ Alle earnings er fremtidige")
             return []
 
         for date_idx, row in past.iterrows():
@@ -209,7 +183,6 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                 "beat": None,
             }
 
-            # Find EPS estimate (forskellige column-navne i versioner)
             for est_col in [
                 "EPS Estimate", "Estimate", "epsEstimate", "estimate",
                 "EPS_Estimate", "eps_estimate"
@@ -223,7 +196,6 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         except (ValueError, TypeError):
                             continue
 
-            # Find faktisk EPS
             for act_col in [
                 "Reported EPS", "Actual", "epsActual", "actual",
                 "reportedEPS", "Reported_EPS", "eps_actual"
@@ -237,7 +209,6 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         except (ValueError, TypeError):
                             continue
 
-            # Find surprise % (direkte fra API)
             for surp_col in [
                 "Surprise(%)", "Surprise %", "surprisePercent",
                 "surprise(%)", "Surprise", "surprise_pct"
@@ -251,7 +222,6 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         except (ValueError, TypeError):
                             continue
 
-            # Hvis surprise mangler men vi har estimate + actual → beregn selv
             if (entry["eps_estimate"] is not None and
                     entry["eps_actual"] is not None and
                     entry["surprise_pct"] is None):
@@ -261,11 +231,9 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         abs(entry["eps_estimate"]) * 100
                     )
 
-            # Beregn beat/miss
             if entry["eps_estimate"] is not None and entry["eps_actual"] is not None:
                 entry["beat"] = entry["eps_actual"] >= entry["eps_estimate"]
 
-            # Tilføj kun hvis vi minimum har en dato
             if entry["date"] is not None:
                 history.append(entry)
 
@@ -282,10 +250,6 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
 def _calc_post_earnings_volatility(
     hist: pd.DataFrame, earnings_dates: List[datetime]
 ) -> Optional[Dict]:
-    """
-    Beregn historisk bevægelse på dagen efter earnings.
-    Returnerer median, gennemsnit, max op/ned, % store moves.
-    """
     if hist is None or hist.empty or not earnings_dates:
         return None
 
@@ -296,9 +260,7 @@ def _calc_post_earnings_volatility(
         if ed is None:
             continue
         try:
-            # Find close-dagen før og dagen efter earnings
             ed_naive = ed.replace(tzinfo=None) if ed.tzinfo else ed
-            # Hist index kan være tz-aware eller naive
             hist_idx = hist.index
             if hasattr(hist_idx, "tz") and hist_idx.tz is not None:
                 hist_naive = hist.copy()
@@ -306,14 +268,12 @@ def _calc_post_earnings_volatility(
             else:
                 hist_naive = hist
 
-            # Find pris dagen før (eller tæt på)
             before_mask = hist_naive.index <= ed_naive
             after_mask = hist_naive.index > ed_naive
             if not before_mask.any() or not after_mask.any():
                 continue
 
             price_before = float(hist_naive[before_mask]["Close"].iloc[-1])
-            # Pris dagen efter (første handel efter earnings)
             price_after = float(hist_naive[after_mask]["Close"].iloc[0])
 
             if price_before > 0:
@@ -347,12 +307,8 @@ def _calc_post_earnings_volatility(
 
 # ============ HOVED-FUNKTION ============
 
-@st.cache_data(ttl=3600, show_spinner=False)  # Cache 1 time
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_earnings_info(ticker: str) -> Optional[Dict]:
-    """
-    Henter komplet earnings-info for en ticker.
-    Robust version - returnerer altid noget hvis ticker er valid.
-    """
     if not ticker or not YF_AVAILABLE:
         print(f"[earnings] Ticker mangler eller yfinance ikke installeret")
         return None
@@ -361,7 +317,6 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
         tk = yf.Ticker(ticker)
         print(f"[earnings] Henter data for {ticker}...")
 
-        # Næste earnings (hvis muligt)
         next_date = None
         try:
             next_date = _fetch_next_earnings_date(tk)
@@ -370,7 +325,6 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
 
         days_until = _calc_days_until(next_date)
 
-        # Warning level
         warning_level = "none"
         if days_until is not None and days_until >= 0:
             if days_until <= WARNING_THRESHOLDS["critical"]:
@@ -382,19 +336,16 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
             elif days_until <= WARNING_THRESHOLDS["low"]:
                 warning_level = "low"
 
-        # Historik (hvis muligt)
         history = []
         try:
             history = _fetch_earnings_history(tk, n_quarters=8)
         except Exception as e:
             print(f"[earnings] _fetch_earnings_history fejl: {e}")
 
-        # Beat rate
         beats = [h for h in history if h.get("beat") is True]
         valid_history = [h for h in history if h.get("beat") is not None]
         beat_rate = (len(beats) / len(valid_history) * 100) if valid_history else None
 
-        # Avg surprise
         surprises = [
             h["surprise_pct"] for h in history
             if h.get("surprise_pct") is not None
@@ -402,7 +353,6 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
         avg_surprise = float(np.mean(surprises)) if surprises else None
         median_surprise = float(np.median(surprises)) if surprises else None
 
-        # Post-earnings volatility (kræver hist data)
         volatility = None
         if history:
             try:
@@ -436,7 +386,6 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
         print(f"[earnings] ❌ KRITISK fejl for {ticker}: {e}")
         import traceback
         traceback.print_exc()
-        # Returnér tom data i stedet for None - så vi kan vise en message
         return {
             "ticker": ticker,
             "next_date": None,
@@ -456,7 +405,6 @@ def get_earnings_info(ticker: str) -> Optional[Dict]:
 # ============ HJÆLPE-FUNKTIONER ============
 
 def _format_date_dk(dt: Optional[datetime]) -> str:
-    """Format dato på dansk"""
     if dt is None:
         return "?"
     days_dk = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"]
@@ -489,10 +437,6 @@ def _warning_emoji(level: str) -> str:
 
 
 def get_earnings_warning_message(data: Optional[Dict]) -> Optional[str]:
-    """
-    Returnerer kort tekst-warning til brug i action plan
-    (uden at rendere noget).
-    """
     if data is None or data.get("days_until") is None:
         return None
 
@@ -502,7 +446,7 @@ def get_earnings_warning_message(data: Optional[Dict]) -> Optional[str]:
     avg_move = vol.get("avg_abs_move_pct")
 
     if days < 0:
-        return None  # Allerede passeret
+        return None
 
     move_str = f" (historisk ±{avg_move:.1f}% post-earnings)" if avg_move else ""
 
@@ -525,20 +469,8 @@ def get_earnings_warning_message(data: Optional[Dict]) -> Optional[str]:
 
 # ============ UI RENDERERS ============
 
-def render_earnings_warning(
-    data: Optional[Dict],
-    compact: bool = False,
-) -> None:
-    """
-    Render earnings-warning banner.
-
-    Args:
-        data: Output fra get_earnings_info()
-        compact: Hvis True, vis kompakt 4-kolonne layout
-                 Hvis False, vis fuld banner
-    """
+def render_earnings_warning(data: Optional[Dict], compact: bool = False) -> None:
     if data is None:
-        # Vis fallback-besked så brugeren ved hvad der sker
         if not compact:
             st.info("📅 Kunne ikke hente earnings-data fra Yahoo Finance")
         else:
@@ -569,7 +501,6 @@ def render_earnings_warning(
         return
 
     if days < 0:
-        # Earnings allerede passeret
         if not compact:
             st.info(
                 f"📅 Sidste earnings var {abs(days)} dage siden "
@@ -592,7 +523,6 @@ def render_earnings_warning(
     avg_surp = data.get("avg_surprise_pct")
 
     if compact:
-        # Tæl hvor mange felter der har data
         has_swing = avg_abs is not None
         has_beat = beat_rate is not None
         has_surp = avg_surp is not None
@@ -600,7 +530,6 @@ def render_earnings_warning(
         n_data_fields = sum([has_swing, has_beat, has_surp])
 
         if n_data_fields == 0:
-            # Ingen historik — vis kun næste earnings i fuld bredde
             st.markdown(
                 f"<div style='background:{color}22;padding:0.8rem;border-radius:10px;"
                 f"border-left:5px solid {color}'>"
@@ -614,7 +543,6 @@ def render_earnings_warning(
             )
             return
 
-        # Vis dynamisk antal kolonner baseret på tilgængelig data
         col_widths = [2] + [1] * n_data_fields
         cols = st.columns(col_widths)
 
@@ -653,7 +581,6 @@ def render_earnings_warning(
             )
 
     else:
-        # Fuld visning
         warning_text = ""
         if level == "critical":
             warning_text = (
@@ -687,7 +614,6 @@ def render_earnings_warning(
             unsafe_allow_html=True
         )
 
-        # Detaljerede metrics (kun hvis vi har data)
         has_any = (avg_abs is not None or max_up is not None or
                    max_down is not None or beat_rate is not None)
 
@@ -720,14 +646,11 @@ def render_earnings_warning(
 
 
 def render_earnings_history(data: Optional[Dict]) -> None:
-    """Render historisk EPS surprise-tabel + chart"""
     if data is None or not data.get("history"):
         st.info("Ingen earnings-historik tilgængelig")
         return
 
     history = data["history"]
-
-    # Build dataframe
     rows = []
     for h in history:
         if h.get("date") is None:
@@ -753,7 +676,6 @@ def render_earnings_history(data: Optional[Dict]) -> None:
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Chart over surprises
     surprises = [
         (h["date"], h.get("surprise_pct"))
         for h in history
@@ -762,7 +684,7 @@ def render_earnings_history(data: Optional[Dict]) -> None:
     if surprises and len(surprises) >= 2:
         try:
             import plotly.graph_objects as go
-            dates = [s[0] for s in reversed(surprises)]  # ældst først
+            dates = [s[0] for s in reversed(surprises)]
             vals = [s[1] for s in reversed(surprises)]
             colors = ["#16a34a" if v >= 0 else "#ef4444" for v in vals]
 
@@ -790,7 +712,6 @@ def render_earnings_history(data: Optional[Dict]) -> None:
 
 
 def render_post_earnings_moves(data: Optional[Dict]) -> None:
-    """Render distribution af post-earnings dag-move"""
     if data is None:
         return
     vol = data.get("volatility")
@@ -801,14 +722,8 @@ def render_post_earnings_moves(data: Optional[Dict]) -> None:
     moves = vol["all_moves"]
 
     cols = st.columns(4)
-    cols[0].metric(
-        "📊 Median move",
-        f"{vol['median_move_pct']:+.2f}%"
-    )
-    cols[1].metric(
-        "📏 Std. dev.",
-        f"{vol['std_move_pct']:.2f}%"
-    )
+    cols[0].metric("📊 Median move", f"{vol['median_move_pct']:+.2f}%")
+    cols[1].metric("📏 Std. dev.", f"{vol['std_move_pct']:.2f}%")
     cols[2].metric(
         f"⚡ Store moves (±{BIG_MOVE_THRESHOLD_PCT:.0f}%)",
         f"{vol['big_moves_count']}/{vol['n_observations']}",
@@ -860,9 +775,6 @@ def render_post_earnings_moves(data: Optional[Dict]) -> None:
 # ============ WATCHLIST EARNINGS CALENDAR ============
 
 def get_watchlist_earnings_calendar(tickers: List[str]) -> pd.DataFrame:
-    """
-    Hent earnings-datoer for hele watchlist og returner sorteret kalender.
-    """
     rows = []
     for tk in tickers:
         try:
@@ -894,12 +806,12 @@ def get_watchlist_earnings_calendar(tickers: List[str]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows).sort_values("Dage")
+    df = pd.DataFrame(rows).sort_values("Dage").reset_index(drop=True)
     return df
 
 
 def render_watchlist_earnings_calendar(tickers: List[str]) -> None:
-    """Render earnings-kalender for watchlist"""
+    """Render earnings-kalender for watchlist - FIXED styler"""
     if not tickers:
         st.info("Watchlist er tom")
         return
@@ -911,26 +823,36 @@ def render_watchlist_earnings_calendar(tickers: List[str]) -> None:
         st.info("Ingen kommende earnings-datoer fundet for watchlist")
         return
 
-    # Highlight critical/high
-    def highlight_row(row):
-        level = row.get("Niveau", "none")
-        if level == "critical":
-            return ["background-color: #dc262633"] * len(row)
-        elif level == "high":
-            return ["background-color: #ef444422"] * len(row)
-        elif level == "medium":
-            return ["background-color: #eab30822"] * len(row)
-        return [""] * len(row)
+    # 🆕 FIX: Build levels mapping FØR vi dropper kolonnen
+    # Brug index for at sikre vi har 1:1 mapping
+    levels_by_index = df["Niveau"].to_dict()
 
-    # Drop "Niveau" fra display, men brug til styling
+    # Drop "Niveau" fra display
     display_df = df.drop(columns=["Niveau"], errors="ignore")
-    st.dataframe(
-        display_df.style.apply(
-            lambda r: highlight_row(df.loc[r.name]), axis=1
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+    n_display_cols = len(display_df.columns)
+
+    def highlight_row(row):
+        """Returnerer styling for en row - matcher display_df's kolonner"""
+        # row.name er index fra display_df (samme som df siden vi reset_index'ede)
+        level = levels_by_index.get(row.name, "none")
+        if level == "critical":
+            return ["background-color: #dc262633"] * n_display_cols
+        elif level == "high":
+            return ["background-color: #ef444422"] * n_display_cols
+        elif level == "medium":
+            return ["background-color: #eab30822"] * n_display_cols
+        return [""] * n_display_cols
+
+    try:
+        st.dataframe(
+            display_df.style.apply(highlight_row, axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
+    except Exception as e:
+        # Fallback hvis styling fejler - vis bare uden farver
+        print(f"[earnings] Styling fejl: {e}")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     # Summary
     critical = len(df[df["Niveau"] == "critical"])
@@ -943,32 +865,11 @@ def render_watchlist_earnings_calendar(tickers: List[str]) -> None:
         )
     elif medium > 0:
         st.info(f"📅 {medium} earnings inden for 2 uger")
+
+
 # ============ EARNINGS SCORE BOOST ============
 
 def calculate_earnings_score_boost(data: Optional[Dict]) -> Dict:
-    """
-    Beregn score-boost baseret på earnings-historik.
-    Returnerer dict med:
-        - boost: int (-10 til +15) - tilføjes til overall score
-        - factors: List[Dict] - breakdown af hvad der påvirker
-        - rating: str - "Excellent" / "God" / "OK" / "Dårlig"
-
-    Logik:
-    - Beat rate ≥ 90%      → +6 (excellent track record)
-    - Beat rate ≥ 75%      → +4 (god track record)
-    - Beat rate ≥ 60%      → +2 (OK)
-    - Beat rate < 40%      → -3 (dårligt track record)
-
-    - Avg surprise ≥ 5%    → +4 (markant overrasker)
-    - Avg surprise ≥ 2%    → +2 (lidt over)
-    - Avg surprise < -2%   → -3 (skuffer)
-
-    - Lav post-earnings swing (<3%)  → +2 (lav risiko)
-    - Høj post-earnings swing (>8%)  → -2 (høj risiko)
-
-    - Earnings <3 dage frem  → -3 (timing-risiko)
-    - Earnings <7 dage frem  → -1
-    """
     factors = []
     boost = 0
 
@@ -981,41 +882,35 @@ def calculate_earnings_score_boost(data: Optional[Dict]) -> Dict:
             "explanation": "Ingen earnings-data tilgængelig"
         }
 
-    # === BEAT RATE BOOST ===
     beat_rate = data.get("beat_rate")
     n_q = data.get("n_quarters", 0)
 
-    if beat_rate is not None and n_q >= 4:  # Min. 4 kvartaler for pålidelig data
+    if beat_rate is not None and n_q >= 4:
         if beat_rate >= 90:
             boost += 6
             factors.append({
                 "label": f"🏆 Beat rate {beat_rate:.0f}% ({n_q} kv.)",
-                "impact": +6,
-                "category": "Track record"
+                "impact": +6, "category": "Track record"
             })
         elif beat_rate >= 75:
             boost += 4
             factors.append({
                 "label": f"🎯 Beat rate {beat_rate:.0f}% ({n_q} kv.)",
-                "impact": +4,
-                "category": "Track record"
+                "impact": +4, "category": "Track record"
             })
         elif beat_rate >= 60:
             boost += 2
             factors.append({
                 "label": f"✅ Beat rate {beat_rate:.0f}% ({n_q} kv.)",
-                "impact": +2,
-                "category": "Track record"
+                "impact": +2, "category": "Track record"
             })
         elif beat_rate < 40:
             boost -= 3
             factors.append({
                 "label": f"⚠️ Lav beat rate {beat_rate:.0f}% ({n_q} kv.)",
-                "impact": -3,
-                "category": "Track record"
+                "impact": -3, "category": "Track record"
             })
 
-    # === AVG SURPRISE BOOST ===
     avg_surp = data.get("avg_surprise_pct")
 
     if avg_surp is not None:
@@ -1023,25 +918,21 @@ def calculate_earnings_score_boost(data: Optional[Dict]) -> Dict:
             boost += 4
             factors.append({
                 "label": f"📈 Stor positiv surprise (+{avg_surp:.1f}%)",
-                "impact": +4,
-                "category": "Surprise"
+                "impact": +4, "category": "Surprise"
             })
         elif avg_surp >= 2:
             boost += 2
             factors.append({
                 "label": f"📊 Positiv surprise (+{avg_surp:.1f}%)",
-                "impact": +2,
-                "category": "Surprise"
+                "impact": +2, "category": "Surprise"
             })
         elif avg_surp <= -2:
             boost -= 3
             factors.append({
                 "label": f"📉 Negative surprises ({avg_surp:.1f}%)",
-                "impact": -3,
-                "category": "Surprise"
+                "impact": -3, "category": "Surprise"
             })
 
-    # === VOLATILITET BOOST (risk-adjusted) ===
     vol = data.get("volatility") or {}
     avg_swing = vol.get("avg_abs_move_pct")
     n_obs = vol.get("n_observations", 0)
@@ -1051,36 +942,30 @@ def calculate_earnings_score_boost(data: Optional[Dict]) -> Dict:
             boost += 2
             factors.append({
                 "label": f"🛡️ Lav post-earnings swing (±{avg_swing:.1f}%)",
-                "impact": +2,
-                "category": "Volatilitet"
+                "impact": +2, "category": "Volatilitet"
             })
         elif avg_swing > 8:
             boost -= 2
             factors.append({
                 "label": f"⚡ Høj post-earnings swing (±{avg_swing:.1f}%)",
-                "impact": -2,
-                "category": "Volatilitet"
+                "impact": -2, "category": "Volatilitet"
             })
 
-    # === TIMING-RISIKO ===
     days = data.get("days_until")
     if days is not None and days >= 0:
         if days <= 3:
             boost -= 3
             factors.append({
                 "label": f"🚨 Earnings KRITISK tæt på ({days} dage)",
-                "impact": -3,
-                "category": "Timing"
+                "impact": -3, "category": "Timing"
             })
         elif days <= 7:
             boost -= 1
             factors.append({
                 "label": f"⚠️ Earnings meget tæt på ({days} dage)",
-                "impact": -1,
-                "category": "Timing"
+                "impact": -1, "category": "Timing"
             })
 
-    # === RATING ===
     if boost >= 8:
         rating = "Excellent"
         rating_color = "#16a34a"
@@ -1112,16 +997,11 @@ def calculate_earnings_score_boost(data: Optional[Dict]) -> Dict:
 
 
 def render_earnings_score_card(data: Optional[Dict]) -> None:
-    """
-    Render et lille kort der viser earnings-score-bidrag.
-    Kald denne i Score Breakdown sektionen.
-    """
     score_info = calculate_earnings_score_boost(data)
     boost = score_info["boost"]
     rating = score_info["rating"]
     color = score_info["rating_color"]
 
-    # Sign + farve
     if boost > 0:
         sign = "+"
         boost_color = "#16a34a"
@@ -1150,7 +1030,6 @@ def render_earnings_score_card(data: Optional[Dict]) -> None:
         unsafe_allow_html=True
     )
 
-    # Vis breakdown
     factors = score_info["factors"]
     if factors:
         with st.expander(f"📊 Se breakdown ({len(factors)} faktorer)"):
@@ -1178,73 +1057,50 @@ def add_earnings_markers_to_chart(
     row: int = 1,
     col: int = 1,
 ) -> None:
-    """
-    Tilføj earnings-markører på et plotly chart.
-    
-    - Vertikale linjer på alle historiske earnings-datoer
-    - Grøn farve hvis "beat", rød hvis "miss"
-    - Annotation med "E" og dato
-    - Special markør for NÆSTE earnings (gul/orange, fremtid)
-    
-    Args:
-        fig: plotly figure (typisk make_subplots)
-        earnings_data: Output fra get_earnings_info()
-        hist_df: DataFrame med pris-historik (for x-axis range)
-        row: row hvor markører skal vises (default: 1, dvs. main price chart)
-        col: col (default: 1)
-    """
     if earnings_data is None or hist_df is None or hist_df.empty:
         return
 
     history = earnings_data.get("history", [])
     next_date = earnings_data.get("next_date")
 
-    # Find x-axis range fra hist
     try:
         hist_start = hist_df.index.min()
         hist_end = hist_df.index.max()
-        # Konverter til naive datetime for sammenligning
         if hasattr(hist_start, 'tz') and hist_start.tz is not None:
             hist_start = hist_start.tz_localize(None) if hasattr(hist_start, 'tz_localize') else hist_start.replace(tzinfo=None)
             hist_end = hist_end.tz_localize(None) if hasattr(hist_end, 'tz_localize') else hist_end.replace(tzinfo=None)
     except Exception:
         return
 
-    # Tilføj historiske earnings-markører
     for entry in history:
         ed = entry.get("date")
         if ed is None:
             continue
 
         try:
-            # Konverter til naive
             ed_naive = ed.replace(tzinfo=None) if ed.tzinfo else ed
 
-            # Skip hvis udenfor hist-range
             if ed_naive < hist_start or ed_naive > hist_end:
                 continue
 
-            # Bestem farve baseret på beat/miss
             beat = entry.get("beat")
             surp = entry.get("surprise_pct")
 
             if beat is True:
-                line_color = "rgba(34, 197, 94, 0.6)"  # grøn
+                line_color = "rgba(34, 197, 94, 0.6)"
                 marker_text = "✓"
                 tooltip_color = "#16a34a"
             elif beat is False:
-                line_color = "rgba(239, 68, 68, 0.6)"  # rød
+                line_color = "rgba(239, 68, 68, 0.6)"
                 marker_text = "✗"
                 tooltip_color = "#ef4444"
             else:
-                line_color = "rgba(156, 163, 175, 0.5)"  # grå
+                line_color = "rgba(156, 163, 175, 0.5)"
                 marker_text = "E"
                 tooltip_color = "#9ca3af"
 
-            # Surprise text
             surp_str = f"{surp:+.1f}%" if surp is not None else "?"
 
-            # Tilføj vertikal linje
             fig.add_vline(
                 x=ed_naive,
                 line=dict(color=line_color, width=1.5, dash="dot"),
@@ -1257,19 +1113,15 @@ def add_earnings_markers_to_chart(
         except Exception:
             continue
 
-    # Tilføj NÆSTE earnings markør (fremtidig)
     if next_date is not None:
         try:
             next_naive = next_date.replace(tzinfo=None) if next_date.tzinfo else next_date
             now = datetime.now()
 
-            # Kun hvis fremtidig
             if next_naive > now:
-                # Tjek om datoen er indenfor visning (eller lige udenfor)
-                # Vi tilføjer den uanset, plotly extender x-aksen
                 fig.add_vline(
                     x=next_naive,
-                    line=dict(color="#fbbf24", width=2.5, dash="dash"),  # gul/orange
+                    line=dict(color="#fbbf24", width=2.5, dash="dash"),
                     row=row, col=col,
                     annotation_text=f"📅 NÆSTE EARNINGS",
                     annotation_position="top",
@@ -1281,7 +1133,6 @@ def add_earnings_markers_to_chart(
 
 
 def add_earnings_legend_caption() -> None:
-    """Vis forklaring på earnings-markører under et chart"""
     st.caption(
         "📅 **Earnings markører:** "
         "🟢 ✓ = EPS Beat · "
