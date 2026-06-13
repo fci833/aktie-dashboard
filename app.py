@@ -3753,10 +3753,10 @@ elif st.session_state.active_view == "📊 Analyse":
                 st.warning("⚠️ Modellen anbefaler IKKE køb lige nu")
         else:
             st.warning("Kunne ikke beregne position size (tjek input)")
+            st.markdown("---")
     # ============================================================
     # 🆕 MAIN TABS - NU MED "📅 Earnings" TAB + earnings-markers på chart
     # ============================================================
-    st.markdown("---")
     main_tabs = st.tabs([
         "📊 Charts", "🔧 Indikatorer", "💰 Kursmål",
         "📉 Risiko", "🎲 Monte Carlo", "🎯 Backtest",
