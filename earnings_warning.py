@@ -1057,20 +1057,39 @@ def add_earnings_markers_to_chart(
     row: int = 1,
     col: int = 1,
 ) -> None:
+    """
+    Tilføj earnings-markører på et plotly chart.
+    - Vertikale linjer på alle historiske earnings-datoer
+    - Grøn farve hvis "beat", rød hvis "miss"
+    - Special markør for NÆSTE earnings (gul/orange, fremtid)
+    """
     if earnings_data is None or hist_df is None or hist_df.empty:
+        print("[earnings_chart] ⚠️ Ingen data eller hist_df er tom")
         return
 
     history = earnings_data.get("history", [])
     next_date = earnings_data.get("next_date")
 
+    print(f"[earnings_chart] History entries: {len(history)}, next_date: {next_date}")
+
+    # Konverter hist range til pd.Timestamp uden tz for konsistent comparison
     try:
-        hist_start = hist_df.index.min()
-        hist_end = hist_df.index.max()
-        if hasattr(hist_start, 'tz') and hist_start.tz is not None:
-            hist_start = hist_start.tz_localize(None) if hasattr(hist_start, 'tz_localize') else hist_start.replace(tzinfo=None)
-            hist_end = hist_end.tz_localize(None) if hasattr(hist_end, 'tz_localize') else hist_end.replace(tzinfo=None)
-    except Exception:
+        hist_start = pd.Timestamp(hist_df.index.min())
+        hist_end = pd.Timestamp(hist_df.index.max())
+
+        if hist_start.tz is not None:
+            hist_start = hist_start.tz_localize(None)
+        if hist_end.tz is not None:
+            hist_end = hist_end.tz_localize(None)
+
+        print(f"[earnings_chart] Hist range: {hist_start} → {hist_end}")
+    except Exception as e:
+        print(f"[earnings_chart] ❌ Fejl ved hist range: {e}")
         return
+
+    # === HISTORISKE EARNINGS-MARKØRER ===
+    n_added = 0
+    n_skipped = 0
 
     for entry in history:
         ed = entry.get("date")
@@ -1078,58 +1097,86 @@ def add_earnings_markers_to_chart(
             continue
 
         try:
-            ed_naive = ed.replace(tzinfo=None) if ed.tzinfo else ed
+            # Konverter til pd.Timestamp uden tz
+            ed_ts = pd.Timestamp(ed)
+            if ed_ts.tz is not None:
+                ed_ts = ed_ts.tz_localize(None)
 
-            if ed_naive < hist_start or ed_naive > hist_end:
+            # Skip hvis udenfor hist-range
+            if ed_ts < hist_start or ed_ts > hist_end:
+                n_skipped += 1
                 continue
 
             beat = entry.get("beat")
             surp = entry.get("surprise_pct")
 
             if beat is True:
-                line_color = "rgba(34, 197, 94, 0.6)"
+                line_color = "#22c55e"
                 marker_text = "✓"
                 tooltip_color = "#16a34a"
             elif beat is False:
-                line_color = "rgba(239, 68, 68, 0.6)"
+                line_color = "#ef4444"
                 marker_text = "✗"
                 tooltip_color = "#ef4444"
             else:
-                line_color = "rgba(156, 163, 175, 0.5)"
+                line_color = "#9ca3af"
                 marker_text = "E"
                 tooltip_color = "#9ca3af"
 
             surp_str = f"{surp:+.1f}%" if surp is not None else "?"
 
+            # Brug pydatetime - mest robust for plotly subplots
+            x_value = ed_ts.to_pydatetime()
+
             fig.add_vline(
-                x=ed_naive,
-                line=dict(color=line_color, width=1.5, dash="dot"),
+                x=x_value,
+                line_width=1.5,
+                line_dash="dot",
+                line_color=line_color,
+                opacity=0.6,
                 row=row, col=col,
                 annotation_text=f"{marker_text} {surp_str}",
                 annotation_position="top",
-                annotation_font=dict(size=10, color=tooltip_color),
+                annotation_font_size=10,
+                annotation_font_color=tooltip_color,
                 annotation_bgcolor="rgba(0,0,0,0.6)",
             )
-        except Exception:
+            n_added += 1
+
+        except Exception as e:
+            print(f"[earnings_chart] Fejl ved hist marker {ed}: {e}")
             continue
 
+    print(f"[earnings_chart] ✓ Tilføjet {n_added} historiske markører, skippet {n_skipped}")
+
+    # === NÆSTE EARNINGS MARKØR (fremtidig) ===
     if next_date is not None:
         try:
-            next_naive = next_date.replace(tzinfo=None) if next_date.tzinfo else next_date
-            now = datetime.now()
+            next_ts = pd.Timestamp(next_date)
+            if next_ts.tz is not None:
+                next_ts = next_ts.tz_localize(None)
 
-            if next_naive > now:
+            now_ts = pd.Timestamp.now()
+
+            if next_ts > now_ts:
+                x_value = next_ts.to_pydatetime()
+
                 fig.add_vline(
-                    x=next_naive,
-                    line=dict(color="#fbbf24", width=2.5, dash="dash"),
+                    x=x_value,
+                    line_width=2.5,
+                    line_dash="dash",
+                    line_color="#fbbf24",
+                    opacity=0.9,
                     row=row, col=col,
-                    annotation_text=f"📅 NÆSTE EARNINGS",
+                    annotation_text="📅 NÆSTE EARNINGS",
                     annotation_position="top",
-                    annotation_font=dict(size=11, color="#fbbf24"),
+                    annotation_font_size=11,
+                    annotation_font_color="#fbbf24",
                     annotation_bgcolor="rgba(0,0,0,0.7)",
                 )
-        except Exception:
-            pass
+                print(f"[earnings_chart] ✓ Tilføjet næste earnings markør: {next_ts}")
+        except Exception as e:
+            print(f"[earnings_chart] ❌ Fejl ved next-date: {e}")
 
 
 def add_earnings_legend_caption() -> None:
