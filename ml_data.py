@@ -115,6 +115,7 @@ def _is_crypto_universe(universe: str) -> bool:
 def load_all_snapshots(asset_class: str = "all") -> pd.DataFrame:
     """
     Load all screener snapshots into one DataFrame.
+    NOW ALSO checks st.session_state for backfill data (Streamlit Cloud workaround).
 
     Args:
         asset_class: "stock", "crypto", or "all"
@@ -122,31 +123,51 @@ def load_all_snapshots(asset_class: str = "all") -> pd.DataFrame:
     Returns:
         DataFrame with snapshot_ts and snapshot_universe columns added
     """
-    snaps = list_snapshots()
-    if not snaps:
-        return pd.DataFrame()
-
     all_rows = []
-    for snap in snaps:
-        try:
-            df, ts, universe = load_snapshot(snap["file"])
-            if df is None or df.empty:
-                continue
 
+    # 🆕 PRIORITY 1: Check session state for backfill data
+    try:
+        import streamlit as st
+        backfill_df = st.session_state.get("ml_backfill_df")
+        if backfill_df is not None and not backfill_df.empty:
+            df_bf = backfill_df.copy()
             # Filter by asset class
-            is_crypto = _is_crypto_universe(universe)
-            if asset_class == "crypto" and not is_crypto:
-                continue
-            if asset_class == "stock" and is_crypto:
-                continue
+            if asset_class == "crypto":
+                # Backfill crypto would have BTC-USD, ETH-USD etc.
+                df_bf = df_bf[df_bf["ticker"].str.contains("-USD", na=False)]
+            elif asset_class == "stock":
+                df_bf = df_bf[~df_bf["ticker"].str.contains("-USD", na=False)]
 
-            df = df.copy()
-            df["snapshot_ts"] = pd.to_datetime(ts)
-            df["snapshot_universe"] = universe
-            all_rows.append(df)
-        except Exception as e:
-            print(f"⚠️ Skipping snapshot {snap.get('filename', '?')}: {e}")
-            continue
+            if not df_bf.empty:
+                all_rows.append(df_bf)
+    except Exception:
+        pass
+
+    # PRIORITY 2: Load disk snapshots
+    try:
+        snaps = list_snapshots()
+        for snap in snaps:
+            try:
+                df, ts, universe = load_snapshot(snap["file"])
+                if df is None or df.empty:
+                    continue
+
+                # Filter by asset class
+                is_crypto = _is_crypto_universe(universe)
+                if asset_class == "crypto" and not is_crypto:
+                    continue
+                if asset_class == "stock" and is_crypto:
+                    continue
+
+                df = df.copy()
+                df["snapshot_ts"] = pd.to_datetime(ts)
+                df["snapshot_universe"] = universe
+                all_rows.append(df)
+            except Exception as e:
+                print(f"⚠️ Skipping snapshot {snap.get('filename', '?')}: {e}")
+                continue
+    except Exception:
+        pass
 
     if not all_rows:
         return pd.DataFrame()
@@ -158,7 +179,6 @@ def load_all_snapshots(asset_class: str = "all") -> pd.DataFrame:
         combined = combined[combined["status"] == "✅"].copy()
 
     return combined
-
 
 # ==========================================
 # FORWARD RETURNS
