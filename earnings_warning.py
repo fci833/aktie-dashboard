@@ -143,36 +143,85 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
 
 def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
     """
-    Hent historisk earnings med flere fallbacks.
-    Robust mod yfinance API-ændringer.
+    Hent historisk earnings med MANGE fallbacks.
+    Robust mod yfinance API-ændringer og rate-limiting.
     """
     history = []
+    debug_log = []  # Bruges til UI debug
     ed = None
+    method_used = None
 
-    # === Method 1: get_earnings_dates() (newer API) ===
+    # === Method 1: get_earnings_dates() ===
     try:
         ed = ticker_obj.get_earnings_dates(limit=n_quarters * 3)
         if ed is not None and not ed.empty:
-            print(f"[earnings] ✓ get_earnings_dates() returnerede {len(ed)} rows")
-            print(f"[earnings] Kolonner: {list(ed.columns)}")
-            print(f"[earnings] Sample row 0: {ed.iloc[0].to_dict() if len(ed) > 0 else 'tom'}")
+            method_used = "get_earnings_dates()"
+            debug_log.append(f"✓ Method 1 (get_earnings_dates) → {len(ed)} rows")
+            debug_log.append(f"  Kolonner: {list(ed.columns)}")
+        else:
+            debug_log.append(f"✗ Method 1 (get_earnings_dates) returnerede tom")
+            ed = None
     except Exception as e:
-        print(f"[earnings] get_earnings_dates() fejl: {e}")
+        debug_log.append(f"✗ Method 1 fejl: {str(e)[:100]}")
         ed = None
 
-    # === Method 2: earnings_dates property (older API) ===
-    if ed is None or (hasattr(ed, 'empty') and ed.empty):
+    # === Method 2: earnings_dates property ===
+    if ed is None:
         try:
             ed = ticker_obj.earnings_dates
             if ed is not None and not ed.empty:
-                print(f"[earnings] ✓ earnings_dates property returnerede {len(ed)} rows")
-                print(f"[earnings] Kolonner: {list(ed.columns)}")
+                method_used = "earnings_dates"
+                debug_log.append(f"✓ Method 2 (earnings_dates) → {len(ed)} rows")
+                debug_log.append(f"  Kolonner: {list(ed.columns)}")
+            else:
+                debug_log.append(f"✗ Method 2 (earnings_dates) returnerede tom")
+                ed = None
         except Exception as e:
-            print(f"[earnings] earnings_dates fejl: {e}")
+            debug_log.append(f"✗ Method 2 fejl: {str(e)[:100]}")
             ed = None
 
+    # === Method 3: earnings_history property (NYT) ===
+    if ed is None:
+        try:
+            eh = ticker_obj.earnings_history
+            if eh is not None and not eh.empty:
+                method_used = "earnings_history"
+                debug_log.append(f"✓ Method 3 (earnings_history) → {len(eh)} rows")
+                debug_log.append(f"  Kolonner: {list(eh.columns)}")
+                ed = eh
+            else:
+                debug_log.append(f"✗ Method 3 (earnings_history) tom")
+        except Exception as e:
+            debug_log.append(f"✗ Method 3 fejl: {str(e)[:100]}")
+
+    # === Method 4: quarterly_income_stmt fallback ===
+    if ed is None:
+        try:
+            qis = ticker_obj.quarterly_income_stmt
+            if qis is not None and not qis.empty:
+                debug_log.append(f"✓ Method 4 (quarterly_income_stmt) → {qis.shape}")
+                debug_log.append(f"  Index: {list(qis.index)[:5]}")
+                # Try to extract EPS rows
+                eps_rows = [idx for idx in qis.index if "EPS" in str(idx) or "Earnings Per Share" in str(idx)]
+                debug_log.append(f"  EPS rows: {eps_rows}")
+        except Exception as e:
+            debug_log.append(f"✗ Method 4 fejl: {str(e)[:100]}")
+
+    # Print all debug
+    print("\n".join([f"[earnings] {line}" for line in debug_log]))
+
+    # Save debug for UI
+    try:
+        st.session_state["_earnings_debug"] = debug_log
+    except Exception:
+        pass
+
     if ed is None or (hasattr(ed, 'empty') and ed.empty):
-        print(f"[earnings] ⚠️ Ingen earnings-historik fundet via API")
+        debug_log.append(f"❌ Alle methods fejlede - ingen historik fundet")
+        try:
+            st.session_state["_earnings_debug"] = debug_log
+        except Exception:
+            pass
         return []
 
     try:
@@ -182,28 +231,38 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
         if ed.index.tz is None:
             ed.index = ed.index.tz_localize("UTC")
 
-        # Filtrér til kun fortid og sortér med nyeste først
+        # Filtrér til kun fortid
         past = ed[ed.index <= now].sort_index(ascending=False).head(n_quarters)
 
         if past.empty:
-            print(f"[earnings] ⚠️ Alle earnings-datoer er fremtidige")
+            debug_log.append(f"⚠️ Alle earnings-datoer er fremtidige")
+            try:
+                st.session_state["_earnings_debug"] = debug_log
+            except Exception:
+                pass
             return []
 
-        print(f"[earnings] Fandt {len(past)} historiske earnings-rows")
+        debug_log.append(f"Fandt {len(past)} historiske earnings-rows")
 
-        # Liste over alle mulige kolonnenavne (yfinance varierer)
         EST_COLS = [
             "EPS Estimate", "Estimate", "epsEstimate", "estimate",
-            "EPS_Estimate", "eps_estimate", "EPS Est."
+            "EPS_Estimate", "eps_estimate", "EPS Est.", "epsestimate"
         ]
         ACT_COLS = [
             "Reported EPS", "Actual", "epsActual", "actual",
-            "reportedEPS", "Reported_EPS", "eps_actual", "EPS Reported"
+            "reportedEPS", "Reported_EPS", "eps_actual", "EPS Reported",
+            "epsactual"
         ]
         SURP_COLS = [
             "Surprise(%)", "Surprise %", "surprisePercent",
-            "surprise(%)", "Surprise", "surprise_pct", "Surprise%"
+            "surprise(%)", "Surprise", "surprise_pct", "Surprise%",
+            "surprisepercent"
         ]
+
+        # Print sample row to debug
+        if len(past) > 0:
+            sample = past.iloc[0].to_dict()
+            debug_log.append(f"Sample row: {sample}")
 
         for date_idx, row in past.iterrows():
             entry = {
@@ -214,7 +273,7 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                 "beat": None,
             }
 
-            # EPS estimate
+            # EPS estimate - prøv også case-insensitive
             for est_col in EST_COLS:
                 if est_col in row.index:
                     val = row.get(est_col)
@@ -224,6 +283,19 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                             break
                         except (ValueError, TypeError):
                             continue
+
+            # Case-insensitive fallback
+            if entry["eps_estimate"] is None:
+                for col in row.index:
+                    col_lower = str(col).lower().replace(" ", "").replace("_", "")
+                    if "estimate" in col_lower or "epsest" in col_lower:
+                        val = row.get(col)
+                        if val is not None and not pd.isna(val):
+                            try:
+                                entry["eps_estimate"] = float(val)
+                                break
+                            except (ValueError, TypeError):
+                                continue
 
             # Faktisk EPS
             for act_col in ACT_COLS:
@@ -236,6 +308,19 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         except (ValueError, TypeError):
                             continue
 
+            # Case-insensitive fallback for actual
+            if entry["eps_actual"] is None:
+                for col in row.index:
+                    col_lower = str(col).lower().replace(" ", "").replace("_", "")
+                    if "reported" in col_lower or "actual" in col_lower:
+                        val = row.get(col)
+                        if val is not None and not pd.isna(val):
+                            try:
+                                entry["eps_actual"] = float(val)
+                                break
+                            except (ValueError, TypeError):
+                                continue
+
             # Surprise %
             for surp_col in SURP_COLS:
                 if surp_col in row.index:
@@ -247,7 +332,20 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         except (ValueError, TypeError):
                             continue
 
-            # Beregn surprise selv hvis vi har estimate + actual
+            # Case-insensitive surprise
+            if entry["surprise_pct"] is None:
+                for col in row.index:
+                    col_lower = str(col).lower().replace(" ", "").replace("_", "")
+                    if "surprise" in col_lower:
+                        val = row.get(col)
+                        if val is not None and not pd.isna(val):
+                            try:
+                                entry["surprise_pct"] = float(val)
+                                break
+                            except (ValueError, TypeError):
+                                continue
+
+            # Beregn surprise selv
             if (entry["eps_estimate"] is not None and
                     entry["eps_actual"] is not None and
                     entry["surprise_pct"] is None):
@@ -264,15 +362,33 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
             if entry["date"] is not None:
                 history.append(entry)
 
-        print(f"[earnings] ✓ Parsed {len(history)} entries med data:")
-        for i, h in enumerate(history[:3]):
-            print(f"  [{i}] {h['date']} - est:{h['eps_estimate']}, "
-                  f"act:{h['eps_actual']}, surp:{h['surprise_pct']}, beat:{h['beat']}")
+        debug_log.append(f"✓ Parsed {len(history)} entries")
+        if history:
+            for i, h in enumerate(history[:3]):
+                debug_log.append(
+                    f"  [{i}] {h['date']} - est:{h['eps_estimate']}, "
+                    f"act:{h['eps_actual']}, surp:{h['surprise_pct']}, beat:{h['beat']}"
+                )
+
+        # Save final debug
+        try:
+            st.session_state["_earnings_debug"] = debug_log
+            st.session_state["_earnings_method"] = method_used
+        except Exception:
+            pass
+
+        # Print all
+        print("\n".join([f"[earnings] {line}" for line in debug_log]))
 
     except Exception as e:
+        debug_log.append(f"❌ Parsing fejl: {e}")
         print(f"[earnings] ❌ Historik parsing fejl: {e}")
         import traceback
         traceback.print_exc()
+        try:
+            st.session_state["_earnings_debug"] = debug_log
+        except Exception:
+            pass
 
     return history
 
