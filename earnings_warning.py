@@ -142,37 +142,68 @@ def _fetch_next_earnings_date(ticker_obj) -> Optional[datetime]:
 
 
 def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
+    """
+    Hent historisk earnings med flere fallbacks.
+    Robust mod yfinance API-ændringer.
+    """
     history = []
     ed = None
+
+    # === Method 1: get_earnings_dates() (newer API) ===
     try:
-        ed = ticker_obj.get_earnings_dates(limit=n_quarters * 2)
+        ed = ticker_obj.get_earnings_dates(limit=n_quarters * 3)
         if ed is not None and not ed.empty:
             print(f"[earnings] ✓ get_earnings_dates() returnerede {len(ed)} rows")
+            print(f"[earnings] Kolonner: {list(ed.columns)}")
+            print(f"[earnings] Sample row 0: {ed.iloc[0].to_dict() if len(ed) > 0 else 'tom'}")
     except Exception as e:
         print(f"[earnings] get_earnings_dates() fejl: {e}")
+        ed = None
 
+    # === Method 2: earnings_dates property (older API) ===
     if ed is None or (hasattr(ed, 'empty') and ed.empty):
         try:
             ed = ticker_obj.earnings_dates
             if ed is not None and not ed.empty:
                 print(f"[earnings] ✓ earnings_dates property returnerede {len(ed)} rows")
+                print(f"[earnings] Kolonner: {list(ed.columns)}")
         except Exception as e:
             print(f"[earnings] earnings_dates fejl: {e}")
+            ed = None
 
     if ed is None or (hasattr(ed, 'empty') and ed.empty):
-        print(f"[earnings] ⚠️ Ingen earnings-historik fundet")
+        print(f"[earnings] ⚠️ Ingen earnings-historik fundet via API")
         return []
 
     try:
-        print(f"[earnings] Kolonner: {list(ed.columns)}")
         now = pd.Timestamp.now(tz="UTC")
+
+        # Sørg for tz-aware index
         if ed.index.tz is None:
             ed.index = ed.index.tz_localize("UTC")
-        past = ed[ed.index <= now].head(n_quarters)
+
+        # Filtrér til kun fortid og sortér med nyeste først
+        past = ed[ed.index <= now].sort_index(ascending=False).head(n_quarters)
 
         if past.empty:
-            print(f"[earnings] ⚠️ Alle earnings er fremtidige")
+            print(f"[earnings] ⚠️ Alle earnings-datoer er fremtidige")
             return []
+
+        print(f"[earnings] Fandt {len(past)} historiske earnings-rows")
+
+        # Liste over alle mulige kolonnenavne (yfinance varierer)
+        EST_COLS = [
+            "EPS Estimate", "Estimate", "epsEstimate", "estimate",
+            "EPS_Estimate", "eps_estimate", "EPS Est."
+        ]
+        ACT_COLS = [
+            "Reported EPS", "Actual", "epsActual", "actual",
+            "reportedEPS", "Reported_EPS", "eps_actual", "EPS Reported"
+        ]
+        SURP_COLS = [
+            "Surprise(%)", "Surprise %", "surprisePercent",
+            "surprise(%)", "Surprise", "surprise_pct", "Surprise%"
+        ]
 
         for date_idx, row in past.iterrows():
             entry = {
@@ -183,10 +214,8 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                 "beat": None,
             }
 
-            for est_col in [
-                "EPS Estimate", "Estimate", "epsEstimate", "estimate",
-                "EPS_Estimate", "eps_estimate"
-            ]:
+            # EPS estimate
+            for est_col in EST_COLS:
                 if est_col in row.index:
                     val = row.get(est_col)
                     if val is not None and not pd.isna(val):
@@ -196,10 +225,8 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         except (ValueError, TypeError):
                             continue
 
-            for act_col in [
-                "Reported EPS", "Actual", "epsActual", "actual",
-                "reportedEPS", "Reported_EPS", "eps_actual"
-            ]:
+            # Faktisk EPS
+            for act_col in ACT_COLS:
                 if act_col in row.index:
                     val = row.get(act_col)
                     if val is not None and not pd.isna(val):
@@ -209,10 +236,8 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         except (ValueError, TypeError):
                             continue
 
-            for surp_col in [
-                "Surprise(%)", "Surprise %", "surprisePercent",
-                "surprise(%)", "Surprise", "surprise_pct"
-            ]:
+            # Surprise %
+            for surp_col in SURP_COLS:
                 if surp_col in row.index:
                     val = row.get(surp_col)
                     if val is not None and not pd.isna(val):
@@ -222,6 +247,7 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         except (ValueError, TypeError):
                             continue
 
+            # Beregn surprise selv hvis vi har estimate + actual
             if (entry["eps_estimate"] is not None and
                     entry["eps_actual"] is not None and
                     entry["surprise_pct"] is None):
@@ -231,16 +257,20 @@ def _fetch_earnings_history(ticker_obj, n_quarters: int = 8) -> List[Dict]:
                         abs(entry["eps_estimate"]) * 100
                     )
 
+            # Beat/miss
             if entry["eps_estimate"] is not None and entry["eps_actual"] is not None:
                 entry["beat"] = entry["eps_actual"] >= entry["eps_estimate"]
 
             if entry["date"] is not None:
                 history.append(entry)
 
-        print(f"[earnings] ✓ Parsed {len(history)} earnings entries")
+        print(f"[earnings] ✓ Parsed {len(history)} entries med data:")
+        for i, h in enumerate(history[:3]):
+            print(f"  [{i}] {h['date']} - est:{h['eps_estimate']}, "
+                  f"act:{h['eps_actual']}, surp:{h['surprise_pct']}, beat:{h['beat']}")
 
     except Exception as e:
-        print(f"[earnings] Historik parsing fejl: {e}")
+        print(f"[earnings] ❌ Historik parsing fejl: {e}")
         import traceback
         traceback.print_exc()
 
