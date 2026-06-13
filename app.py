@@ -761,31 +761,36 @@ elif st.session_state.active_view == "🔧 Diagnose":
                             })
                     st.dataframe(pd.DataFrame(cov_data), use_container_width=True, hide_index=True)
 
-                    # Save option
+                                        # 🆕 STORE IN SESSION STATE (Streamlit Cloud workaround)
+                    from ml_backfill import store_backfill_in_session
+                    store_backfill_in_session(df)
+
                     st.markdown("---")
-                    st.markdown("##### 💾 Gem som snapshots")
+                    st.success(
+                        "✅ **Data gemt automatisk i session!** ML pipelinen kan nu læse den direkte. "
+                        "Gå til **🤖 ML Data Pipeline** → klik **'Hent oversigt'** → "
+                        "så kan du træne modellen 🚀"
+                    )
+                    st.balloons()
+
+                    st.markdown("##### 💾 Optional: Gem også som CSV (lokalt)")
                     save_cols = st.columns([3, 1])
-                    save_cols[0].info(
-                        "💡 Klik for at gemme som CSV-snapshots i din `screener_snapshots/` mappe. "
-                        "Så kan ML data pipelinen læse dem som normale snapshots."
+                    save_cols[0].caption(
+                        "ℹ️ På Streamlit Cloud forsvinder CSV-filer ved rebuild. "
+                        "Brug session state (allerede gemt!) til træning. "
+                        "CSV-gem er kun nyttigt hvis du kører lokalt."
                     )
 
                     if save_cols[1].button(
-                        "💾 GEM",
-                        type="primary",
+                        "💾 GEM CSV",
                         use_container_width=True,
-                        key="btn_save_backfill"
+                        key="btn_save_backfill_csv"
                     ):
                         try:
                             n_saved = save_backfill_as_snapshots(df)
-                            st.success(
-                                f"✅ Gemt {n_saved} snapshots! "
-                                f"Gå nu til **🤖 ML Data Pipeline** tab og klik **'Hent oversigt'** "
-                                f"for at se den nye data."
-                            )
-                            st.balloons()
+                            st.info(f"📁 Gemt {n_saved} CSV-filer (kun lokalt nyttigt)")
                         except Exception as e:
-                            st.error(f"❌ Kunne ikke gemme: {e}")
+                            st.warning(f"⚠️ CSV-gem fejlede: {e}")
 
                     # Preview
                     with st.expander("👀 Preview af data"):
