@@ -75,6 +75,19 @@ from earnings_warning import (
     add_earnings_markers_to_chart,
     add_earnings_legend_caption,
 )
+# 🤖 ML PREDICT - Step C
+try:
+    from ml_predict import (
+        predict_all_horizons,
+        render_ml_summary_card,
+        render_ml_full,
+        has_trained_models,
+        get_model_info,
+    )
+    ML_PREDICT_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ ml_predict ikke tilgængelig: {e}")
+    ML_PREDICT_AVAILABLE = False
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -3156,6 +3169,25 @@ elif st.session_state.active_view == "📊 Analyse":
     # ============================================================
     st.markdown("---")
     render_earnings_warning(earnings_data, compact=True)
+    
+    # ============================================================
+    # 🤖 ML FORUDSIGELSE - kompakt summary
+    # ============================================================
+    if ML_PREDICT_AVAILABLE and has_trained_models("stock"):
+        with st.spinner("🤖 Beregner ML-forudsigelser..."):
+            ml_predictions_data = predict_all_horizons(
+                info=info,
+                hist=hist,
+                indicators_df=df_indicators,
+                f_score=f_score,
+                t_score=t_score,
+                overall=overall,
+                regime=regime,
+                asset_class="stock",
+            )
+        render_ml_summary_card(ml_predictions_data, rule_based_rec=rec)
+    else:
+        ml_predictions_data = None
 
     # ============ ACTION PLAN ============
     try:
@@ -3551,7 +3583,7 @@ elif st.session_state.active_view == "📊 Analyse":
     main_tabs = st.tabs([
         "📊 Charts", "🔧 Indikatorer", "💰 Kursmål",
         "📉 Risiko", "🎲 Monte Carlo", "🎯 Backtest",
-        "📰 Nyheder", "📅 Earnings", "📋 Detaljer"
+        "🤖 ML", "📰 Nyheder", "📅 Earnings", "📋 Detaljer"
     ])
 
     # ===== CHARTS (med earnings-markører) =====
@@ -3966,8 +3998,67 @@ elif st.session_state.active_view == "📊 Analyse":
                 fig_bt.update_layout(template="plotly_dark", height=400)
                 st.plotly_chart(fig_bt, use_container_width=True)
 
-    # ===== NYHEDER =====
+        # ===== 🤖 ML FORUDSIGELSE =====
     with main_tabs[6]:
+        st.markdown("### 🤖 ML Forudsigelser - Detaljeret")
+        st.caption(
+            f"Komplet ML-analyse for **{company_name}** baseret på trænede modeller "
+            f"fra historisk data. 3 tidshorisonter × 3 algoritmer = ensemble-forudsigelse."
+        )
+
+        if not ML_PREDICT_AVAILABLE:
+            st.error(
+                "❌ **ML-modul ikke tilgængeligt.**\n\n"
+                "Tjek at `ml_predict.py` er gemt i samme mappe som `app.py`."
+            )
+        elif not has_trained_models("stock"):
+            st.warning(
+                "⚠️ **Ingen trænede ML-modeller fundet.**\n\n"
+                "👉 **Sådan fixer du det:**\n"
+                "1. Gå til **🔧 Diagnose** fanen\n"
+                "2. Klik **🚀 Backfill (genvej)** → vælg 'stock' → kør backfill\n"
+                "3. Gå til **🎯 Træn ML** → vælg 'stock' → træn modeller\n"
+                "4. Push til GitHub: `git add ml_models/ && git commit -m 'Add models' && git push`\n"
+                "5. Vent på Streamlit rebuild → kom tilbage hertil!"
+            )
+        else:
+            # Vis model-oversigt
+            model_info = get_model_info("stock")
+            info_cols = st.columns(4)
+            info_cols[0].metric("🤖 Total modeller", model_info["n_models"])
+            info_cols[1].metric("📅 Horisonter", len(model_info["horizons"]))
+
+            best_30d = model_info["f1_scores"].get(30, 0)
+            best_180d = model_info["f1_scores"].get(180, 0)
+            info_cols[2].metric("F1 (30d)", f"{best_30d:.3f}")
+            info_cols[3].metric("F1 (180d) ⭐", f"{best_180d:.3f}")
+
+            st.markdown("---")
+
+            # Render full ML view
+            if ml_predictions_data:
+                render_ml_full(
+                    ml_predictions_data,
+                    rule_based_rec=rec,
+                    rule_based_score=overall,
+                )
+            else:
+                with st.spinner("🤖 Beregner ML-forudsigelser..."):
+                    ml_data_local = predict_all_horizons(
+                        info=info, hist=hist,
+                        indicators_df=df_indicators,
+                        f_score=f_score, t_score=t_score,
+                        overall=overall, regime=regime,
+                        asset_class="stock",
+                    )
+                render_ml_full(
+                    ml_data_local,
+                    rule_based_rec=rec,
+                    rule_based_score=overall,
+                )
+
+    # ===== NYHEDER =====
+    with main_tabs[7]:
         st.markdown("### 📰 Seneste nyheder & sentiment-analyse")
         st.caption(f"Henter automatisk seneste nyhedsartikler om **{company_name}** og analyserer sentiment")
 
@@ -4019,9 +4110,8 @@ elif st.session_state.active_view == "📊 Analyse":
                 get_news_sentiment.clear() if hasattr(get_news_sentiment, "clear") else None
                 st.cache_data.clear()
                 st.rerun()
-
     # ===== 🆕 EARNINGS =====
-    with main_tabs[7]:
+    with main_tabs[8]:
         st.markdown("### 📅 Earnings-analyse")
         st.caption(
             f"Komplet earnings-overblik for **{company_name}** — "
@@ -4107,7 +4197,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 """)
 
     # ===== DETALJER =====
-    with main_tabs[8]:
+    with main_tabs[9]:
         det_cols = st.columns(2)
 
         with det_cols[0]:
