@@ -621,7 +621,11 @@ elif st.session_state.active_view == "🔍 Søg ticker":
 elif st.session_state.active_view == "🔧 Diagnose":
     st.subheader("🔧 Diagnose - Test datakilder & ML")
 
-    diag_tabs = st.tabs(["🌐 Data sources", "🤖 ML Data Pipeline"])
+    diag_tabs = st.tabs([
+    "🌐 Data sources",
+    "🤖 ML Data Pipeline",
+    "🚀 Backfill (genvej)"
+])
 
     # ===== TAB 1: Original data source diagnose =====
     with diag_tabs[0]:
@@ -642,6 +646,159 @@ elif st.session_state.active_view == "🔧 Diagnose":
             "Tester om ML data pipelinen kan læse dine snapshots og forberede "
             "training data til machine learning modellen."
         )
+            # ===== TAB 3: ML Backfill =====
+    with diag_tabs[2]:
+        st.markdown("### 🚀 ML Backfill — Generer historisk training data")
+        st.caption(
+            "🪄 **Tidsmaskine!** Genererer 'snapshots' bagudrettet fra historisk pris-data, "
+            "så du kan træne ML modellen i dag — uden at vente 6 måneder på forward returns."
+        )
+
+        st.info(
+            "💡 **Sådan virker det:**\n"
+            "1. Vi tager populære tickers (AAPL, MSFT, NVDA, etc.)\n"
+            "2. Går tilbage i tiden (fx 24 måneder)\n"
+            "3. På hver dato beregner vi scores AS IF vi havde screenet dengang\n"
+            "4. Vi bruger den NUVÆRENDE pris til at beregne forward returns\n"
+            "5. Bom! Hundredevis af training samples på 2-5 minutter ⚡"
+        )
+
+        bf_cols = st.columns(3)
+        bf_asset = bf_cols[0].selectbox(
+            "Asset class", ["stock", "crypto"], key="bf_asset"
+        )
+        bf_months = bf_cols[1].slider(
+            "Måneder tilbage", 12, 36, 24, 6, key="bf_months",
+            help="Hvor langt tilbage i tiden skal vi generere snapshots?"
+        )
+        bf_interval = bf_cols[2].slider(
+            "Dage mellem snapshots", 14, 60, 30, key="bf_interval",
+            help="Mindre = flere samples men mere overlap"
+        )
+
+        # Estimated samples
+        n_dates = (bf_months * 30 - 200) // bf_interval
+        n_tickers_est = 50 if bf_asset == "stock" else 15
+        n_samples_est = n_dates * n_tickers_est
+
+        st.caption(
+            f"📊 **Forventet output:** ~{n_dates} snapshot-datoer × ~{n_tickers_est} tickers "
+            f"= ~{n_samples_est} samples (afhængigt af data-kvalitet)"
+        )
+
+        if st.button(
+            "🚀 KØR BACKFILL",
+            type="primary",
+            use_container_width=True,
+            key="btn_run_backfill"
+        ):
+            try:
+                from ml_backfill import build_backfill_dataset, save_backfill_as_snapshots, DEFAULT_TICKERS
+
+                # Choose tickers based on asset class
+                if bf_asset == "crypto":
+                    tickers = DEFAULT_TICKERS["crypto"]
+                else:
+                    tickers = (
+                        DEFAULT_TICKERS["us_large_cap"]
+                        + DEFAULT_TICKERS["us_growth"][:10]
+                        + DEFAULT_TICKERS["european"][:10]
+                    )
+                    tickers = list(set(tickers))
+
+                progress = st.progress(0, text="Starter backfill...")
+                status_box = st.empty()
+
+                def update_progress(current, total, ticker):
+                    progress.progress(
+                        current / total,
+                        text=f"📈 [{current}/{total}] Henter {ticker}..."
+                    )
+
+                status_box.info(f"⏳ Genererer historisk data for {len(tickers)} tickers...")
+
+                with st.spinner(""):
+                    result = build_backfill_dataset(
+                        tickers=tickers,
+                        asset_class=bf_asset,
+                        months_back=bf_months,
+                        snapshot_interval_days=bf_interval,
+                        progress_callback=update_progress,
+                    )
+
+                progress.empty()
+
+                if "error" in result:
+                    status_box.empty()
+                    st.error(f"❌ {result['error']}")
+                else:
+                    df = result["df"]
+                    status_box.success(f"✅ Genereret {result['n_rows']} samples!")
+
+                    # Stats
+                    stats_cols = st.columns(4)
+                    stats_cols[0].metric("📊 Total samples", result['n_rows'])
+                    stats_cols[1].metric("🏷️ Tickers", result['n_tickers'])
+                    stats_cols[2].metric("📅 Snapshots", result['n_snapshots'])
+
+                    # Forward returns coverage
+                    valid_30 = df["future_return_30d"].notna().sum() if "future_return_30d" in df.columns else 0
+                    stats_cols[3].metric("✅ 30d valid", valid_30)
+
+                    # Detail per horizon
+                    st.markdown("##### 📅 Coverage per horisont")
+                    cov_data = []
+                    for h in [30, 90, 180]:
+                        col = f"future_return_{h}d"
+                        if col in df.columns:
+                            valid = df[col].notna().sum()
+                            avg_ret = df[col].mean() if valid > 0 else 0
+                            cov_data.append({
+                                "Horisont": f"{h} dage",
+                                "Valid samples": valid,
+                                "Coverage %": f"{valid/len(df)*100:.0f}%",
+                                "Gns. afkast": f"{avg_ret:+.2f}%",
+                            })
+                    st.dataframe(pd.DataFrame(cov_data), use_container_width=True, hide_index=True)
+
+                    # Save option
+                    st.markdown("---")
+                    st.markdown("##### 💾 Gem som snapshots")
+                    save_cols = st.columns([3, 1])
+                    save_cols[0].info(
+                        "💡 Klik for at gemme som CSV-snapshots i din `screener_snapshots/` mappe. "
+                        "Så kan ML data pipelinen læse dem som normale snapshots."
+                    )
+
+                    if save_cols[1].button(
+                        "💾 GEM",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_save_backfill"
+                    ):
+                        try:
+                            n_saved = save_backfill_as_snapshots(df)
+                            st.success(
+                                f"✅ Gemt {n_saved} snapshots! "
+                                f"Gå nu til **🤖 ML Data Pipeline** tab og klik **'Hent oversigt'** "
+                                f"for at se den nye data."
+                            )
+                            st.balloons()
+                        except Exception as e:
+                            st.error(f"❌ Kunne ikke gemme: {e}")
+
+                    # Preview
+                    with st.expander("👀 Preview af data"):
+                        st.dataframe(df.head(20), use_container_width=True)
+
+            except ImportError as e:
+                st.error(f"❌ Kunne ikke importere ml_backfill: {e}")
+                st.info("💡 Tjek at `ml_backfill.py` er gemt i samme mappe som `app.py`")
+            except Exception as e:
+                st.error(f"❌ Backfill fejlede: {e}")
+                import traceback
+                with st.expander("🐛 Full traceback"):
+                    st.code(traceback.format_exc())
 
         # ---- Quick summary ----
         st.markdown("#### 📊 Tilgængelig data")
