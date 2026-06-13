@@ -805,8 +805,24 @@ elif st.session_state.active_view == "🔧 Diagnose":
                 with st.expander("🐛 Full traceback"):
                     st.code(traceback.format_exc())
 
-        # ---- Quick summary ----
+                # ---- Quick summary ----
         st.markdown("#### 📊 Tilgængelig data")
+
+        # 🆕 Vis session-state backfill status
+        try:
+            from ml_backfill import has_backfill_in_session
+            if has_backfill_in_session():
+                bf_df = st.session_state.get("ml_backfill_df")
+                bf_ts = st.session_state.get("ml_backfill_ts")
+                ts_str = bf_ts.strftime("%H:%M") if bf_ts else "?"
+                st.success(
+                    f"🚀 **Backfill data tilgængelig i session!** "
+                    f"{len(bf_df)} samples · {bf_df['ticker'].nunique()} tickers · "
+                    f"genereret kl. {ts_str}"
+                )
+        except Exception:
+            pass
+
         if st.button("🔍 Hent oversigt", key="btn_ml_summary"):
             try:
                 from ml_data import get_training_summary
