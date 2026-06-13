@@ -1,10 +1,16 @@
 """
-ml_train.py - ML Training Pipeline
+ml_train.py - ML Training Pipeline (STREAMLIT CLOUD SAFE)
 ====================================
 Trains ensemble of ML models (Random Forest, XGBoost, LightGBM) on 
 backfilled training data. Saves trained models to disk.
 
 Main entry: train_all_models(data_dict, asset_class="stock")
+
+🔧 STREAMLIT CLOUD FIXES:
+- LightGBM: n_jobs=1, force_col_wise=True (forhindrer deadlock)
+- XGBoost: n_jobs=1 (sikker på 1-core systems)
+- Cross-validation: n_jobs=1 (forhindrer nested parallelism)
+- Reduceret n_estimators for hurtigere træning
 """
 import warnings
 warnings.filterwarnings("ignore")
@@ -52,82 +58,106 @@ MODELS_DIR.mkdir(exist_ok=True)
 
 CLASS_LABELS = ["SELL", "HOLD", "BUY"]
 
+# 🔑 KRITISK: Streamlit Cloud har kun 1 CPU core (delt)
+#    Brug n_jobs=1 i alle modeller + CV for at undgå deadlock
+STREAMLIT_CLOUD_SAFE = True  # Sæt til False hvis du kører lokalt
+
+# Auto-detect: sæt n_jobs til 1 hvis vi er i constrained env
+if STREAMLIT_CLOUD_SAFE:
+    MODEL_N_JOBS = 1
+    CV_N_JOBS = 1
+else:
+    MODEL_N_JOBS = -1
+    CV_N_JOBS = -1
+
 
 # ==========================================
-# MODEL FACTORY
+# MODEL FACTORY (PATCHED)
 # ==========================================
 
 def create_classifier(name: str, n_classes: int = 3):
-    """Create a classifier by name."""
+    """Create a classifier by name. Streamlit Cloud safe."""
     if name == "random_forest":
         return RandomForestClassifier(
-            n_estimators=200,
+            n_estimators=150,           # Reduceret fra 200
             max_depth=10,
             min_samples_split=10,
             min_samples_leaf=5,
             class_weight="balanced",
             random_state=42,
-            n_jobs=-1,
+            n_jobs=MODEL_N_JOBS,        # 🔑 SAFE
         )
     elif name == "xgboost" and HAS_XGBOOST:
         return xgb.XGBClassifier(
-            n_estimators=200,
+            n_estimators=150,           # Reduceret fra 200
             max_depth=6,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             random_state=42,
-            n_jobs=-1,
+            n_jobs=MODEL_N_JOBS,        # 🔑 SAFE
             use_label_encoder=False,
             eval_metric="mlogloss",
+            tree_method="hist",         # Hurtigere på CPU
+            verbosity=0,                # Stille
         )
     elif name == "lightgbm" and HAS_LIGHTGBM:
         return lgb.LGBMClassifier(
-            n_estimators=200,
+            n_estimators=100,           # Reduceret fra 200
             max_depth=6,
+            num_leaves=31,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             class_weight="balanced",
             random_state=42,
-            n_jobs=-1,
+            n_jobs=1,                   # 🔑 KRITISK: ALTID 1 for LightGBM
             verbose=-1,
+            force_col_wise=True,        # 🔑 Forhindrer threading-hang
+            min_child_samples=20,
+            deterministic=True,         # Reproducerbart
         )
     else:
         return None
 
 
 def create_regressor(name: str):
-    """Create a regressor by name."""
+    """Create a regressor by name. Streamlit Cloud safe."""
     if name == "random_forest":
         return RandomForestRegressor(
-            n_estimators=200,
+            n_estimators=150,
             max_depth=10,
             min_samples_split=10,
             min_samples_leaf=5,
             random_state=42,
-            n_jobs=-1,
+            n_jobs=MODEL_N_JOBS,        # 🔑 SAFE
         )
     elif name == "xgboost" and HAS_XGBOOST:
         return xgb.XGBRegressor(
-            n_estimators=200,
+            n_estimators=150,
             max_depth=6,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             random_state=42,
-            n_jobs=-1,
+            n_jobs=MODEL_N_JOBS,        # 🔑 SAFE
+            tree_method="hist",
+            verbosity=0,
         )
     elif name == "lightgbm" and HAS_LIGHTGBM:
         return lgb.LGBMRegressor(
-            n_estimators=200,
+            n_estimators=100,
             max_depth=6,
+            num_leaves=31,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             random_state=42,
-            n_jobs=-1,
+            n_jobs=1,                   # 🔑 KRITISK: ALTID 1 for LightGBM
             verbose=-1,
+            force_col_wise=True,        # 🔑 Forhindrer threading-hang
+            min_child_samples=20,
+            deterministic=True,
         )
     else:
         return None
@@ -144,7 +174,7 @@ def get_available_models() -> List[str]:
 
 
 # ==========================================
-# CLASSIFICATION TRAINING
+# CLASSIFICATION TRAINING (PATCHED CV)
 # ==========================================
 
 def train_classifier(
@@ -152,13 +182,11 @@ def train_classifier(
     y: pd.Series,
     model_name: str = "random_forest",
     test_size: float = 0.2,
-    cv_folds: int = 5,
+    cv_folds: int = 3,                  # 🔑 Reduceret fra 5 til 3 for hastighed
 ) -> Dict:
     """
     Train a single classifier and return metrics + model.
-
-    Returns:
-        dict with: model, metrics, label_encoder, feature_columns
+    Streamlit Cloud safe (n_jobs=1 i CV).
     """
     # Encode labels (SELL=0, HOLD=1, BUY=2)
     le = LabelEncoder()
@@ -184,11 +212,17 @@ def train_classifier(
     # Test predictions
     y_pred = model.predict(X_test)
 
-    # Cross-validation
+    # Cross-validation (SAFE: n_jobs=1)
     try:
         cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
-        cv_scores = cross_val_score(model, X, y_encoded, cv=cv, scoring="f1_macro", n_jobs=-1)
-    except Exception:
+        cv_scores = cross_val_score(
+            model, X, y_encoded,
+            cv=cv,
+            scoring="f1_macro",
+            n_jobs=CV_N_JOBS,           # 🔑 SAFE: 1 på Streamlit
+        )
+    except Exception as e:
+        print(f"⚠️ CV failed for {model_name}: {e}")
         cv_scores = np.array([0.0])
 
     # Metrics
@@ -235,7 +269,6 @@ def train_classifier(
             importances = model.feature_importances_
             for feat, imp in zip(X.columns, importances):
                 feature_importance[feat] = float(imp)
-            # Sort by importance
             feature_importance = dict(
                 sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
             )
@@ -254,7 +287,7 @@ def train_classifier(
 
 
 # ==========================================
-# REGRESSION TRAINING
+# REGRESSION TRAINING (PATCHED CV)
 # ==========================================
 
 def train_regressor(
@@ -262,9 +295,9 @@ def train_regressor(
     y: pd.Series,
     model_name: str = "random_forest",
     test_size: float = 0.2,
-    cv_folds: int = 5,
+    cv_folds: int = 3,                  # 🔑 Reduceret fra 5 til 3
 ) -> Dict:
-    """Train a single regressor and return metrics + model."""
+    """Train a single regressor. Streamlit Cloud safe."""
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
         test_size=test_size,
@@ -278,12 +311,18 @@ def train_regressor(
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
 
-    # Cross-validation
+    # Cross-validation (SAFE: n_jobs=1)
     try:
         cv = KFold(n_splits=cv_folds, shuffle=True, random_state=42)
-        cv_scores = cross_val_score(model, X, y, cv=cv, scoring="neg_mean_absolute_error", n_jobs=-1)
+        cv_scores = cross_val_score(
+            model, X, y,
+            cv=cv,
+            scoring="neg_mean_absolute_error",
+            n_jobs=CV_N_JOBS,           # 🔑 SAFE
+        )
         cv_mae = -cv_scores.mean()
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ CV failed for {model_name}: {e}")
         cv_mae = 0.0
 
     metrics = {
@@ -320,7 +359,7 @@ def train_regressor(
 
 
 # ==========================================
-# ENSEMBLE TRAINING (the main thing!)
+# ENSEMBLE TRAINING
 # ==========================================
 
 def train_ensemble_for_horizon(
@@ -579,9 +618,9 @@ def train_all_models(
         if progress_callback:
             base_progress = i / n_horizons
 
-            def horizon_cb(pct, text):
-                overall = base_progress + (pct / n_horizons)
-                progress_callback(overall, f"[{h}d] {text}")
+            def horizon_cb(pct, text, _h=h, _base=base_progress, _n=n_horizons):
+                overall = _base + (pct / _n)
+                progress_callback(overall, f"[{_h}d] {text}")
         else:
             horizon_cb = None
 
@@ -611,14 +650,14 @@ def train_all_models(
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("ML TRAIN - TEST")
+    print("ML TRAIN - TEST (Streamlit Cloud Safe)")
     print("=" * 70)
     print(f"Available models: {get_available_models()}")
-    print(f"  - Random Forest: ✅")
-    print(f"  - XGBoost: {'✅' if HAS_XGBOOST else '❌ (pip install xgboost)'}")
-    print(f"  - LightGBM: {'✅' if HAS_LIGHTGBM else '❌ (pip install lightgbm)'}")
+    print(f"  - Random Forest: ✅ (n_jobs={MODEL_N_JOBS})")
+    print(f"  - XGBoost: {'✅' if HAS_XGBOOST else '❌'} (n_jobs={MODEL_N_JOBS})")
+    print(f"  - LightGBM: {'✅' if HAS_LIGHTGBM else '❌'} (n_jobs=1, force_col_wise=True)")
+    print(f"  - CV n_jobs: {CV_N_JOBS}")
 
-    # Try loading data
     try:
         from ml_data import get_training_data
         print("\n📊 Loading training data...")
@@ -635,22 +674,12 @@ if __name__ == "__main__":
 
             results = train_all_models(
                 data, asset_class="stock",
-                horizons=[30],  # just one for test
+                horizons=[30],
                 save=True,
                 progress_callback=cb,
             )
 
             print(f"\n✅ Trained {results['n_horizons_trained']} horizons")
-            print(f"   Available models: {results['available_models']}")
-
-            if 30 in results["results_per_horizon"]:
-                h_res = results["results_per_horizon"][30]
-                print(f"\n📊 30d horizon results:")
-                for clf_name, clf_data in h_res.get("classifiers", {}).items():
-                    m = clf_data["metrics"]
-                    print(f"  {clf_name}: F1={m.get('f1_macro', 0):.3f}, "
-                          f"Acc={m.get('accuracy', 0):.3f}, "
-                          f"CV F1={m.get('cv_f1_mean', 0):.3f}±{m.get('cv_f1_std', 0):.3f}")
     except Exception as e:
         print(f"❌ {e}")
         import traceback
