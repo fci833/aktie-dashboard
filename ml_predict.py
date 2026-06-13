@@ -410,7 +410,15 @@ def predict_all_horizons(
             continue
 
         try:
-            predictions[horizon] = predict_single_horizon(feature_row, models)
+            result = predict_single_horizon(feature_row, models)
+            # 🔍 DEBUG: gem feature-info for inspection
+            result["_debug_features"] = {
+                "n_features_expected": len(models["feature_columns"]),
+                "n_nonzero_features": int((feature_row != 0).sum().sum()),
+                "feature_columns": models["feature_columns"][:50],  # første 50
+                "feature_values": feature_row.iloc[0].to_dict(),
+            }
+            predictions[horizon] = result
         except Exception as e:
             predictions[horizon] = {"error": f"Forudsigelse fejlede: {str(e)[:100]}"}
 
