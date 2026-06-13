@@ -494,6 +494,40 @@ def save_backfill_as_snapshots(df: pd.DataFrame, snapshots_dir: str = "screener_
 
 
 # ==========================================
+# SESSION STATE INTEGRATION (Streamlit Cloud workaround)
+# ==========================================
+
+def store_backfill_in_session(df: pd.DataFrame):
+    """Store backfill DataFrame in Streamlit session state."""
+    try:
+        import streamlit as st
+        st.session_state["ml_backfill_df"] = df.copy()
+        st.session_state["ml_backfill_ts"] = pd.Timestamp.now()
+        return True
+    except Exception:
+        return False
+
+
+def get_backfill_from_session():
+    """Get cached backfill DataFrame from session state."""
+    try:
+        import streamlit as st
+        return st.session_state.get("ml_backfill_df")
+    except Exception:
+        return None
+
+
+def has_backfill_in_session() -> bool:
+    """Check if backfill data is available in session."""
+    try:
+        import streamlit as st
+        df = st.session_state.get("ml_backfill_df")
+        return df is not None and not df.empty
+    except Exception:
+        return False
+
+
+# ==========================================
 # CLI TEST
 # ==========================================
 
