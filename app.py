@@ -2258,7 +2258,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     "Brug ALTID stop-loss til at beskytte din kapital."
                 )
 
-                if symbol == "BTC":
+                                if symbol == "BTC":
                     halv = btc_halving_analysis(symbol)
                     if halv:
                         st.markdown("---")
@@ -2271,11 +2271,50 @@ elif st.session_state.active_view == "🪙 Krypto":
                         hc[3].metric("📊 Cycle progress", f"{halv['cycle_progress']:.0f}%")
                         st.info(f"**{halv['phase']}** — {halv['outlook']}")
 
+                # ============================================================
+                # 🤖 ML FORUDSIGELSE (CRYPTO) - kompakt summary
+                # ============================================================
+                st.markdown("---")
+                crypto_ml_data = None
+                if not ML_PREDICT_AVAILABLE:
+                    st.warning(
+                        "⚠️ **ML-modul ikke tilgængeligt.** "
+                        "Tjek at `ml_predict.py` er gemt i samme mappe som `app.py`."
+                    )
+                elif not has_trained_models("crypto"):
+                    st.info(
+                        "💡 **Crypto ML-modeller ikke trænet endnu.**\n\n"
+                        "👉 Gå til **🔧 Diagnose** → **🚀 Backfill (genvej)** → "
+                        "vælg `crypto` → kør backfill → derefter **🎯 Træn ML** med `crypto`."
+                    )
+                else:
+                    df_ind_for_ml = crypto_indicators(hist)
+                    crypto_f_score = scores.get("market", 50)
+                    crypto_t_score = scores.get("technical", 50)
+                    crypto_overall_val = scores.get("overall", 50)
+                    crypto_regime = "BULL" if scores.get("market", 50) >= 60 else \
+                                    "BEAR" if scores.get("market", 50) < 40 else "SIDEWAYS"
+
+                    with st.spinner("🤖 Beregner ML-forudsigelser..."):
+                        crypto_ml_data = predict_all_horizons(
+                            info=info,
+                            hist=hist,
+                            indicators_df=df_ind_for_ml,
+                            f_score=crypto_f_score,
+                            t_score=crypto_t_score,
+                            overall=crypto_overall_val,
+                            regime=crypto_regime,
+                            asset_class="crypto",
+                            regime_confidence=70.0,
+                            dcf_upside=None,
+                        )
+                    render_ml_summary_card(crypto_ml_data, rule_based_rec=rec)
+
                 st.markdown("---")
                 pro_tabs = st.tabs([
                     "📊 Charts", "🔧 Tekniske detaljer", "📉 Risiko",
                     "🎲 Monte Carlo", "🎯 Backtest", "🔗 BTC Korrelation",
-                    "🔍 Score breakdown"
+                    "🤖 ML Detaljer", "🔍 Score breakdown"
                 ])
 
                 with pro_tabs[0]:
@@ -2535,7 +2574,46 @@ elif st.session_state.active_view == "🪙 Krypto":
                         else:
                             st.error("Kunne ikke hente BTC-data")
 
+                                # 🆕 NEW TAB: ML DETALJER (pro_tabs[6])
                 with pro_tabs[6]:
+                    st.markdown("### 🤖 ML Forudsigelser - Detaljeret (Crypto)")
+                    st.caption(
+                        f"Komplet ML-analyse for **{info['longName']}** baseret på "
+                        f"trænede crypto-modeller. 3 horisonter × 3 algoritmer."
+                    )
+
+                    if not ML_PREDICT_AVAILABLE:
+                        st.error("❌ ML-modul ikke tilgængeligt.")
+                    elif not has_trained_models("crypto"):
+                        st.warning(
+                            "⚠️ **Ingen trænede crypto ML-modeller fundet.**\n\n"
+                            "👉 Gå til **🔧 Diagnose** → **🚀 Backfill** → vælg `crypto` → "
+                            "kør backfill → **🎯 Træn ML** med `crypto`."
+                        )
+                    else:
+                        model_info = get_model_info("crypto")
+                        info_cols = st.columns(4)
+                        info_cols[0].metric("🤖 Total modeller", model_info["n_models"])
+                        info_cols[1].metric("📅 Horisonter", len(model_info["horizons"]))
+
+                        best_30d = model_info["f1_scores"].get(30, 0)
+                        best_180d = model_info["f1_scores"].get(180, 0)
+                        info_cols[2].metric("F1 (30d)", f"{best_30d:.3f}")
+                        info_cols[3].metric("F1 (180d) ⭐", f"{best_180d:.3f}")
+
+                        st.markdown("---")
+
+                        if crypto_ml_data:
+                            render_ml_full(
+                                crypto_ml_data,
+                                rule_based_rec=rec,
+                                rule_based_score=scores["overall"],
+                            )
+                        else:
+                            st.info("ML data genberegnes ved næste analyse...")
+
+                # Score breakdown rykket til pro_tabs[7]
+                with pro_tabs[7]:
                     detail_subtabs = st.tabs(["📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"])
                     for tab, key in zip(detail_subtabs,
                                          ["market", "technical", "sentiment", "developer"]):
