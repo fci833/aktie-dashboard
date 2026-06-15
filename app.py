@@ -914,15 +914,19 @@ elif st.session_state.active_view == "🔧 Diagnose":
             help="Mindre = flere samples men mere overlap"
         )
 
-        # Estimated samples
-        n_dates = (bf_months * 30 - 200) // bf_interval
-        n_tickers_est = 50 if bf_asset == "stock" else 15
-        n_samples_est = n_dates * n_tickers_est
+        # Estimated samples (Phase 1: udvidet ticker-liste)
+n_dates = (bf_months * 30 - 200) // bf_interval
+n_tickers_est = 250 if bf_asset == "stock" else 75
+n_samples_est = n_dates * n_tickers_est
+
+# Forventet success rate ~80%
+n_samples_realistic = int(n_samples_est * 0.8)
 
         st.caption(
-            f"📊 **Forventet output:** ~{n_dates} snapshot-datoer × ~{n_tickers_est} tickers "
-            f"= ~{n_samples_est} samples (afhængigt af data-kvalitet)"
-        )
+    f"📊 **Forventet output:** ~{n_dates} snapshot-datoer × ~{n_tickers_est} tickers "
+    f"= **~{n_samples_realistic:,} samples** (efter ~80% success rate). "
+    f"⏱️ Estimeret tid: **{n_tickers_est * 0.15:.0f}-{n_tickers_est * 0.25:.0f} min**."
+)
 
         if st.button(
             "🚀 KØR BACKFILL",
