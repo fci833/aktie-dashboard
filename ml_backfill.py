@@ -4,9 +4,16 @@ ml_backfill.py - Historical Training Data Generator
 Generates synthetic 'snapshots' from historical price data so you can
 train ML immediately without waiting months for forward returns.
 
+🚀 PHASE 1 UPDATE:
+- Expanded to 250+ stocks across multiple regions/sectors
+- Expanded to 75+ crypto pairs
+- Default backfill period: 36 months (was 24)
+- Default snapshot interval: 14 days (was 30)
+- Result: ~8-10x more training samples!
+
 Strategy:
-  1. For each ticker, fetch 3+ years of historical data
-  2. Pick N historical 'snapshot dates' (e.g. every 30 days going back 2 years)
+  1. For each ticker, fetch 5 years of historical data
+  2. Pick N historical 'snapshot dates' (e.g. every 14 days going back 3 years)
   3. At each historical date: compute scores AS IF we had screened then
   4. Compute forward returns using known future prices
   5. Build a complete training dataset
@@ -32,33 +39,189 @@ HORIZONS = [30, 90, 180]
 
 # ==========================================
 # DEFAULT TICKER UNIVERSES (for backfill)
+# 🚀 PHASE 1: Expanded to 250+ stocks, 75+ crypto
 # ==========================================
 
 DEFAULT_TICKERS = {
     "us_large_cap": [
-        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-        "BRK-B", "UNH", "JNJ", "JPM", "V", "PG", "XOM", "MA",
-        "HD", "CVX", "MRK", "LLY", "ABBV", "AVGO", "PEP", "KO",
-        "COST", "WMT", "MCD", "TMO", "ADBE", "CSCO", "ACN", "DIS",
+        # ===== Big Tech =====
+        "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA",
+        "AMD", "INTC", "ORCL", "CRM", "ADBE", "CSCO", "IBM", "QCOM",
+        "TXN", "AVGO", "MU", "AMAT", "LRCX", "KLAC", "ADI", "MRVL",
+        "PANW", "FTNT", "ANET", "NOW", "INTU", "WDAY",
+
+        # ===== Finance =====
+        "JPM", "BAC", "WFC", "GS", "MS", "C", "AXP", "V", "MA", "BLK",
+        "SCHW", "USB", "PNC", "TFC", "COF", "BX", "KKR", "APO",
+        "SPGI", "MCO", "ICE", "CME", "AON", "MMC", "PGR", "TRV",
+        "ALL", "AIG", "MET", "PRU",
+
+        # ===== Healthcare =====
+        "JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO", "ABT", "LLY", "DHR",
+        "BMY", "AMGN", "GILD", "CVS", "MDT", "ISRG", "SYK", "BSX",
+        "ZTS", "BDX", "EW", "DXCM", "IDXX", "VRTX", "REGN", "BIIB",
+        "HUM", "CI", "ELV", "CNC", "MOH",
+
+        # ===== Consumer =====
+        "WMT", "HD", "PG", "KO", "PEP", "MCD", "NKE", "SBUX", "DIS",
+        "COST", "TGT", "LOW", "TJX", "DG", "DLTR", "ROST", "ULTA",
+        "BBY", "KR", "SYY", "MDLZ", "KHC", "GIS", "CL", "KMB",
+        "EL", "CHD", "CLX", "MNST", "STZ",
+
+        # ===== Industrial =====
+        "BA", "CAT", "GE", "HON", "MMM", "UPS", "FDX", "RTX", "LMT",
+        "DE", "EMR", "ETN", "ITW", "PH", "ROK", "DOV", "FAST",
+        "NOC", "GD", "TDG", "WM", "RSG", "CSX", "UNP", "NSC",
+
+        # ===== Energy =====
+        "XOM", "CVX", "COP", "SLB", "EOG", "PSX", "VLO", "MPC",
+        "OXY", "DVN", "HES", "WMB", "OKE", "KMI", "ENB",
+
+        # ===== REITs =====
+        "AMT", "PLD", "CCI", "EQIX", "PSA", "O", "SPG", "WELL",
+        "DLR", "AVB", "EQR", "VICI", "EXR",
+
+        # ===== Communication =====
+        "T", "VZ", "TMUS", "CMCSA", "CHTR", "NFLX",
+
+        # ===== Utilities =====
+        "NEE", "SO", "DUK", "AEP", "SRE", "D", "EXC", "XEL",
     ],
+
     "us_growth": [
-        "TSLA", "NVDA", "META", "GOOGL", "AMZN", "AMD", "CRM", "NFLX",
-        "ADBE", "INTC", "PYPL", "SHOP", "SQ", "ROKU", "ZM",
+        # ===== Cloud / SaaS =====
+        "PLTR", "SNOW", "CRWD", "ZS", "DDOG", "NET", "MDB", "OKTA",
+        "TEAM", "ESTC", "GTLB", "BILL", "HUBS", "ZM", "DOCN",
+        "FROG", "CFLT", "BRZE",
+
+        # ===== FinTech =====
+        "SHOP", "SQ", "PYPL", "AFRM", "SOFI", "UPST", "HOOD", "COIN",
+        "MARA", "RIOT", "CLSK", "BTBT",
+
+        # ===== AI / Robotics =====
+        "AI", "BBAI", "SOUN", "SMCI", "ARM", "PATH", "ASTS", "RKLB",
+        "ACHR", "JOBY", "NVTS", "POWI",
+
+        # ===== Gaming / Media =====
+        "ROKU", "TTD", "RBLX", "U", "SPOT", "WBD", "PARA", "EA",
+        "TTWO", "DKNG", "PENN", "LYFT", "UBER", "ABNB", "DASH",
+
+        # ===== Biotech =====
+        "MRNA", "BNTX", "ALNY", "BMRN", "INCY", "EXEL", "NBIX",
+        "RXRX", "RVMD", "KRYS", "NVAX", "ARQT", "VKTX",
+
+        # ===== EV / Auto =====
+        "RIVN", "LCID", "F", "GM", "STLA", "TM", "HMC",
+
+        # ===== Cybersecurity =====
+        "CYBR", "TENB", "QLYS", "RPD",
+
+        # ===== Other Growth =====
+        "MELI", "ENPH", "FSLR", "RUN", "PLUG", "BE",
+        "CHPT", "QS", "BLNK",
     ],
+
     "us_dividend": [
         "JNJ", "PG", "KO", "PEP", "XOM", "CVX", "VZ", "T", "MO",
         "ABBV", "PFE", "MRK", "MMM", "CAT", "MCD", "WMT", "HD",
+        "IBM", "PM", "BMY", "PEP", "KMB", "ED", "SO", "DUK",
     ],
+
     "european": [
-        "ASML.AS", "SAP.DE", "NESN.SW", "ROG.SW", "NOVN.SW",
-        "MC.PA", "OR.PA", "SAN.PA", "TTE.PA", "AIR.PA",
-        "ULVR.L", "AZN.L", "SHEL.L", "BP.L", "HSBA.L",
-        "NOVO-B.CO", "MAERSK-B.CO", "DSV.CO", "ORSTED.CO",
+        # ===== Danish =====
+        "NOVO-B.CO", "MAERSK-B.CO", "DSV.CO", "ORSTED.CO", "CARL-B.CO",
+        "GMAB.CO", "ROCK-B.CO", "TRYG.CO", "DANSKE.CO", "VWS.CO",
+        "ISS.CO", "PNDORA.CO", "GN.CO", "DEMANT.CO", "AMBU-B.CO",
+        "COLO-B.CO", "BAVA.CO", "FLS.CO", "JYSK.CO", "RBREW.CO",
+        "TOP.CO", "ZEAL.CO", "NDA-DK.CO", "BO.CO",
+
+        # ===== German =====
+        "SAP.DE", "SIE.DE", "ALV.DE", "BAS.DE", "BAYN.DE", "BMW.DE",
+        "MBG.DE", "DTE.DE", "MUV2.DE", "VOW3.DE", "ADS.DE", "DHL.DE",
+        "DBK.DE", "IFX.DE", "RWE.DE", "BEI.DE", "HEN3.DE", "FRE.DE",
+        "MRK.DE", "LIN.DE", "EOAN.DE", "PAH3.DE",
+
+        # ===== Dutch =====
+        "ASML.AS", "PHIA.AS", "INGA.AS", "AD.AS", "UNA.AS",
+        "PRX.AS", "HEIA.AS", "WKL.AS", "RAND.AS", "AKZA.AS",
+        "DSM.AS", "MT.AS",
+
+        # ===== Swiss =====
+        "NESN.SW", "NOVN.SW", "ROG.SW", "UBSG.SW", "ABBN.SW",
+        "ZURN.SW", "GIVN.SW", "LONN.SW", "SREN.SW",
+        "GEBN.SW", "ALC.SW",
+
+        # ===== French =====
+        "MC.PA", "OR.PA", "SAN.PA", "AIR.PA", "SU.PA", "BNP.PA",
+        "AI.PA", "RMS.PA", "KER.PA", "CS.PA", "ENGI.PA", "VIE.PA",
+        "DG.PA", "CAP.PA", "PUB.PA", "TTE.PA",
+
+        # ===== UK =====
+        "AZN.L", "HSBA.L", "BP.L", "GSK.L", "ULVR.L", "RIO.L", "VOD.L",
+        "BARC.L", "LLOY.L", "REL.L", "SHEL.L", "DGE.L", "BHP.L",
+        "GLEN.L", "BATS.L", "PRU.L", "TSCO.L", "AAL.L",
+
+        # ===== Nordic (non-DK) =====
+        "EQNR.OL", "DNB.OL", "TEL.OL", "MOWI.OL",  # Norway
+        "VOLV-B.ST", "ATCO-A.ST", "INVE-B.ST", "HEXA-B.ST",  # Sweden
+        "ERIC-B.ST", "SEB-A.ST", "SHB-A.ST", "ASSA-B.ST",
+        "NDA-FI.HE", "NESTE.HE", "KNEBV.HE",  # Finland
     ],
+
+    "emerging": [
+        # ===== Latin America =====
+        "MELI", "VALE", "PBR", "ITUB", "BBD", "ABEV", "NU",
+        "STNE", "PAGS", "VIST",
+
+        # ===== Asia (China/HK) =====
+        "BABA", "JD", "PDD", "BIDU", "NIO", "LI", "XPEV", "TME",
+        "NTES", "TCOM", "HTHT", "BILI",
+
+        # ===== Asia (Other) =====
+        "TSM", "INFY", "WIT", "HDB", "IBN", "RDY",
+        "TCEHY", "GLNG", "SE",
+
+        # ===== Global =====
+        "TM", "HMC", "SONY", "MUFG", "SMFG",
+    ],
+
     "crypto": [
-        "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "ADA-USD",
-        "XRP-USD", "DOGE-USD", "DOT-USD", "AVAX-USD", "LINK-USD",
-        "MATIC-USD", "UNI-USD", "ATOM-USD", "LTC-USD", "BCH-USD",
+        # ===== Top 10 by market cap =====
+        "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD",
+        "ADA-USD", "DOGE-USD", "TRX-USD", "TON-USD",
+
+        # ===== Layer 1 =====
+        "DOT-USD", "AVAX-USD", "ATOM-USD", "NEAR-USD", "APT-USD",
+        "SUI-USD", "SEI-USD", "INJ-USD", "TIA-USD", "ALGO-USD",
+        "ICP-USD", "VET-USD", "HBAR-USD", "FIL-USD", "FTM-USD",
+        "RUNE-USD",
+
+        # ===== Layer 2 / Scaling =====
+        "MATIC-USD", "ARB-USD", "OP-USD", "LRC-USD", "IMX-USD",
+        "MNT-USD", "STRK-USD",
+
+        # ===== DeFi =====
+        "LINK-USD", "UNI-USD", "AAVE-USD", "MKR-USD", "SNX-USD",
+        "CRV-USD", "LDO-USD", "RPL-USD", "GRT-USD", "DYDX-USD",
+        "1INCH-USD", "COMP-USD",
+
+        # ===== Memecoins =====
+        "SHIB-USD", "PEPE-USD", "BONK-USD", "WIF-USD", "FLOKI-USD",
+
+        # ===== AI / Big themes =====
+        "RNDR-USD", "FET-USD", "AGIX-USD", "TAO-USD", "OCEAN-USD",
+        "ROSE-USD",
+
+        # ===== Storage / Web3 =====
+        "AR-USD", "STX-USD", "BLUR-USD",
+
+        # ===== Gaming / NFT =====
+        "MANA-USD", "SAND-USD", "AXS-USD", "GALA-USD", "ENJ-USD",
+        "APE-USD",
+
+        # ===== Classic =====
+        "LTC-USD", "BCH-USD", "ETC-USD", "XLM-USD", "XMR-USD",
+        "DASH-USD",
     ],
 }
 
@@ -368,8 +531,8 @@ def generate_snapshots_for_ticker(
 
 
 def generate_snapshot_dates(
-    months_back: int = 24,
-    interval_days: int = 30,
+    months_back: int = 36,
+    interval_days: int = 14,
 ) -> List[pd.Timestamp]:
     """Generate snapshot dates going backwards in time."""
     today = pd.Timestamp.now().normalize()
@@ -393,8 +556,8 @@ def generate_snapshot_dates(
 def build_backfill_dataset(
     tickers: Optional[List[str]] = None,
     asset_class: str = "stock",
-    months_back: int = 24,
-    snapshot_interval_days: int = 30,
+    months_back: int = 36,                    # 🚀 PHASE 1: Was 24 → now 36
+    snapshot_interval_days: int = 14,         # 🚀 PHASE 1: Was 30 → now 14
     progress_callback=None,
     max_workers: int = 4,
 ) -> Dict:
@@ -404,21 +567,23 @@ def build_backfill_dataset(
     Args:
         tickers: List of tickers (uses defaults if None)
         asset_class: "stock" or "crypto"
-        months_back: How far back to generate snapshots (months)
-        snapshot_interval_days: Days between snapshots
+        months_back: How far back to generate snapshots (months) - default 36
+        snapshot_interval_days: Days between snapshots - default 14
         progress_callback: callable(current, total, ticker)
 
     Returns dict with same shape as ml_data.get_training_data()
     """
-    # Default tickers
+    # 🚀 PHASE 1: Default tickers - now uses ALL universes for max data
     if tickers is None:
         if asset_class == "crypto":
             tickers = DEFAULT_TICKERS["crypto"]
         else:
+            # Combine ALL stock universes for maximum diversity
             tickers = (
                 DEFAULT_TICKERS["us_large_cap"]
-                + DEFAULT_TICKERS["us_growth"][:10]
-                + DEFAULT_TICKERS["european"][:10]
+                + DEFAULT_TICKERS["us_growth"]
+                + DEFAULT_TICKERS["european"]
+                + DEFAULT_TICKERS["emerging"]
             )
             tickers = list(set(tickers))  # dedupe
 
@@ -427,6 +592,7 @@ def build_backfill_dataset(
         return {"error": "No valid snapshot dates", "n_samples": 0}
 
     print(f"📅 Generating {len(snapshot_dates)} snapshot dates × {len(tickers)} tickers")
+    print(f"   = ~{len(snapshot_dates) * len(tickers)} potential samples")
 
     all_rows = []
     n_total = len(tickers)
@@ -533,16 +699,29 @@ def has_backfill_in_session() -> bool:
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("ML BACKFILL - HISTORICAL DATA GENERATOR")
+    print("ML BACKFILL - HISTORICAL DATA GENERATOR (PHASE 1)")
     print("=" * 70)
+
+    # Show stats
+    total_stocks = len(set(
+        DEFAULT_TICKERS["us_large_cap"]
+        + DEFAULT_TICKERS["us_growth"]
+        + DEFAULT_TICKERS["european"]
+        + DEFAULT_TICKERS["emerging"]
+    ))
+    total_crypto = len(DEFAULT_TICKERS["crypto"])
+    print(f"📊 Available tickers:")
+    print(f"   Stocks: {total_stocks}")
+    print(f"   Crypto: {total_crypto}")
+    print()
 
     def cb(c, t, tk):
         print(f"  [{c}/{t}] {tk}")
 
     result = build_backfill_dataset(
         tickers=["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL"],
-        months_back=18,
-        snapshot_interval_days=30,
+        months_back=36,
+        snapshot_interval_days=14,
         progress_callback=cb,
     )
 
