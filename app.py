@@ -2252,7 +2252,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     (vs. 5-10% på aktier). Ellers udløses det for tidligt!
                     """)
 
-                                st.caption(
+                st.caption(
                     "⚠️ Datoer og gevinster er **estimater** baseret på historisk momentum og volatilitet. "
                     "Krypto kan tabe 50-90% i bear markets — invester KUN hvad du har råd til at tabe. "
                     "Brug ALTID stop-loss til at beskytte din kapital."
