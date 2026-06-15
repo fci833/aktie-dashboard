@@ -922,7 +922,7 @@ n_samples_est = n_dates * n_tickers_est
 # Forventet success rate ~80%
 n_samples_realistic = int(n_samples_est * 0.8)
 
-        st.caption(
+st.caption(
     f"📊 **Forventet output:** ~{n_dates} snapshot-datoer × ~{n_tickers_est} tickers "
     f"= **~{n_samples_realistic:,} samples** (efter ~80% success rate). "
     f"⏱️ Estimeret tid: **{n_tickers_est * 0.15:.0f}-{n_tickers_est * 0.25:.0f} min**."
