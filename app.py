@@ -2258,7 +2258,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     "Brug ALTID stop-loss til at beskytte din kapital."
                 )
 
-                                if symbol == "BTC":
+                    if symbol == "BTC":
                     halv = btc_halving_analysis(symbol)
                     if halv:
                         st.markdown("---")
