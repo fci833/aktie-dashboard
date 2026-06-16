@@ -2980,7 +2980,7 @@ elif st.session_state.active_view == "📊 Analyse":
         st.info("👆 Indtast en ticker (aktie eller krypto) ovenfor og tryk **🔍 Analysér**")
     else:
         with st.spinner(f"Henter data for {ticker}..."):
-            data = fetch_data(ticker, period="max")
+            data = fetch_data(ticker)
 
         if data is None:
             st.error(f"❌ Kunne ikke hente data for **{ticker}**")
