@@ -2771,7 +2771,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                 losers_d["MC"] = (losers_d["MC"] / 1e9).round(2)
                 st.dataframe(losers_d, use_container_width=True, hide_index=True)
 
-    # ===== TAB 4: SAMMENLIGN =====
+        # ===== TAB 4: SAMMENLIGN =====
     with crypto_tabs[3]:
         st.markdown("### 📈 Sammenlign kryptos")
         selected = st.multiselect(
@@ -2806,8 +2806,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                     scores = crypto_overall_score(cdata["info"], cdata["hist"])
                     cmp_rows.append({
                         "Symbol": sym,
-                        "Pris ($)": round(cdata["info"]["currentPrice"],
-                                            "Pris ($)": round(cdata["info"]["currentPrice"], 4),
+                        "Pris ($)": round(cdata["info"]["currentPrice"], 4),
                         "MC ($B)": round((cdata["info"].get("marketCap") or 0) / 1e9, 2),
                         "24h %": round(cdata["info"].get("change_24h") or 0, 2),
                         "7d %": round(cdata["info"].get("change_7d") or 0, 2),
