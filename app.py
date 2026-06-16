@@ -1,4 +1,4 @@
-""Aktie Dashboard - Hovedapp med Krypto + Daily Brief + News Sentiment + Earnings Warning"""
+"""Aktie Dashboard - Hovedapp med Krypto + Daily Brief + News Sentiment + Earnings Warning"""
 import time
 import numpy as np
 import pandas as pd
@@ -2225,30 +2225,31 @@ unsafe_allow_html=True
 **Trailing stop** = "rullende stop-loss" der **følger med opad** når kursen stiger,
 men **bevæger sig aldrig nedad**.
 
-### 📈 Eksempel med BTC:
+### 📈 Eksempel med BTC
 
-```
-Du køber BTC @ $50,000, stop-loss = $45,000 (-10%)
+Du køber BTC @ 50.000 USD, stop-loss = 45.000 USD (-10%)
 
-✅ BTC stiger til $60,000 → trailing stop bliver $54,000 (-10%)
-✅ BTC stiger til $80,000 → trailing stop bliver $72,000
-✅ BTC stiger til $100,000 → trailing stop bliver $90,000
-🛑 BTC falder til $90,000 → SOLGT med +$40,000 profit (+80%)!
-```
+- BTC stiger til 60.000 USD  →  trailing stop bliver 54.000 USD (-10%)
+- BTC stiger til 80.000 USD  →  trailing stop bliver 72.000 USD
+- BTC stiger til 100.000 USD →  trailing stop bliver 90.000 USD
+- BTC falder til 90.000 USD  →  SOLGT med +40.000 USD profit (+80%)!
 
 ### 🎯 Hvorfor er det EKSTRA vigtigt for krypto?
+
 1. **Krypto er meget volatilt** — store fald kan ske på minutter
 2. **Markedet er åbent 24/7** — du kan ikke sidde og kigge altid
 3. **FOMO er farligt** — trailing stop låser gevinst automatisk
 4. **Bull → bear skift** kan være brutale (BTC -75% på 6 mdr)
 
 ### 💼 Hvor sætter man det?
+
 - **Coinbase Advanced** — "Stop-Limit" med trailing
 - **Binance** — "Trailing Stop" ordre-type
 - **Kraken** — "Trailing Stop Loss"
 - **eToro** — "Trailing Stop Loss"
 
 ### ⚠️ Krypto-tip
+
 Sæt typisk **15-20% trailing** på krypto pga. volatilitet
 (vs. 5-10% på aktier). Ellers udløses det for tidligt!
 """)
