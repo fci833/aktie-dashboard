@@ -11,6 +11,18 @@ train ML immediately without waiting months for forward returns.
 - Default snapshot interval: 14 days (was 30)
 - Result: ~8-10x more training samples!
 
+🔥 PHASE 1B UPDATE (NEW):
+- Added 11 POWER FEATURES for ML:
+  * momentum_3m, momentum_6m, momentum_12m
+  * momentum_acceleration
+  * volatility_regime
+  * volume_momentum
+  * drawdown_depth, max_drawdown_1y
+  * recovery_strength
+  * trend_consistency
+  * price_position_52w
+- Expected F1 lift: 0.55 → 0.65+
+
 Strategy:
   1. For each ticker, fetch 5 years of historical data
   2. Pick N historical 'snapshot dates' (e.g. every 14 days going back 3 years)
@@ -162,10 +174,10 @@ DEFAULT_TICKERS = {
         "GLEN.L", "BATS.L", "PRU.L", "TSCO.L", "AAL.L",
 
         # ===== Nordic (non-DK) =====
-        "EQNR.OL", "DNB.OL", "TEL.OL", "MOWI.OL",  # Norway
-        "VOLV-B.ST", "ATCO-A.ST", "INVE-B.ST", "HEXA-B.ST",  # Sweden
+        "EQNR.OL", "DNB.OL", "TEL.OL", "MOWI.OL",
+        "VOLV-B.ST", "ATCO-A.ST", "INVE-B.ST", "HEXA-B.ST",
         "ERIC-B.ST", "SEB-A.ST", "SHB-A.ST", "ASSA-B.ST",
-        "NDA-FI.HE", "NESTE.HE", "KNEBV.HE",  # Finland
+        "NDA-FI.HE", "NESTE.HE", "KNEBV.HE",
     ],
 
     "emerging": [
@@ -260,16 +272,19 @@ def fetch_ticker_info(ticker: str) -> Optional[dict]:
 
 # ==========================================
 # HISTORICAL INDICATOR COMPUTATION
+# 🔥 PHASE 1B: Now with 11 power features!
 # ==========================================
 
 def compute_indicators_at_date(
     hist: pd.DataFrame,
     target_date: pd.Timestamp,
-    lookback_days: int = 365
+    lookback_days: int = 400,  # 🔥 PHASE 1B: udvidet fra 365 → 400 (til 12m momentum)
 ) -> Optional[Dict]:
     """
     Compute technical indicators using ONLY data up to target_date.
-    This is the key for backfill - no lookahead bias.
+    🔥 PHASE 1B: Tilføjet 11 nye power features.
+    
+    Works for both stocks AND crypto - all features are universal.
     """
     if hist is None or hist.empty:
         return None
@@ -287,7 +302,9 @@ def compute_indicators_at_date(
         close = hist_slice["Close"]
         high = hist_slice["High"]
         low = hist_slice["Low"]
+        volume = hist_slice["Volume"] if "Volume" in hist_slice.columns else None
 
+        # ===== STANDARD INDICATORS =====
         rsi = ta.momentum.rsi(close, window=14).iloc[-1]
         macd_obj = ta.trend.MACD(close)
         macd = macd_obj.macd_diff().iloc[-1]
@@ -304,11 +321,90 @@ def compute_indicators_at_date(
         high_52w = float(close.tail(252).max()) if len(close) >= 252 else float(close.max())
         low_52w = float(close.tail(252).min()) if len(close) >= 252 else float(close.min())
 
-        # Returns
+        # ===== STANDARD RETURNS =====
         ret_30d = ((close.iloc[-1] / close.iloc[-30] - 1) * 100) if len(close) >= 30 else 0
         ret_90d = ((close.iloc[-1] / close.iloc[-90] - 1) * 100) if len(close) >= 90 else 0
 
+        # ============================================================
+        # 🔥 PHASE 1B POWER FEATURES (works for stocks AND crypto)
+        # ============================================================
+
+        # 1. Momentum-faktorer (3m, 6m, 12m absolute returns)
+        momentum_3m = ((close.iloc[-1] / close.iloc[-63] - 1) * 100) if len(close) >= 63 else ret_90d
+        momentum_6m = ((close.iloc[-1] / close.iloc[-126] - 1) * 100) if len(close) >= 126 else momentum_3m
+        momentum_12m = ((close.iloc[-1] / close.iloc[-252] - 1) * 100) if len(close) >= 252 else momentum_6m
+
+        # 2. Momentum-acceleration: stiger momentum?
+        # Hvis 3m er højere end forventet ud fra 6m → accelererer
+        momentum_acceleration = momentum_3m - (momentum_6m / 2)
+
+        # 3. Volatility regime: stigende eller faldende volatilitet?
+        if len(close) >= 60:
+            recent_vol = close.tail(30).pct_change().std() * 100
+            older_vol = close.iloc[-60:-30].pct_change().std() * 100
+            volatility_regime = (recent_vol / older_vol - 1) * 100 if older_vol > 0 else 0
+            volatility_regime = max(-100, min(500, volatility_regime))  # cap extreme
+        else:
+            volatility_regime = 0
+
+        # 4. Volume momentum (smart money flow)
+        if volume is not None and len(volume) >= 60 and volume.tail(30).mean() > 0:
+            recent_vol_avg = volume.tail(30).mean()
+            older_vol_avg = volume.iloc[-60:-30].mean()
+            if older_vol_avg > 0:
+                volume_momentum = (recent_vol_avg / older_vol_avg - 1) * 100
+                volume_momentum = max(-100, min(500, volume_momentum))
+            else:
+                volume_momentum = 0
+        else:
+            volume_momentum = 0
+
+        # 5. Drawdown depth (hvor langt fra ATH i seneste år)
+        try:
+            if len(close) >= 252:
+                tail_close = close.tail(252)
+                rolling_max = tail_close.expanding().max()
+                drawdown_series = (tail_close / rolling_max - 1) * 100
+            else:
+                rolling_max = close.expanding().max()
+                drawdown_series = (close / rolling_max - 1) * 100
+            drawdown_depth = float(drawdown_series.iloc[-1])
+            max_drawdown_1y = float(drawdown_series.min())
+        except Exception:
+            drawdown_depth = 0
+            max_drawdown_1y = 0
+
+        # 6. Recovery strength (bouncer fra recent lav?)
+        if len(close) >= 60:
+            recent_low = float(close.tail(60).min())
+            recovery_strength = ((current_price / recent_low - 1) * 100) if recent_low > 0 else 0
+        else:
+            recovery_strength = 0
+
+        # 7. Trend consistency (% af dage over SMA50)
+        if sma50 and len(close) >= 50:
+            try:
+                sma50_series = close.rolling(50).mean()
+                valid = sma50_series.dropna()
+                if len(valid) > 0:
+                    aligned_close = close.tail(len(valid))
+                    days_above = (aligned_close > valid).sum()
+                    trend_consistency = (days_above / len(valid)) * 100
+                else:
+                    trend_consistency = 50
+            except Exception:
+                trend_consistency = 50
+        else:
+            trend_consistency = 50
+
+        # 8. Price position in 52w range (0=bottom, 100=top)
+        if high_52w > low_52w:
+            price_position_52w = ((current_price - low_52w) / (high_52w - low_52w)) * 100
+        else:
+            price_position_52w = 50
+
         return {
+            # ===== Standard features =====
             "price": current_price,
             "rsi": float(rsi) if not pd.isna(rsi) else 50,
             "macd": float(macd) if not pd.isna(macd) else 0,
@@ -322,9 +418,22 @@ def compute_indicators_at_date(
             "vs_52w_low_%": ((current_price / low_52w - 1) * 100) if low_52w > 0 else 0,
             "ret_30d": ret_30d,
             "ret_90d": ret_90d,
-            "change_%": ret_30d,  # short-term momentum proxy
+            "change_%": ret_30d,
+            # ===== 🔥 PHASE 1B power features =====
+            "momentum_3m": float(momentum_3m),
+            "momentum_6m": float(momentum_6m),
+            "momentum_12m": float(momentum_12m),
+            "momentum_acceleration": float(momentum_acceleration),
+            "volatility_regime": float(volatility_regime),
+            "volume_momentum": float(volume_momentum),
+            "drawdown_depth": float(drawdown_depth),
+            "max_drawdown_1y": float(max_drawdown_1y),
+            "recovery_strength": float(recovery_strength),
+            "trend_consistency": float(trend_consistency),
+            "price_position_52w": float(price_position_52w),
         }
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ compute_indicators_at_date error: {e}")
         return None
 
 
@@ -332,11 +441,13 @@ def compute_simple_score(indicators: dict) -> dict:
     """
     Simple rule-based scoring (matches your existing system).
     Returns f_score, t_score, overall.
+    
+    🔥 PHASE 1B: Nu også med momentum-aware scoring.
     """
     if not indicators:
         return {"f_score": 50, "t_score": 50, "overall": 50, "regime": "UNKNOWN"}
 
-    # Technical score (0-100)
+    # ===== Technical score (0-100) =====
     t = 50.0
     rsi = indicators.get("rsi", 50)
     if rsi < 30:
@@ -366,7 +477,14 @@ def compute_simple_score(indicators: dict) -> dict:
     elif vs_52w > -5:
         t -= 5
 
-    # Fundamental proxy (using momentum & volatility)
+    # 🔥 PHASE 1B: trend consistency boost
+    trend_cons = indicators.get("trend_consistency", 50)
+    if trend_cons > 70:
+        t += 5  # Konsistent uptrend
+    elif trend_cons < 30:
+        t -= 5  # Konsistent downtrend
+
+    # ===== Fundamental proxy =====
     f = 50.0
     ret_90d = indicators.get("ret_90d", 0)
     if ret_90d > 10:
@@ -384,7 +502,14 @@ def compute_simple_score(indicators: dict) -> dict:
     elif atr_pct < 1.5:
         f += 5  # Stable
 
-    # Regime detection (based on SMA200 + momentum)
+    # 🔥 PHASE 1B: momentum acceleration boost
+    mom_accel = indicators.get("momentum_acceleration", 0)
+    if mom_accel > 5:
+        f += 5  # Accelererer opad
+    elif mom_accel < -5:
+        f -= 5  # Decelererer
+
+    # ===== Regime detection =====
     if vs_sma200 > 5 and ret_90d > 5:
         regime = "BULL"
     elif vs_sma200 < -10 and ret_90d < -10:
@@ -442,6 +567,8 @@ def generate_snapshots_for_ticker(
     """
     Generate synthetic snapshots at multiple historical dates for one ticker.
     Returns list of dicts (one per snapshot date).
+    
+    🔥 PHASE 1B: Now saves all 11 power features per row.
     """
     hist = fetch_ticker_history(ticker, period="5y")
     if hist is None:
@@ -493,6 +620,7 @@ def generate_snapshots_for_ticker(
             continue
 
         row = {
+            # ===== Metadata =====
             "ticker": ticker,
             "name": name,
             "sector": sector,
@@ -503,18 +631,32 @@ def generate_snapshots_for_ticker(
             "snapshot_universe": "BACKFILL",
             "price": snap_price,
             "status": "✅",
+            # ===== Scores =====
             "f_score": scores["f_score"],
             "t_score": scores["t_score"],
             "overall": scores["overall"],
             "regime": scores["regime"],
-            "regime_confidence": 75,  # default
+            "regime_confidence": 75,
+            # ===== Standard tech indicators =====
             "rsi": indicators["rsi"],
             "macd": indicators["macd"],
             "atr_pct": indicators["atr_pct"],
             "vs_sma200_%": indicators["vs_sma200_%"],
             "vs_52w_high_%": indicators["vs_52w_high_%"],
             "change_%": indicators["change_%"],
-            # Fill missing fundamental fields with defaults
+            # ===== 🔥 PHASE 1B power features =====
+            "momentum_3m": indicators["momentum_3m"],
+            "momentum_6m": indicators["momentum_6m"],
+            "momentum_12m": indicators["momentum_12m"],
+            "momentum_acceleration": indicators["momentum_acceleration"],
+            "volatility_regime": indicators["volatility_regime"],
+            "volume_momentum": indicators["volume_momentum"],
+            "drawdown_depth": indicators["drawdown_depth"],
+            "max_drawdown_1y": indicators["max_drawdown_1y"],
+            "recovery_strength": indicators["recovery_strength"],
+            "trend_consistency": indicators["trend_consistency"],
+            "price_position_52w": indicators["price_position_52w"],
+            # ===== Fundamental defaults =====
             "pe": info.get("trailingPE"),
             "pb": info.get("priceToBook"),
             "peg": info.get("pegRatio"),
@@ -556,8 +698,8 @@ def generate_snapshot_dates(
 def build_backfill_dataset(
     tickers: Optional[List[str]] = None,
     asset_class: str = "stock",
-    months_back: int = 36,                    # 🚀 PHASE 1: Was 24 → now 36
-    snapshot_interval_days: int = 14,         # 🚀 PHASE 1: Was 30 → now 14
+    months_back: int = 36,
+    snapshot_interval_days: int = 14,
     progress_callback=None,
     max_workers: int = 4,
 ) -> Dict:
@@ -573,12 +715,11 @@ def build_backfill_dataset(
 
     Returns dict with same shape as ml_data.get_training_data()
     """
-    # 🚀 PHASE 1: Default tickers - now uses ALL universes for max data
+    # Default tickers - now uses ALL universes for max data
     if tickers is None:
         if asset_class == "crypto":
             tickers = DEFAULT_TICKERS["crypto"]
         else:
-            # Combine ALL stock universes for maximum diversity
             tickers = (
                 DEFAULT_TICKERS["us_large_cap"]
                 + DEFAULT_TICKERS["us_growth"]
@@ -618,6 +759,7 @@ def build_backfill_dataset(
 
     df = pd.DataFrame(all_rows)
     print(f"✅ Generated {len(df)} training rows from {df['ticker'].nunique()} tickers")
+    print(f"   Features: {len(df.columns)} columns")
 
     return {
         "df": df,
@@ -636,7 +778,6 @@ def build_backfill_dataset(
 def save_backfill_as_snapshots(df: pd.DataFrame, snapshots_dir: str = "screener_snapshots"):
     """
     Convert backfill DataFrame into individual snapshot CSV files.
-    This makes them compatible with your existing ml_data.get_training_data()
     """
     import os
     from pathlib import Path
@@ -646,7 +787,6 @@ def save_backfill_as_snapshots(df: pd.DataFrame, snapshots_dir: str = "screener_
 
     for snap_ts in df["snapshot_ts"].unique():
         snap_df = df[df["snapshot_ts"] == snap_ts].copy()
-        # Drop snapshot metadata cols (we save them in filename)
         snap_df = snap_df.drop(columns=["snapshot_ts", "snapshot_universe"], errors="ignore")
 
         ts = pd.Timestamp(snap_ts)
@@ -660,7 +800,7 @@ def save_backfill_as_snapshots(df: pd.DataFrame, snapshots_dir: str = "screener_
 
 
 # ==========================================
-# SESSION STATE INTEGRATION (Streamlit Cloud workaround)
+# SESSION STATE INTEGRATION
 # ==========================================
 
 def store_backfill_in_session(df: pd.DataFrame):
@@ -699,10 +839,9 @@ def has_backfill_in_session() -> bool:
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("ML BACKFILL - HISTORICAL DATA GENERATOR (PHASE 1)")
+    print("ML BACKFILL - HISTORICAL DATA GENERATOR (PHASE 1B)")
     print("=" * 70)
 
-    # Show stats
     total_stocks = len(set(
         DEFAULT_TICKERS["us_large_cap"]
         + DEFAULT_TICKERS["us_growth"]
@@ -713,6 +852,7 @@ if __name__ == "__main__":
     print(f"📊 Available tickers:")
     print(f"   Stocks: {total_stocks}")
     print(f"   Crypto: {total_crypto}")
+    print(f"   New power features: 11")
     print()
 
     def cb(c, t, tk):
@@ -734,6 +874,17 @@ if __name__ == "__main__":
         print(f"   Date range: {result['date_range']}")
 
         df = result["df"]
+        print(f"\n🔥 New Phase 1B features in dataset:")
+        new_features = [
+            "momentum_3m", "momentum_6m", "momentum_12m",
+            "momentum_acceleration", "volatility_regime", "volume_momentum",
+            "drawdown_depth", "max_drawdown_1y", "recovery_strength",
+            "trend_consistency", "price_position_52w"
+        ]
+        for f in new_features:
+            if f in df.columns:
+                print(f"   ✅ {f}: mean={df[f].mean():.2f}, std={df[f].std():.2f}")
+
         print("\nForward returns coverage:")
         for h in HORIZONS:
             col = f"future_return_{h}d"
