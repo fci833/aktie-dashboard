@@ -2220,8 +2220,8 @@ f"</div></div></div>",
 unsafe_allow_html=True
 )
 
-                with st.expander("📚 Hvad er TRAILING STOP? (især vigtigt for krypto)"):
-                    st.markdown("""
+with st.expander("📚 Hvad er TRAILING STOP? (især vigtigt for krypto)"):
+st.markdown("""
 **Trailing stop** = "rullende stop-loss" der **følger med opad** når kursen stiger,
 men **bevæger sig aldrig nedad**.
 
