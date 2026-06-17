@@ -3817,17 +3817,6 @@ elif st.session_state.active_view == "📊 Analyse":
                 st.warning("⚠️ Modellen anbefaler IKKE køb lige nu")
         else:
             st.warning("Kunne ikke beregne position size (tjek input)")
-                st.success(
-                    f"✅ **Anbefaling:** Køb **{sizing['shares']:,} aktier** "
-                    f"@ {price:.2f} {currency} = {sizing['position_value']:,.0f} DKK "
-                    f"({sizing['position_pct']:.1f}% af din portefølje){regime_note}"
-                )
-            elif "HOLD" in rec:
-                st.info("ℹ️ Modellen siger HOLD - vurdér selv om du vil tage positionen")
-            else:
-                st.warning("⚠️ Modellen anbefaler IKKE køb lige nu")
-        else:
-            st.warning("Kunne ikke beregne position size (tjek input)")
 
     st.markdown("---")
 
