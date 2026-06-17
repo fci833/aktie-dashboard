@@ -1,4 +1,4 @@
-"""Aktie Dashboard - Hovedapp med Krypto + Daily Brief + News Sentiment + Earnings Warning"""
+"""Aktie Dashboard - Hovedapp med Krypto + Daily Brief + News Sentiment + Earnings Warning + Track Record"""
 import time
 import numpy as np
 import pandas as pd
@@ -61,7 +61,7 @@ from news_sentiment import (
     render_news_feed,
 )
 
-# 🆕 EARNINGS WARNING - opdateret med score-boost + chart-markers
+# 🆕 EARNINGS WARNING
 from earnings_warning import (
     get_earnings_info,
     render_earnings_warning,
@@ -69,13 +69,13 @@ from earnings_warning import (
     render_post_earnings_moves,
     render_watchlist_earnings_calendar,
     get_earnings_warning_message,
-    # 🆕 NYE FUNKTIONER:
     calculate_earnings_score_boost,
     render_earnings_score_card,
     add_earnings_markers_to_chart,
     add_earnings_legend_caption,
 )
-# 🤖 ML PREDICT - Step C
+
+# 🤖 ML PREDICT
 try:
     from ml_predict import (
         predict_all_horizons,
@@ -88,6 +88,20 @@ try:
 except ImportError as e:
     print(f"⚠️ ml_predict ikke tilgængelig: {e}")
     ML_PREDICT_AVAILABLE = False
+
+# 🆕 TRACK RECORD - logger alle anbefalinger og måler hvor godt modellen rammer
+try:
+    from track_record import (
+        save_prediction,
+        update_predictions,
+        get_track_record_stats,
+        render_track_record_view,
+        render_track_record_summary,
+    )
+    TRACK_RECORD_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ track_record ikke tilgængelig: {e}")
+    TRACK_RECORD_AVAILABLE = False
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -118,9 +132,23 @@ if "search_history" not in st.session_state:
     st.session_state.search_history = []
 if "dev_mode" not in st.session_state:
     st.session_state.dev_mode = False
+# 🆕 Track record session state
+if "track_record_initialized" not in st.session_state:
+    st.session_state.track_record_initialized = False
 
 
-# ============ DIAGNOSE ============
+# ============ TRACK RECORD HJÆLPER ============
+
+def safe_save_prediction(**kwargs):
+    """Wrapper der gemmer en prediction sikkert (uden at crashe app)"""
+    if not TRACK_RECORD_AVAILABLE:
+        return
+    try:
+        save_prediction(**kwargs)
+    except Exception as e:
+        if st.session_state.get("dev_mode", False):
+            st.caption(f"⚠️ Track record save failed: {e}")
+            # ============ DIAGNOSE ============
 
 def run_diagnostics(ticker):
     results = []
@@ -216,6 +244,17 @@ def add_to_search_history(ticker):
     st.session_state.search_history = history[:10]
 
 
+# ============ AUTOMATISK TRACK-RECORD UPDATE (kører én gang per session) ============
+
+if TRACK_RECORD_AVAILABLE and not st.session_state.track_record_initialized:
+    try:
+        update_predictions()
+        st.session_state.track_record_initialized = True
+    except Exception as e:
+        if st.session_state.get("dev_mode", False):
+            print(f"Track record auto-update fejlede: {e}")
+
+
 # ============ SIDEBAR ============
 
 with st.sidebar:
@@ -268,6 +307,24 @@ with st.sidebar:
     st.caption("📉 Risk: **3 år**")
     st.caption("🎲 Monte Carlo: **2 år**")
 
+    # 🆕 TRACK RECORD MINI-WIDGET
+    if TRACK_RECORD_AVAILABLE:
+        st.markdown("---")
+        st.markdown("### 📈 Track Record")
+        try:
+            stats = get_track_record_stats()
+            if stats and stats.get("total", 0) > 0:
+                st.caption(f"📊 **{stats['total']}** predictions logget")
+                if stats.get("evaluated", 0) > 0:
+                    hit_rate = stats.get("hit_rate", 0)
+                    st.caption(f"🎯 Hit rate: **{hit_rate:.1f}%** ({stats['evaluated']} evalueret)")
+                else:
+                    st.caption("⏳ Ingen evalueret endnu")
+            else:
+                st.caption("Ingen predictions endnu")
+        except Exception:
+            st.caption("⚠️ Stats utilgængelig")
+
     st.markdown("---")
     st.session_state.dev_mode = st.checkbox(
         "🐛 Dev mode (vis perf-stats)",
@@ -278,11 +335,14 @@ with st.sidebar:
 
 # ============ NAVIGATION ============
 
-view_options = ["🏠 Hjem", "📊 Analyse", "🔎 Screener", "🪙 Krypto", "🔍 Søg ticker", "🔧 Diagnose"]
+view_options = [
+    "🏠 Hjem", "📊 Analyse", "🔎 Screener", "🪙 Krypto",
+    "📈 Track Record", "🔍 Søg ticker", "🔧 Diagnose"
+]
 selected_view = st.radio(
     "Navigation",
     view_options,
-    index=view_options.index(st.session_state.active_view),
+    index=view_options.index(st.session_state.active_view) if st.session_state.active_view in view_options else 0,
     horizontal=True,
     label_visibility="collapsed",
     key="nav_radio",
@@ -339,6 +399,14 @@ if st.session_state.active_view == "🏠 Hjem":
         if st.button("🔄 Opdater", use_container_width=True, key="refresh_home"):
             st.cache_data.clear()
             st.rerun()
+
+    # 🆕 TRACK RECORD SUMMARY (kompakt øverst)
+    if TRACK_RECORD_AVAILABLE:
+        try:
+            render_track_record_summary()
+        except Exception as e:
+            if st.session_state.get("dev_mode", False):
+                st.caption(f"⚠️ Track record summary fejlede: {e}")
 
     st.markdown("---")
     st.markdown("### 📊 Market Pulse")
@@ -399,7 +467,7 @@ if st.session_state.active_view == "🏠 Hjem":
     st.markdown("---")
     st.markdown("### 🎯 Dagens Handlinger")
 
-    # 🆕 4 TABS - inkl. earnings-kalender
+    # 4 TABS - inkl. earnings-kalender
     action_tabs = st.tabs([
         "🟢 KØB-muligheder",
         "👁️ Min Watchlist",
@@ -560,7 +628,7 @@ if st.session_state.active_view == "🏠 Hjem":
                             down_disp[col] = pd.to_numeric(down_disp[col], errors="coerce").round(2)
                     st.dataframe(down_disp, use_container_width=True, hide_index=True)
 
-    # 🆕 EARNINGS-KALENDER TAB
+    # EARNINGS-KALENDER TAB
     with action_tabs[3]:
         st.markdown("### 📅 Earnings-kalender for din watchlist")
         st.caption(
@@ -578,7 +646,7 @@ if st.session_state.active_view == "🏠 Hjem":
 
     st.markdown("---")
     st.markdown("### ⚡ Hurtige genveje")
-    quick_cols = st.columns(4)
+    quick_cols = st.columns(5)
     if quick_cols[0].button("🔎 Kør screener nu", use_container_width=True, key="qg_screener"):
         st.session_state.active_view = "🔎 Screener"
         st.rerun()
@@ -591,15 +659,17 @@ if st.session_state.active_view == "🏠 Hjem":
     if quick_cols[3].button("📊 Detaljeret analyse", use_container_width=True, key="qg_analysis"):
         st.session_state.active_view = "📊 Analyse"
         st.rerun()
+    # 🆕 Genvej til track record
+    if quick_cols[4].button("📈 Track Record", use_container_width=True, key="qg_track"):
+        st.session_state.active_view = "📈 Track Record"
+        st.rerun()
 
     st.markdown("---")
     st.caption(
         "⚠️ **Ikke finansiel rådgivning.** Dashboard er et analyseværktøj. "
         "Lav altid din egen research før investering. Past performance is not indicative of future results."
     )
-
-
-# ============ SØGE-VIEW ============
+    # ============ SØGE-VIEW ============
 
 elif st.session_state.active_view == "🔍 Søg ticker":
     st.subheader("🔍 Find ticker for et firma")
@@ -627,6 +697,44 @@ elif st.session_state.active_view == "🔍 Søg ticker":
         {"Firma": "ASML", "Yahoo": "ASML.AS", "ADR": "ASML"},
     ])
     st.dataframe(examples, use_container_width=True, hide_index=True)
+
+
+# ============ 🆕 TRACK RECORD VIEW ============
+
+elif st.session_state.active_view == "📈 Track Record":
+    st.subheader("📈 Track Record - Hvor godt rammer modellen?")
+    st.caption(
+        "Hver gang du analyserer en aktie/krypto, gemmes anbefalingen automatisk. "
+        "Efter 30/90/180 dage evalueres den mod faktisk pris-udvikling."
+    )
+
+    if not TRACK_RECORD_AVAILABLE:
+        st.error(
+            "❌ **Track Record-modulet er ikke tilgængeligt.**\n\n"
+            "Tjek at `track_record.py` er gemt i samme mappe som `app.py`."
+        )
+    else:
+        # Refresh-knap
+        rcol1, rcol2 = st.columns([5, 1])
+        with rcol2:
+            if st.button("🔄 Opdater nu", use_container_width=True, key="refresh_track"):
+                with st.spinner("Opdaterer predictions med aktuelle priser..."):
+                    try:
+                        n_updated = update_predictions(force=True)
+                        st.success(f"✅ {n_updated} predictions opdateret!")
+                    except Exception as e:
+                        st.error(f"Fejl: {e}")
+                time.sleep(1)
+                st.rerun()
+
+        # Render fuld track record-view
+        try:
+            render_track_record_view()
+        except Exception as e:
+            st.error(f"❌ Track Record fejlede: {e}")
+            import traceback
+            with st.expander("🐛 Full traceback"):
+                st.code(traceback.format_exc())
 
 
 # ============ DIAGNOSE-VIEW ============
@@ -664,7 +772,7 @@ elif st.session_state.active_view == "🔧 Diagnose":
         # ---- Quick summary ----
         st.markdown("#### 📊 Tilgængelig data")
 
-        # 🆕 Vis session-state backfill status
+        # Vis session-state backfill status
         try:
             from ml_backfill import has_backfill_in_session
             if has_backfill_in_session():
@@ -883,8 +991,7 @@ elif st.session_state.active_view == "🔧 Diagnose":
                 import traceback
                 with st.expander("🐛 Full traceback"):
                     st.code(traceback.format_exc())
-
-    # ===== TAB 3: ML Backfill =====
+                        # ===== TAB 3: ML Backfill =====
     with diag_tabs[2]:
         st.markdown("### 🚀 ML Backfill — Generer historisk training data")
         st.caption(
@@ -914,7 +1021,7 @@ elif st.session_state.active_view == "🔧 Diagnose":
             help="Mindre = flere samples men mere overlap"
         )
 
-                # Estimated samples (Phase 1: udvidet ticker-liste)
+        # Estimated samples (Phase 1: udvidet ticker-liste)
         n_dates = (bf_months * 30 - 200) // bf_interval
         n_tickers_est = 250 if bf_asset == "stock" else 75
         n_samples_est = n_dates * n_tickers_est
@@ -1003,7 +1110,7 @@ elif st.session_state.active_view == "🔧 Diagnose":
                             })
                     st.dataframe(pd.DataFrame(cov_data), use_container_width=True, hide_index=True)
 
-                    # 🆕 STORE IN SESSION STATE (Streamlit Cloud workaround)
+                    # STORE IN SESSION STATE (Streamlit Cloud workaround)
                     from ml_backfill import store_backfill_in_session
                     store_backfill_in_session(df)
 
@@ -1358,9 +1465,7 @@ elif st.session_state.active_view == "🔧 Diagnose":
         except ImportError as e:
             st.error(f"❌ Kunne ikke importere ml_train.py: {e}")
             st.info("💡 Tjek at `ml_train.py` er gemt i samme mappe som `app.py`")
-
-
-                # ============ SCREENER-VIEW ============
+            # ============ SCREENER-VIEW ============
 
 elif st.session_state.active_view == "🔎 Screener":
     st.subheader("🔎 Markedsscreener")
@@ -1978,6 +2083,23 @@ elif st.session_state.active_view == "🪙 Krypto":
 
                 rec, color = crypto_recommendation(scores["overall"])
 
+                # ============================================================
+                # 🆕 GEM CRYPTO PREDICTION TIL TRACK RECORD
+                # ============================================================
+                safe_save_prediction(
+                    ticker=symbol,
+                    name=info.get("longName", symbol),
+                    asset_class="crypto",
+                    price=float(price),
+                    score=float(scores["overall"]),
+                    recommendation=rec,
+                    f_score=float(scores.get("market", 0)),
+                    t_score=float(scores.get("technical", 0)),
+                    regime="N/A",
+                    sector=category,
+                    currency="USD",
+                )
+
                 st.markdown("---")
                 st.markdown("### 🎯 Multi-faktor Analyse")
 
@@ -2309,7 +2431,6 @@ elif st.session_state.active_view == "🪙 Krypto":
                             dcf_upside=None,
                         )
                     render_ml_summary_card(crypto_ml_data, rule_based_rec=rec)
-
                 st.markdown("---")
                 pro_tabs = st.tabs([
                     "📊 Charts", "🔧 Tekniske detaljer", "📉 Risiko",
@@ -2574,7 +2695,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         else:
                             st.error("Kunne ikke hente BTC-data")
 
-                                # 🆕 NEW TAB: ML DETALJER (pro_tabs[6])
+                # ML DETALJER (pro_tabs[6])
                 with pro_tabs[6]:
                     st.markdown("### 🤖 ML Forudsigelser - Detaljeret (Crypto)")
                     st.caption(
@@ -2612,7 +2733,7 @@ elif st.session_state.active_view == "🪙 Krypto":
                         else:
                             st.info("ML data genberegnes ved næste analyse...")
 
-                # Score breakdown rykket til pro_tabs[7]
+                # Score breakdown (pro_tabs[7])
                 with pro_tabs[7]:
                     detail_subtabs = st.tabs(["📊 Marked", "🔧 Teknisk", "💬 Sentiment", "👨‍💻 Developer"])
                     for tab, key in zip(detail_subtabs,
@@ -2634,7 +2755,8 @@ elif st.session_state.active_view == "🪙 Krypto":
                 if info.get("description"):
                     with st.expander("ℹ️ Om denne krypto"):
                         st.write(info["description"])
-                            # ===== TAB 2: SCREENER =====
+
+    # ===== TAB 2: SCREENER =====
     with crypto_tabs[1]:
         st.markdown("### 🔎 Krypto-screener")
         sc1, sc2 = st.columns([2, 1])
@@ -3090,7 +3212,7 @@ elif st.session_state.active_view == "📊 Analyse":
             st.metric("Market Cap", "N/A")
 
     # ============================================================
-    # 🆕 REGIME DETECTION + REGIME-AWARE SCORING + EARNINGS BOOST
+    # REGIME DETECTION + REGIME-AWARE SCORING + EARNINGS BOOST
     # ============================================================
     from regime_detector import (
         detect_market_regime,
@@ -3124,16 +3246,16 @@ elif st.session_state.active_view == "📊 Analyse":
     is_combined_regime = regime_metrics.get("is_combined", False)
 
     # ============================================================
-    # 🆕 EARNINGS-DATA HENTES TIDLIGT (bruges til score-boost + chart)
+    # EARNINGS-DATA HENTES TIDLIGT (bruges til score-boost + chart)
     # ============================================================
     with st.spinner("📅 Tjekker earnings-kalender..."):
         earnings_data = get_earnings_info(ticker)
 
-    # 🆕 BEREGN EARNINGS SCORE BOOST
+    # BEREGN EARNINGS SCORE BOOST
     earnings_boost_info = calculate_earnings_score_boost(earnings_data)
     earnings_boost = earnings_boost_info["boost"]
 
-    # 🆕 JUSTÉR OVERALL SCORE (clamp til 0-100)
+    # JUSTÉR OVERALL SCORE (clamp til 0-100)
     overall_pre_earnings = overall
     overall = max(0, min(100, overall + earnings_boost))
 
@@ -3141,13 +3263,30 @@ elif st.session_state.active_view == "📊 Analyse":
 
     _analysis_time = time.time() - _analysis_start
 
+    # ============================================================
+    # 🆕 GEM STOCK PREDICTION TIL TRACK RECORD
+    # ============================================================
+    safe_save_prediction(
+        ticker=ticker,
+        name=info.get("longName", ticker),
+        asset_class="stock",
+        price=float(price) if price else 0.0,
+        score=float(overall),
+        recommendation=rec,
+        f_score=float(f_score),
+        t_score=float(t_score),
+        regime=regime,
+        sector=info.get("sector", "?"),
+        currency=currency,
+    )
+
     st.markdown("---")
 
     render_regime_banner(regime, regime_conf, regime_metrics, asset_type="stock")
 
     st.markdown("")
 
-    # 🆕 BEREGN DCF UPSIDE TIDLIGT (bruges af ML)
+    # BEREGN DCF UPSIDE TIDLIGT (bruges af ML)
     try:
         fv_early = dcf_valuation(info, 0.10, 0.10, 0.025)
         dcf_upside = ((fv_early / price - 1) * 100) if fv_early and price else None
@@ -3159,7 +3298,7 @@ elif st.session_state.active_view == "📊 Analyse":
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
         bench_info = f"vs {benchmark_label}" if benchmark_label else ""
-        # 🆕 Vis earnings-justering hvis den eksisterer
+        # Vis earnings-justering hvis den eksisterer
         earnings_note = ""
         if earnings_boost != 0:
             sign = "+" if earnings_boost > 0 else ""
@@ -3197,7 +3336,7 @@ elif st.session_state.active_view == "📊 Analyse":
         f"{regime_conf}% conf."
     )
 
-    # 🆕 EARNINGS SCORE CARD (vises kun hvis der ER en effekt)
+    # EARNINGS SCORE CARD (vises kun hvis der ER en effekt)
     if earnings_boost != 0:
         st.markdown("")
         render_earnings_score_card(earnings_data)
@@ -3254,7 +3393,7 @@ elif st.session_state.active_view == "📊 Analyse":
     render_sentiment_summary(sentiment_data, compact=True)
 
     # ============================================================
-    # 🆕 EARNINGS WARNING - lige under sentiment
+    # EARNINGS WARNING - lige under sentiment
     # ============================================================
     st.markdown("---")
     earn_header_cols = st.columns([5, 1])
@@ -3262,9 +3401,9 @@ elif st.session_state.active_view == "📊 Analyse":
     if earn_header_cols[1].button("🔄 Refresh earnings", key=f"refresh_earn_{ticker}", use_container_width=True):
         get_earnings_info.clear()
         st.rerun()
-    
+
     render_earnings_warning(earnings_data, compact=True)
-    
+
     # ============================================================
     # 🤖 ML FORUDSIGELSE - kompakt summary
     # ============================================================
@@ -3296,8 +3435,7 @@ elif st.session_state.active_view == "📊 Analyse":
             )
         render_ml_summary_card(ml_predictions_data, rule_based_rec=rec)
 
-        # ============ ACTION PLAN ============
-    # dcf_upside er allerede beregnet tidligere, genbrug fv_early
+    # ============ ACTION PLAN ============
     fv_check = fv_early
 
     targets_main = calculate_price_targets(
@@ -3356,7 +3494,7 @@ elif st.session_state.active_view == "📊 Analyse":
     st.markdown("## 🎯 SÅDAN HANDLER DU")
     st.markdown(f"_{plan['summary']}_")
 
-    # 🆕 EARNINGS-BASERET ADVARSEL I ACTION PLAN
+    # EARNINGS-BASERET ADVARSEL I ACTION PLAN
     earnings_warning_msg = get_earnings_warning_message(earnings_data)
     if earnings_warning_msg:
         level = earnings_data.get("warning_level", "none") if earnings_data else "none"
@@ -3593,8 +3731,7 @@ elif st.session_state.active_view == "📊 Analyse":
     st.caption(
         "⚠️ Datoer og gevinster er **estimater** baseret på historisk momentum og volatilitet."
     )
-
-    st.markdown("---")
+        st.markdown("---")
     with st.expander("📐 Position Sizing Calculator", expanded=False):
         st.caption("Beregn hvor mange aktier du skal købe baseret på din risk tolerance")
 
@@ -3679,9 +3816,11 @@ elif st.session_state.active_view == "📊 Analyse":
                 st.warning("⚠️ Modellen anbefaler IKKE køb lige nu")
         else:
             st.warning("Kunne ikke beregne position size (tjek input)")
-            st.markdown("---")
+
+    st.markdown("---")
+
     # ============================================================
-    # 🆕 MAIN TABS - NU MED "📅 Earnings" TAB + earnings-markers på chart
+    # MAIN TABS
     # ============================================================
     main_tabs = st.tabs([
         "📊 Charts", "🔧 Indikatorer", "💰 Kursmål",
@@ -3740,7 +3879,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 name="Signal", line=dict(color="orange")
             ), 3, 1)
 
-        # 🆕 TILFØJ EARNINGS-MARKØRER PÅ MAIN PRICE CHART (row 1)
+        # TILFØJ EARNINGS-MARKØRER PÅ MAIN PRICE CHART (row 1)
         add_earnings_markers_to_chart(
             fig=fig,
             earnings_data=earnings_data,
@@ -3755,7 +3894,7 @@ elif st.session_state.active_view == "📊 Analyse":
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # 🆕 VIS LEGEND under chartet
+        # VIS LEGEND under chartet
         add_earnings_legend_caption()
 
     # ===== INDIKATORER =====
@@ -4101,7 +4240,7 @@ elif st.session_state.active_view == "📊 Analyse":
                 fig_bt.update_layout(template="plotly_dark", height=400)
                 st.plotly_chart(fig_bt, use_container_width=True)
 
-        # ===== 🤖 ML FORUDSIGELSE =====
+    # ===== 🤖 ML FORUDSIGELSE =====
     with main_tabs[6]:
         st.markdown("### 🤖 ML Forudsigelser - Detaljeret")
         st.caption(
@@ -4215,7 +4354,8 @@ elif st.session_state.active_view == "📊 Analyse":
                 get_news_sentiment.clear() if hasattr(get_news_sentiment, "clear") else None
                 st.cache_data.clear()
                 st.rerun()
-    # ===== 🆕 EARNINGS =====
+
+    # ===== EARNINGS =====
     with main_tabs[8]:
         st.markdown("### 📅 Earnings-analyse")
         st.caption(
@@ -4373,7 +4513,7 @@ if st.session_state.dev_mode:
 
     _total_time = time.time() - _app_start_time
 
-    dev_cols = st.columns(4)
+    dev_cols = st.columns(5)
     dev_cols[0].metric("⏱️ Total render-tid", f"{_total_time:.2f}s")
 
     try:
@@ -4385,6 +4525,17 @@ if st.session_state.dev_mode:
     dev_cols[2].metric("📍 Aktiv view", st.session_state.active_view)
     dev_cols[3].metric("📋 Watchlist", f"{len(st.session_state.watchlist)} tickers")
 
+    # 🆕 Track record stats i dev mode
+    if TRACK_RECORD_AVAILABLE:
+        try:
+            tr_stats = get_track_record_stats()
+            tr_total = tr_stats.get("total", 0) if tr_stats else 0
+            dev_cols[4].metric("📈 Predictions", tr_total)
+        except Exception:
+            dev_cols[4].metric("📈 Predictions", "?")
+    else:
+        dev_cols[4].metric("📈 Predictions", "N/A")
+
     with st.expander("🔍 Session state (debug)"):
         debug_state = {
             "current_ticker": st.session_state.get("current_ticker", ""),
@@ -4395,6 +4546,8 @@ if st.session_state.dev_mode:
             "search_history": st.session_state.get("search_history", []),
             "screener_has_results": st.session_state.get("screener_results") is not None,
             "crypto_analyzed": st.session_state.get("crypto_analyzed", "ingen"),
+            "track_record_available": TRACK_RECORD_AVAILABLE,
+            "track_record_initialized": st.session_state.get("track_record_initialized", False),
         }
         st.json(debug_state)
 
@@ -4402,3 +4555,4 @@ if st.session_state.dev_mode:
         "💡 **Tip:** Hvis render-tid > 5s, er der typisk ventetid på API-kald. "
         "Tryk **🔄 Ryd cache** kun hvis nødvendigt — det tvinger refetch af alt."
     )
+                                
