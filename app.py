@@ -3721,7 +3721,7 @@ elif st.session_state.active_view == "📊 Analyse":
         🛑 Kurs falder til 142 USD  →  SOLGT med +22 USD profit!
         ```
 
-        ### 💼 Hvor sætter man det?
+               ### 💼 Hvor sætter man det?
         - 🇩🇰 **Nordnet** — "Trailing stop"
         - 🇩🇰 **Saxo** — "Trailing stop loss"
         - 🌍 **eToro** — "Trailing stop loss"
@@ -3731,7 +3731,8 @@ elif st.session_state.active_view == "📊 Analyse":
     st.caption(
         "⚠️ Datoer og gevinster er **estimater** baseret på historisk momentum og volatilitet."
     )
-        st.markdown("---")
+
+    st.markdown("---")
     with st.expander("📐 Position Sizing Calculator", expanded=False):
         st.caption("Beregn hvor mange aktier du skal købe baseret på din risk tolerance")
 
@@ -3805,6 +3806,17 @@ elif st.session_state.active_view == "📊 Analyse":
                 elif regime == "VOLATILE":
                     regime_note = " ⚡ (VOLATILE marked — vær forsigtig)"
 
+                st.success(
+                    f"✅ **Anbefaling:** Køb **{sizing['shares']:,} aktier** "
+                    f"@ {price:.2f} {currency} = {sizing['position_value']:,.0f} DKK "
+                    f"({sizing['position_pct']:.1f}% af din portefølje){regime_note}"
+                )
+            elif "HOLD" in rec:
+                st.info("ℹ️ Modellen siger HOLD - vurdér selv om du vil tage positionen")
+            else:
+                st.warning("⚠️ Modellen anbefaler IKKE køb lige nu")
+        else:
+            st.warning("Kunne ikke beregne position size (tjek input)")
                 st.success(
                     f"✅ **Anbefaling:** Køb **{sizing['shares']:,} aktier** "
                     f"@ {price:.2f} {currency} = {sizing['position_value']:,.0f} DKK "
