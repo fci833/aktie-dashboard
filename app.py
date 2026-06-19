@@ -3301,6 +3301,80 @@ elif st.session_state.active_view == "📊 Analyse":
         dcf_upside = None
         fv_early = None
 
+        # 🆕 ============ SMART AI VERDICT ============
+    if SMART_VERDICT_AVAILABLE:
+        st.markdown("---")
+
+        # Sikker DCF-beregning
+        fv_for_verdict = None
+        dcf_upside_for_verdict = None
+        try:
+            fv_for_verdict = dcf_valuation(info, 0.10, 0.10, 0.025)
+            if fv_for_verdict and price and price > 0:
+                dcf_upside_for_verdict = (fv_for_verdict / price - 1) * 100
+        except Exception:
+            pass
+
+        # Sikker target-beregning
+        targets_for_verdict = None
+        try:
+            targets_for_verdict = calculate_price_targets(
+                filter_by_days(df_indicators, ANALYSIS_PERIODS["targets"]),
+                price,
+                fv_for_verdict
+            )
+        except Exception:
+            pass
+
+        # Sikker sentiment-hentning (genbruger cache hvis allerede hentet)
+        company_name_temp = info.get("longName") or info.get("shortName") or ticker
+        sentiment_for_verdict = None
+        try:
+            sentiment_for_verdict = get_news_sentiment(
+                ticker,
+                company_name=company_name_temp,
+                limit=20
+            )
+        except Exception:
+            pass
+
+        # Generér og render smart verdict
+        try:
+            verdict = generate_smart_verdict(
+                ticker=ticker,
+                name=company_name_temp,
+                price=price,
+                currency=currency,
+                score=overall,
+                recommendation=rec,
+                regime=regime,
+                regime_confidence=float(regime_conf),
+                f_score=f_score,
+                t_score=t_score,
+                targets=targets_for_verdict,
+                hist=hist,
+                info=info,
+                sentiment_data=sentiment_for_verdict,
+                earnings_data=earnings_data,
+                pattern_bias=None,
+                pattern_bullish_n=0,
+                pattern_bearish_n=0,
+                dcf_upside=dcf_upside_for_verdict,
+            )
+            render_smart_verdict(verdict, ticker, company_name_temp, price, currency)
+
+            # Override anbefaling hvis AI har nedjusteret
+            if verdict["final_recommendation"] != verdict["original_recommendation"]:
+                rec = verdict["final_recommendation"]
+                color = verdict["verdict_color"]
+
+        except Exception as e:
+            if st.session_state.get("dev_mode", False):
+                st.warning(f"⚠️ Smart verdict fejlede: {e}")
+                import traceback
+                with st.expander("🐛 Traceback"):
+                    st.code(traceback.format_exc())
+    
     # === SCORE CARDS MED EARNINGS-JUSTERING ===
     rec_cols = st.columns([2, 1, 1, 1])
     with rec_cols[0]:
