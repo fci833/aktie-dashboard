@@ -102,6 +102,13 @@ try:
 except ImportError as e:
     print(f"⚠️ track_record ikke tilgængelig: {e}")
     TRACK_RECORD_AVAILABLE = False
+# 🆕 CHART PATTERNS - visuel analyse + pattern detection
+try:
+    from chart_patterns import render_full_action_plan
+    CHART_PATTERNS_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ chart_patterns ikke tilgængelig: {e}")
+    CHART_PATTERNS_AVAILABLE = False
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -3731,6 +3738,23 @@ elif st.session_state.active_view == "📊 Analyse":
     st.caption(
         "⚠️ Datoer og gevinster er **estimater** baseret på historisk momentum og volatilitet."
     )
+    # 🆕 ============ VISUEL CHART-ANALYSE + PATTERN DETECTION ============
+    if CHART_PATTERNS_AVAILABLE:
+        st.markdown("---")
+        st.markdown("## 📊 Visuel chart-analyse + auto pattern-detection")
+            try:
+                render_full_action_plan(
+                    df=df_indicators,
+                    current_price=price,
+                    targets=targets_main,
+                    currency=currency,
+                    title_prefix=f"{company_name} ({ticker}) — ",
+                )
+            except Exception as e:
+                st.warning(f"⚠️ Pattern-analyse fejlede: {str(e)[:200]}")
+                if st.session_state.get("dev_mode", False):
+                    import traceback
+                    st.code(traceback.format_exc())
 
     st.markdown("---")
     with st.expander("📐 Position Sizing Calculator", expanded=False):
