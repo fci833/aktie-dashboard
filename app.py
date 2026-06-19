@@ -109,6 +109,13 @@ try:
 except ImportError as e:
     print(f"⚠️ chart_patterns ikke tilgængelig: {e}")
     CHART_PATTERNS_AVAILABLE = False
+# 🆕 SMART AI VERDICT - helhedsvurdering med flag-detection
+try:
+    from smart_verdict import generate_smart_verdict, render_smart_verdict
+    SMART_VERDICT_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ smart_verdict ikke tilgængelig: {e}")
+    SMART_VERDICT_AVAILABLE = False
 
 import warnings
 warnings.filterwarnings("ignore")
