@@ -4,6 +4,9 @@ ml_predict.py - ML Prediction til Analyse-fanen
 Loader trænede ML-modeller og laver forudsigelser på enkelte tickers.
 
 Main entry: predict_all_horizons(info, hist, ...) -> dict med 30/90/180d forudsigelser
+
+🆕 v2: Sanity-check + reliability flag for at forhindre absurde regressor-output
+       (fx +5000% afkast pga. ekstrapolering uden for training-distribution).
 """
 import warnings
 warnings.filterwarnings("ignore")
@@ -20,6 +23,14 @@ MODELS_DIR = Path("ml_models")
 HORIZONS = [30, 90, 180]
 ML_MODEL_NAMES = ["random_forest", "xgboost", "lightgbm"]
 
+# 🛡️ Realistiske grænser for forventet afkast per horisont
+# Selv Bitcoin's vildeste år gav ikke mere end ~150% på 90 dage
+REALISTIC_RETURN_BOUNDS = {
+    30:  (-50, 100),    # ±50% til +100% på 30 dage
+    90:  (-70, 200),    # ±70% til +200% på 90 dage
+    180: (-80, 400),    # ±80% til +400% på 180 dage
+}
+
 
 # ==========================================
 # LOAD MODELS (cached for performance)
@@ -28,7 +39,7 @@ ML_MODEL_NAMES = ["random_forest", "xgboost", "lightgbm"]
 @st.cache_resource
 def load_models_for_horizon(asset_class: str, horizon: int) -> Dict:
     """Load alle tilgængelige modeller for en asset class + horisont."""
-    models = {"clf": {}, "reg": {}, "feature_columns": None}
+    models = {"clf": {}, "reg": {}, "feature_columns": None, "horizon": horizon}
 
     if not MODELS_DIR.exists():
         return models
@@ -193,7 +204,6 @@ def build_feature_row(
     if div_yield is not None:
         try:
             dy = float(div_yield)
-            # Hvis < 1 antag decimal, ellers procent
             set_feat("dividend_%", dy * 100 if abs(dy) < 1 else dy)
         except (ValueError, TypeError):
             pass
@@ -216,7 +226,7 @@ def build_feature_row(
         except (ValueError, TypeError):
             pass
 
-    # Debt/Equity (ml_data bruger "debt_equity")
+    # Debt/Equity
     set_feat("debt_equity", info.get("debtToEquity"))
 
     # DCF upside
@@ -229,7 +239,6 @@ def build_feature_row(
         try:
             mc_val = float(mc)
             set_feat("market_cap", mc_val)
-            # log_market_cap (derived)
             set_feat("log_market_cap", np.log1p(max(mc_val, 0)))
         except (ValueError, TypeError):
             pass
@@ -282,17 +291,28 @@ def build_feature_row(
     # Build DataFrame i korrekt rækkefølge
     df = pd.DataFrame([features])[feature_columns]
     df = df.fillna(0.0)
-
-    # Replace inf/-inf med 0
     df = df.replace([np.inf, -np.inf], 0.0)
 
     return df
-    # ==========================================
+
+
+# ==========================================
 # PREDICTION
 # ==========================================
 
-def predict_single_horizon(feature_row: pd.DataFrame, models: Dict) -> Dict:
-    """Forudsig for én horisont, ensemble af alle tilgængelige modeller."""
+def predict_single_horizon(
+    feature_row: pd.DataFrame,
+    models: Dict,
+    horizon: int = 90,
+) -> Dict:
+    """
+    Forudsig for én horisont, ensemble af alle tilgængelige modeller.
+
+    Args:
+        feature_row: 1-række DataFrame med features
+        models: dict med "clf" og "reg" modeller
+        horizon: dage (bruges til realistisk return-bound)
+    """
     if feature_row is None or feature_row.empty:
         return {"error": "No features"}
 
@@ -322,7 +342,7 @@ def predict_single_horizon(feature_row: pd.DataFrame, models: Dict) -> Dict:
                 local_labels = ["SELL", "HOLD", "BUY"]
                 pred_label = local_labels[pred]
 
-            class_labels = local_labels  # Brug fra modellen
+            class_labels = local_labels
 
             proba_dict = {label: float(p) for label, p in zip(local_labels, proba)}
 
@@ -346,23 +366,85 @@ def predict_single_horizon(feature_row: pd.DataFrame, models: Dict) -> Dict:
     ensemble_confidence = float(avg_proba[ensemble_idx])
     ensemble_proba = {label: float(p) for label, p in zip(class_labels, avg_proba)}
 
-    # ===== REGRESSION =====
+    # ===== REGRESSION (med sanity-check) =====
+    bounds = REALISTIC_RETURN_BOUNDS.get(horizon, (-100, 500))
+
     reg_predictions = {}
     return_list = []
+    n_clipped = 0
+
     for name, reg_data in regressors.items():
         try:
             model = reg_data["model"]
-            pred = float(model.predict(feature_row)[0])
+            raw_pred = float(model.predict(feature_row)[0])
+
+            # 🛡️ SANITY CHECK: Clamp ekstreme værdier til realistiske grænser
+            clipped_pred = float(np.clip(raw_pred, bounds[0], bounds[1]))
+            was_clipped = abs(raw_pred - clipped_pred) > 0.01
+
+            if was_clipped:
+                n_clipped += 1
+                print(f"⚠️ {name}_{horizon}d regressor ekstrapolerede vildt: "
+                      f"{raw_pred:+.1f}% → clamped til {clipped_pred:+.1f}%")
+
             reg_predictions[name] = {
-                "expected_return_%": pred,
+                "expected_return_%": clipped_pred,
+                "raw_prediction": raw_pred,
+                "was_clipped": was_clipped,
                 "mae": reg_data.get("metrics", {}).get("mae", 0),
             }
-            return_list.append(pred)
+            return_list.append(clipped_pred)
         except Exception as e:
             print(f"⚠️ Regressor failed for {name}: {e}")
 
     avg_return = float(np.mean(return_list)) if return_list else None
     avg_mae = float(np.mean([r["mae"] for r in reg_predictions.values()])) if reg_predictions else None
+
+    # 🚨 Detektér inkonsistens mellem classifier og regressor
+    is_inconsistent = False
+    inconsistency_msg = None
+    if avg_return is not None:
+        if ensemble_label == "SELL" and avg_return > 5:
+            is_inconsistent = True
+            inconsistency_msg = (
+                f"Klassifikator siger SELL, men regressor forventer {avg_return:+.1f}% "
+                f"— modellerne er uenige (lav tillid)."
+            )
+        elif ensemble_label == "BUY" and avg_return < -5:
+            is_inconsistent = True
+            inconsistency_msg = (
+                f"Klassifikator siger BUY, men regressor forventer {avg_return:+.1f}% "
+                f"— modellerne er uenige (lav tillid)."
+            )
+
+    # 🚦 Reliability flag (HIGH/MEDIUM/LOW)
+    reliability = "HIGH"
+    reliability_reasons = []
+
+    if ensemble_confidence < 0.50:
+        reliability = "LOW"
+        reliability_reasons.append(f"Lav classifier-confidence ({ensemble_confidence*100:.0f}%)")
+    elif ensemble_confidence < 0.60:
+        if reliability != "LOW":
+            reliability = "MEDIUM"
+        reliability_reasons.append(f"Moderat confidence ({ensemble_confidence*100:.0f}%)")
+
+    if n_clipped > 0:
+        reliability = "LOW"
+        reliability_reasons.append(
+            f"{n_clipped} regressor(er) ekstrapolerede ud over realistiske grænser"
+        )
+
+    if is_inconsistent:
+        reliability = "LOW"
+        reliability_reasons.append("Classifier og regressor er uenige om retning")
+
+    # Hvis MAE er næsten lige så stor som forventet afkast, er det meget usikkert
+    if avg_mae and avg_return is not None and abs(avg_return) > 0:
+        if avg_mae > abs(avg_return) * 0.8:
+            if reliability == "HIGH":
+                reliability = "MEDIUM"
+            reliability_reasons.append(f"Høj usikkerhed (MAE±{avg_mae:.1f}% vs forv. {avg_return:+.1f}%)")
 
     return {
         "ensemble": {
@@ -371,6 +453,11 @@ def predict_single_horizon(feature_row: pd.DataFrame, models: Dict) -> Dict:
             "probabilities": ensemble_proba,
             "expected_return_%": avg_return,
             "expected_return_mae": avg_mae,
+            "n_regressors_clipped": n_clipped,
+            "is_inconsistent": is_inconsistent,
+            "inconsistency_msg": inconsistency_msg,
+            "reliability": reliability,
+            "reliability_reasons": reliability_reasons,
         },
         "individual_classifiers": clf_predictions,
         "individual_regressors": reg_predictions,
@@ -414,7 +501,7 @@ def predict_all_horizons(
             continue
 
         try:
-            result = predict_single_horizon(feature_row, models)
+            result = predict_single_horizon(feature_row, models, horizon=horizon)
             # 🔍 DEBUG: gem feature-info for inspection
             non_zero_count = int((feature_row != 0).sum().sum())
             total_count = len(models["feature_columns"])
@@ -452,16 +539,34 @@ def get_label_emoji(label: str) -> str:
     )
 
 
+def _reliability_badge(reliability: str) -> str:
+    """Returnér farvet badge for reliability."""
+    if reliability == "LOW":
+        return "<small style='color:#ef4444;font-weight:bold'>🚨 LAV TILLID</small>"
+    elif reliability == "MEDIUM":
+        return "<small style='color:#eab308;font-weight:bold'>⚠️ MEDIUM TILLID</small>"
+    else:
+        return "<small style='color:#16a34a;font-weight:bold'>✅ HØJ TILLID</small>"
+
+
+def _format_expected_return(exp_ret: Optional[float], reliability: str) -> str:
+    """Format forventet afkast med advarsel hvis lav tillid."""
+    if exp_ret is None:
+        return "?"
+    if reliability == "LOW":
+        return f"⚠️ {exp_ret:+.1f}%"
+    return f"{exp_ret:+.2f}%"
+
+
 def render_ml_summary_card(predictions_data: Dict, rule_based_rec: str = ""):
     """Kompakt summary card til top af Analyse-siden."""
     if "error" in predictions_data:
-        return  # Vis ikke fejl i compact mode
+        return
 
     predictions = predictions_data.get("predictions", {})
     if not predictions:
         return
 
-    # 180d er den mest pålidelige
     pred_180 = predictions.get(180, {})
     if "error" in pred_180:
         return
@@ -472,10 +577,10 @@ def render_ml_summary_card(predictions_data: Dict, rule_based_rec: str = ""):
     label = best_pred.get("label", "?")
     conf = best_pred.get("confidence", 0)
     exp_ret = best_pred.get("expected_return_%")
+    reliability = best_pred.get("reliability", "HIGH")
     color = get_label_color(label)
     emoji = get_label_emoji(label)
 
-    # Sammenlign med rule-based
     rule_buy = "KØB" in rule_based_rec
     rule_sell = "SÆLG" in rule_based_rec
     ml_buy = label == "BUY"
@@ -491,14 +596,19 @@ def render_ml_summary_card(predictions_data: Dict, rule_based_rec: str = ""):
         agreement = "🟡 Delvis"
         agree_color = "#eab308"
 
-    ret_str = f"{exp_ret:+.1f}%" if exp_ret is not None else "?"
+    ret_str = _format_expected_return(exp_ret, reliability)
+
+    # Tilføj reliability-info hvis ikke HIGH
+    rel_note = ""
+    if reliability != "HIGH":
+        rel_note = f" · {'🚨 LAV TILLID' if reliability == 'LOW' else '⚠️ Medium tillid'}"
 
     st.markdown(
         f"<div style='background:{color}15;padding:0.8rem 1.2rem;border-radius:10px;"
         f"border-left:5px solid {color};margin:0.5rem 0;display:flex;"
         f"justify-content:space-between;align-items:center;flex-wrap:wrap'>"
         f"<div>"
-        f"<small style='color:#888'>🤖 ML FORUDSIGELSE (180 dage · ⭐ mest pålidelig)</small><br>"
+        f"<small style='color:#888'>🤖 ML FORUDSIGELSE (180 dage · ⭐ mest pålidelig){rel_note}</small><br>"
         f"<b style='color:{color};font-size:1.1rem'>{emoji} {label}</b> "
         f"<span style='color:#aaa'>· {conf*100:.0f}% conf. · forventet afkast: <b>{ret_str}</b></span>"
         f"</div>"
@@ -534,6 +644,37 @@ def render_ml_full(predictions_data: Dict, rule_based_rec: str = "", rule_based_
         f"(Random Forest + XGBoost + LightGBM) forudsiger over 3 tidshorisonter."
     )
 
+    # ===== 🚨 RELIABILITY-ADVARSLER ØVERST =====
+    warnings_to_show = []
+    for h in [30, 90, 180]:
+        h_data = predictions.get(h, {})
+        if "error" in h_data:
+            continue
+        ens = h_data.get("ensemble", {})
+        rel = ens.get("reliability", "HIGH")
+        if rel == "LOW":
+            warnings_to_show.append({
+                "horizon": h,
+                "reliability": rel,
+                "reasons": ens.get("reliability_reasons", []),
+                "msg": ens.get("inconsistency_msg"),
+                "n_clipped": ens.get("n_regressors_clipped", 0),
+            })
+
+    if warnings_to_show:
+        warning_text = "**⚠️ ML-tillidsadvarsel:**\n\n"
+        for w in warnings_to_show:
+            warning_text += f"- **{w['horizon']}d horisont:** {' · '.join(w['reasons'])}\n"
+            if w.get("msg"):
+                warning_text += f"  - 💬 {w['msg']}\n"
+        warning_text += (
+            "\n💡 **Hvad betyder det?** ML-modellen har set features den ikke kender godt "
+            "(fx ekstreme værdier, ny markedssituation eller out-of-distribution data). "
+            "**Stol mere på rule-based score, fundamental analyse og news-sentiment** i denne sag. "
+            "ML-tallene er stadig vist nedenfor, men tag dem med et gran salt."
+        )
+        st.warning(warning_text)
+
     # ===== HORISONT-OVERSIGT =====
     horizon_info = {
         30: {"label": "Kort sigt", "icon": "⚡", "trust": "Lav (F1≈0.40)", "trust_color": "#ef4444"},
@@ -556,14 +697,40 @@ def render_ml_full(predictions_data: Dict, rule_based_rec: str = "", rule_based_
             conf = ens.get("confidence", 0)
             exp_ret = ens.get("expected_return_%")
             mae = ens.get("expected_return_mae")
+            reliability = ens.get("reliability", "HIGH")
+            n_clipped = ens.get("n_regressors_clipped", 0)
             color = get_label_color(label)
             emoji = get_label_emoji(label)
 
-            ret_str = f"{exp_ret:+.2f}%" if exp_ret is not None else "?"
+            ret_str = _format_expected_return(exp_ret, reliability)
             mae_str = f"± {mae:.2f}%" if mae is not None else ""
 
             border_size = "5px" if h == 180 else "3px"
             star = " ⭐" if h == 180 else ""
+
+            # Reliability badge
+            if reliability == "LOW":
+                rel_badge_html = (
+                    "<div style='background:#ef444422;padding:0.3rem;border-radius:6px;"
+                    "margin-top:0.4rem;border-left:3px solid #ef4444'>"
+                    "<small style='color:#ef4444'><b>🚨 LAV TILLID</b></small></div>"
+                )
+            elif reliability == "MEDIUM":
+                rel_badge_html = (
+                    "<div style='background:#eab30822;padding:0.3rem;border-radius:6px;"
+                    "margin-top:0.4rem;border-left:3px solid #eab308'>"
+                    "<small style='color:#eab308'><b>⚠️ MEDIUM TILLID</b></small></div>"
+                )
+            else:
+                rel_badge_html = ""
+
+            # Clipping note
+            clip_note = ""
+            if n_clipped > 0:
+                clip_note = (
+                    f"<br><small style='color:#ef4444;font-size:0.7rem'>"
+                    f"⚠️ {n_clipped} model(ler) ekstrapolerede</small>"
+                )
 
             st.markdown(
                 f"<div style='background:{color}15;padding:1.2rem;border-radius:12px;"
@@ -574,7 +741,9 @@ def render_ml_full(predictions_data: Dict, rule_based_rec: str = "", rule_based_
                 f"<div style='color:#aaa;font-size:0.9rem;margin:0.5rem 0'>"
                 f"Forventet: <b>{ret_str}</b><br>"
                 f"<small>{mae_str}</small>"
+                f"{clip_note}"
                 f"</div>"
+                f"{rel_badge_html}"
                 f"<div style='background:{h_info['trust_color']}22;padding:0.3rem;"
                 f"border-radius:6px;margin-top:0.5rem'>"
                 f"<small style='color:{h_info['trust_color']}'><b>{h_info['trust']}</b></small>"
@@ -593,6 +762,7 @@ def render_ml_full(predictions_data: Dict, rule_based_rec: str = "", rule_based_
     if pred_180 and "error" not in predictions.get(180, {}):
         ml_label = pred_180.get("label", "?")
         ml_conf = pred_180.get("confidence", 0)
+        ml_reliability = pred_180.get("reliability", "HIGH")
 
         rule_buy = "KØB" in rule_based_rec
         rule_sell = "SÆLG" in rule_based_rec
@@ -611,29 +781,56 @@ def render_ml_full(predictions_data: Dict, rule_based_rec: str = "", rule_based_
         )
 
         ml_color = get_label_color(ml_label)
+        rel_indicator = ""
+        if ml_reliability == "LOW":
+            rel_indicator = "<br><small style='color:#ef4444'>🚨 Lav tillid</small>"
+        elif ml_reliability == "MEDIUM":
+            rel_indicator = "<br><small style='color:#eab308'>⚠️ Medium tillid</small>"
+
         comp_cols[1].markdown(
             f"<div style='background:{ml_color}15;padding:1rem;border-radius:10px;"
             f"border-left:4px solid {ml_color}'>"
             f"<small style='color:#888'>🤖 ML MODEL (180d ensemble)</small>"
             f"<h3 style='margin:0.3rem 0;color:{ml_color}'>"
             f"{get_label_emoji(ml_label)} {ml_label}</h3>"
-            f"<div>Confidence: <b>{ml_conf*100:.0f}%</b></div>"
+            f"<div>Confidence: <b>{ml_conf*100:.0f}%</b>{rel_indicator}</div>"
             f"</div>",
             unsafe_allow_html=True
         )
 
         # Verdict
         st.markdown("#### 🎯 Verdict")
+
+        # Hvis ML har LAV tillid, advar brugeren før verdict
+        if ml_reliability == "LOW":
+            st.warning(
+                "🚨 **OBS: ML-modellen har LAV TILLID i denne forudsigelse.** "
+                "Verdict nedenfor er baseret på regler + ML, men ML-delen er upålidelig. "
+                "Læg mere vægt på rule-based score og fundamental analyse."
+            )
+
         if rule_buy and ml_buy:
-            st.success(
-                f"✅ **STÆRKT KØBSSIGNAL!** Både regler og ML er enige om KØB. "
-                f"Dette er en HØJ-CONFIDENCE situation. Overvej fuld position."
-            )
+            if ml_reliability == "HIGH":
+                st.success(
+                    f"✅ **STÆRKT KØBSSIGNAL!** Både regler og ML er enige om KØB. "
+                    f"Dette er en HØJ-CONFIDENCE situation. Overvej fuld position."
+                )
+            else:
+                st.info(
+                    f"🟢 **KØBSSIGNAL** (men ML har {ml_reliability.lower()} tillid). "
+                    f"Reglerne er klare, men stol mere på dem end ML her."
+                )
         elif rule_sell and ml_sell:
-            st.error(
-                f"🚨 **STÆRKT SALGSSIGNAL!** Både regler og ML er enige om SÆLG. "
-                f"Overvej at lukke positionen."
-            )
+            if ml_reliability == "HIGH":
+                st.error(
+                    f"🚨 **STÆRKT SALGSSIGNAL!** Både regler og ML er enige om SÆLG. "
+                    f"Overvej at lukke positionen."
+                )
+            else:
+                st.warning(
+                    f"🔴 **SALGSSIGNAL** (men ML har {ml_reliability.lower()} tillid). "
+                    f"Reglerne foreslår sælg — ML bekræfter, men med usikkerhed."
+                )
         elif rule_buy and ml_sell:
             st.warning(
                 f"⚠️ **MODSATTE SIGNALER!** Reglerne siger KØB, men ML siger SÆLG. "
@@ -721,7 +918,19 @@ def render_ml_full(predictions_data: Dict, rule_based_rec: str = "", rule_based_
             if "error" in h_data:
                 continue
 
-            st.markdown(f"#### 📅 {h} dages horisont")
+            ens = h_data.get("ensemble", {})
+            reliability = ens.get("reliability", "HIGH")
+            n_clipped = ens.get("n_regressors_clipped", 0)
+
+            header = f"#### 📅 {h} dages horisont"
+            if reliability != "HIGH":
+                header += f" · {_reliability_badge(reliability)}"
+            st.markdown(header, unsafe_allow_html=True)
+
+            if reliability != "HIGH":
+                reasons = ens.get("reliability_reasons", [])
+                if reasons:
+                    st.caption("**Reliability-issues:** " + " · ".join(reasons))
 
             ind_clf = h_data.get("individual_classifiers", {})
             if ind_clf:
@@ -745,17 +954,35 @@ def render_ml_full(predictions_data: Dict, rule_based_rec: str = "", rule_based_
                 st.caption("**Regressorer (forventet afkast):**")
                 reg_rows = []
                 for name, p in ind_reg.items():
+                    raw = p.get("raw_prediction")
+                    clipped = p.get("expected_return_%", 0)
+                    was_clipped = p.get("was_clipped", False)
+
+                    forventet_str = f"{clipped:+.2f}%"
+                    if was_clipped and raw is not None:
+                        forventet_str = f"⚠️ {clipped:+.2f}% (raw: {raw:+.0f}%)"
+
                     reg_rows.append({
                         "Model": name,
-                        "Forventet afkast": f"{p.get('expected_return_%', 0):+.2f}%",
+                        "Forventet afkast": forventet_str,
+                        "Clipped?": "🚨 JA" if was_clipped else "✅ Nej",
                         "MAE": f"±{p.get('mae', 0):.2f}%",
                     })
                 st.dataframe(pd.DataFrame(reg_rows), use_container_width=True, hide_index=True)
+
+                if n_clipped > 0:
+                    st.caption(
+                        f"⚠️ **{n_clipped} regressor(er) blev clipped** fordi de forudsagde "
+                        f"urealistiske afkast (uden for grænserne {REALISTIC_RETURN_BOUNDS.get(h, '?')}). "
+                        f"Det indikerer at modellen ekstrapolerer ud af training-distribution."
+                    )
 
     # ===== DISCLAIMER =====
     st.caption(
         "⚠️ **ML er IKKE perfekt!** F1=0.55-0.60 betyder modellen har ret ~55-60% af gangene. "
         "Brug ML som ÉN af flere signaler — IKKE som eneste beslutningsgrundlag. "
         "Kombinér altid med fundamental analyse, news, earnings og rule-based score. "
-        "Position sizing + stop-loss er essentielt."
+        "Position sizing + stop-loss er essentielt. "
+        "Når du ser **🚨 LAV TILLID**, betyder det at ML-modellen er usikker eller ekstrapolerer — "
+        "stol mere på rule-based delen i de tilfælde."
     )
