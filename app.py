@@ -2412,8 +2412,9 @@ elif st.session_state.active_view == "🥇 Metaller":
                             earnings_data=None,
                             pattern_bias=pattern_bias_m,
                             pattern_bullish_n=bull_n_m,
-                            pattern_bearish_n=bear_n_m,
+                            pattern_bearish_n=bearish_n_c,
                             dcf_upside=None,
+                            asset_class="crypto",  # 🆕
                         )
                         render_smart_verdict(verdict_m, m_symbol, m_info["longName"], m_price, "USD")
 
@@ -4095,10 +4096,11 @@ elif st.session_state.active_view == "📊 Analyse":
                 info=info,
                 sentiment_data=sentiment_for_verdict,
                 earnings_data=earnings_data,
-                pattern_bias=None,
-                pattern_bullish_n=0,
-                pattern_bearish_n=0,
+                pattern_bias=pattern_bias,
+                pattern_bullish_n=bullish_n,
+                pattern_bearish_n=bearish_n,
                 dcf_upside=dcf_upside_for_verdict,
+                asset_class="stock",  # 🆕
             )
             render_smart_verdict(verdict, ticker, company_name_temp, price, currency)
 
