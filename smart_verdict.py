@@ -17,6 +17,7 @@ def _safe_get(d, key, default=None):
     except (AttributeError, TypeError):
         return default
 
+
 def _get_asset_class_context(asset_class):
     """
     Returnerer asset-class specifik kontekst der påvirker hvordan
@@ -103,6 +104,7 @@ def _is_correction_vs_bear(hist, asset_class):
             return "normal", drawdown
     except Exception:
         return None, None
+
 
 def generate_smart_verdict(
     ticker, name, price, currency,
@@ -493,7 +495,7 @@ def generate_smart_verdict(
             if "stop" in adj.lower():
                 actions.append({"icon": "🛡️", "title": "Stop-loss justering", "text": adj})
 
-        elif "SÆLG" in final_recommendation:
+    elif "SÆLG" in final_recommendation:
         # 🆕 Asset-class specifik SÆLG-anbefaling
         ctx = _get_asset_class_context(asset_class)
         market_phase, dd = _is_correction_vs_bear(hist, asset_class)
@@ -557,8 +559,8 @@ def generate_smart_verdict(
         ticker, name, recommendation, final_recommendation,
         score, final_confidence, regime, pos_in_range,
         red_flags, yellow_flags, green_flags,
-        asset_class=asset_class,  # 🆕
-        hist=hist,                 # 🆕
+        asset_class=asset_class,
+        hist=hist,
     )
 
     return {
