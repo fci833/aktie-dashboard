@@ -116,6 +116,21 @@ try:
 except ImportError as e:
     print(f"⚠️ smart_verdict ikke tilgængelig: {e}")
     SMART_VERDICT_AVAILABLE = False
+# 🆕 METALS - ædelmetaller & råvarer
+try:
+    from metals_config import METALS_UNIVERSE, METALS_UNIVERSES, is_metal, get_metal_info
+    from metals_data import fetch_metal_data, fetch_metal_drivers
+    from metals_analysis import (
+        get_metal_indicators,
+        metals_overall_score,
+        metals_recommendation,
+        is_safe_haven_environment,
+        calculate_metal_targets,
+    )
+    METALS_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ metals ikke tilgængelig: {e}")
+    METALS_AVAILABLE = False
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -413,6 +428,7 @@ with st.sidebar:
 
 view_options = [
     "🏠 Hjem", "📊 Analyse", "🔎 Screener", "🪙 Krypto",
+    "🥇 Metaller",
     "📈 Track Record", "🔍 Søg ticker", "🔧 Diagnose"
 ]
 selected_view = st.radio(
@@ -1993,6 +2009,502 @@ elif st.session_state.active_view == "🔎 Screener":
                 st.success(f"Slettet {deleted} gamle snapshots")
                 time.sleep(1)
                 st.rerun()
+
+# ============ METALLER-VIEW ============
+
+elif st.session_state.active_view == "🥇 Metaller":
+    if not METALS_AVAILABLE:
+        st.error(
+            "❌ **Metals-modul ikke tilgængeligt.**\n\n"
+            "Tjek at `metals_config.py`, `metals_data.py` og `metals_analysis.py` "
+            "er gemt i samme mappe som `app.py`."
+        )
+    else:
+        st.subheader("🥇 Ædelmetaller & Råvarer")
+        st.caption("Guld · Sølv · Platin · Palladium · Mining-aktier · Industri-metaller")
+
+        # ===== MAKRO-OVERBLIK (safe haven detection) =====
+        with st.spinner("Henter makro-drivere..."):
+            drivers = fetch_metal_drivers()
+
+        safe_haven_active, safe_haven_signals = is_safe_haven_environment(drivers)
+
+        if safe_haven_active:
+            st.warning(
+                f"⚡ **SAFE HAVEN MILJØ AKTIVT:** " +
+                " · ".join(safe_haven_signals) +
+                " — historisk positivt for guld/sølv!"
+            )
+        else:
+            st.info("💡 **Normalt marked** — ingen særlig safe haven-efterspørgsel lige nu.")
+
+        # Makro-widget
+        if drivers:
+            st.markdown("### 📊 Makro-drivere (påvirker metaller)")
+            drv_cols = st.columns(5)
+
+            def _driver_metric(col, key, drivers):
+                d = drivers.get(key)
+                if not d:
+                    col.metric(key, "N/A")
+                    return
+                val = d.get("current", 0)
+                ch = d.get("change_1m", 0)
+                emoji = "🟢" if ch > 0 else "🔴" if ch < 0 else "🟡"
+
+                if key == "TNX":
+                    val_str = f"{val:.2f}%"
+                elif key == "VIX":
+                    val_str = f"{val:.1f}"
+                else:
+                    val_str = f"{val:,.2f}"
+
+                col.metric(f"{emoji} {d['name']}", val_str, f"{ch:+.1f}% (30d)")
+
+            _driver_metric(drv_cols[0], "DXY", drivers)
+            _driver_metric(drv_cols[1], "TNX", drivers)
+            _driver_metric(drv_cols[2], "VIX", drivers)
+            _driver_metric(drv_cols[3], "OIL", drivers)
+            _driver_metric(drv_cols[4], "SPY", drivers)
+
+            st.caption(
+                "💡 **Nøgle-korrelationer:** Guld ⇅ USD (invers) · "
+                "Guld ⇅ US renter (invers) · Guld ↔ VIX (positiv i risk-off)"
+            )
+
+        st.markdown("---")
+
+        # ===== METAL-VÆLGER =====
+        st.markdown("### 🎯 Vælg metal til analyse")
+
+        m_input_method = st.radio(
+            "Vælg metode:",
+            ["📋 Vælg fra liste", "✏️ Skriv ticker selv"],
+            horizontal=True,
+            key="metal_input_method"
+        )
+
+        if m_input_method == "📋 Vælg fra liste":
+            mc1, mc2 = st.columns([3, 1])
+            metal_choice = mc1.selectbox(
+                "Vælg metal",
+                options=list(METALS_UNIVERSE.keys()),
+                format_func=lambda x: f"{x} - {METALS_UNIVERSE[x]['name']} ({METALS_UNIVERSE[x]['category']})",
+                key="metal_select",
+            )
+            if mc2.button("🔍 Fuld Analyse", type="primary", use_container_width=True, key="btn_metal_analyze_list"):
+                st.session_state["metal_analyzed"] = metal_choice
+        else:
+            mc1, mc2 = st.columns([3, 1])
+            custom_metal = mc1.text_input(
+                "🥇 Ticker (fx GC=F, GLD, NEM)",
+                value="", key="custom_metal_ticker", placeholder="GLD"
+            ).strip().upper()
+            if mc2.button("🔍 Analysér", type="primary", use_container_width=True, key="btn_metal_analyze_custom"):
+                if custom_metal:
+                    st.session_state["metal_analyzed"] = custom_metal
+
+        # Populære knapper
+        st.markdown("##### 🔥 Populære (klik for instant analyse):")
+        popular_metals = ["GLD", "SLV", "GC=F", "SI=F", "GDX", "NEM", "PPLT", "HG=F"]
+        pop_cols = st.columns(len(popular_metals))
+        for i, sym in enumerate(popular_metals):
+            if pop_cols[i].button(sym, key=f"pop_metal_{sym}", use_container_width=True):
+                st.session_state["metal_analyzed"] = sym
+                st.rerun()
+
+        st.markdown("---")
+
+        # ===== ANALYSE =====
+        if st.session_state.get("metal_analyzed"):
+            m_symbol = st.session_state["metal_analyzed"]
+
+            with st.spinner(f"Henter data for {m_symbol}..."):
+                mdata = fetch_metal_data(m_symbol)
+
+            if mdata is None:
+                st.error(f"❌ Kunne ikke hente data for **{m_symbol}**")
+                col_info, col_actions = st.columns([2, 1])
+                with col_info:
+                    st.info(
+                        "💡 **Mulige årsager:**\n"
+                        "- Ticker findes ikke i vores metal-univers\n"
+                        "- Yahoo Finance er midlertidigt nede\n"
+                        "- Ugyldigt symbol"
+                    )
+                with col_actions:
+                    if st.button("🔄 Ryd cache & prøv igen", use_container_width=True, key="retry_metal"):
+                        st.cache_data.clear()
+                        st.rerun()
+                    if st.button("🗑️ Nulstil", use_container_width=True, key="reset_metal"):
+                        st.session_state.pop("metal_analyzed", None)
+                        st.rerun()
+            else:
+                m_info = mdata["info"]
+                m_hist = mdata["hist"]
+                m_price = m_info["currentPrice"]
+                m_meta = mdata["meta"]
+
+                st.success(f"✅ Data fra: **{mdata['source']}** · {len(m_hist)} dage")
+
+                # Watchlist
+                if m_symbol not in st.session_state.watchlist:
+                    st.session_state.watchlist.append(m_symbol)
+
+                # ===== HEADER =====
+                st.markdown(f"## {m_info['longName']} ({m_symbol})")
+                st.caption(
+                    f"🏷️ {m_meta['category']} · "
+                    f"🔧 {m_meta['type'].upper()} · "
+                    f"💱 {m_info['unit']} · "
+                    f"📅 {m_hist.index[0].date()} → {m_hist.index[-1].date()}"
+                )
+                if m_meta.get("description"):
+                    st.caption(f"ℹ️ _{m_meta['description']}_")
+
+                # ===== PRIS-KORT =====
+                change_1d = m_info.get("change_1d", 0) or 0
+                mc = st.columns(6)
+
+                change_color = "#16a34a" if change_1d >= 0 else "#ef4444"
+                mc[0].markdown(
+                    f"<div style='background:#0099ff15;padding:0.6rem;border-radius:8px;"
+                    f"border-left:4px solid #0099ff'>"
+                    f"<small style='color:#888'>PRIS NU</small>"
+                    f"<div style='font-size:1.4rem;font-weight:bold;margin:0.2rem 0'>"
+                    f"${m_price:,.2f}</div>"
+                    f"<small style='color:{change_color}'>{change_1d:+.2f}%</small>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+                # 52-uger range
+                low_52 = m_info.get("fiftyTwoWeekLow")
+                high_52 = m_info.get("fiftyTwoWeekHigh")
+                if low_52 and high_52 and high_52 > low_52:
+                    pos_pct = ((m_price - low_52) / (high_52 - low_52)) * 100
+                    pos_color = "#16a34a" if pos_pct < 30 else "#ef4444" if pos_pct > 80 else "#eab308"
+                    mc[1].markdown(
+                        f"<div style='background:{pos_color}22;padding:0.6rem;border-radius:8px;"
+                        f"border-left:4px solid {pos_color}'>"
+                        f"<small style='color:#888'>52W RANGE</small>"
+                        f"<div style='font-size:1rem;font-weight:bold;margin:0.2rem 0'>"
+                        f"${low_52:.2f} - ${high_52:.2f}</div>"
+                        f"<small>{pos_pct:.0f}% i range</small>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+
+                mom_labels = [
+                    ("1w", m_info.get("change_1w")),
+                    ("1m", m_info.get("change_1m")),
+                    ("3m", m_info.get("change_3m")),
+                    ("1y", m_info.get("change_1y")),
+                ]
+                for i, (label, val) in enumerate(mom_labels):
+                    if val is not None:
+                        mc[i + 2].metric(label, f"{val:+.1f}%")
+
+                # ===== SCORING =====
+                with st.spinner("Beregner scores..."):
+                    m_indicators = get_metal_indicators(m_hist)
+                    scores = metals_overall_score(
+                        m_symbol, m_info, m_hist, m_indicators, drivers
+                    )
+
+                overall = scores["overall"]
+                rec, color = metals_recommendation(overall, safe_haven_active)
+
+                # Gem prediction i track record
+                if TRACK_RECORD_AVAILABLE:
+                    safe_save_prediction(
+                        ticker=m_symbol,
+                        name=m_info["longName"],
+                        asset_class="metal",
+                        price=float(m_price),
+                        score=float(overall),
+                        recommendation=rec,
+                        f_score=float(scores["macro"]),
+                        t_score=float(scores["technical"]),
+                        regime="SAFE_HAVEN" if safe_haven_active else "NORMAL",
+                        sector=m_meta["category"],
+                        currency="USD",
+                    )
+
+                st.markdown("---")
+
+                # ===== TARGETS =====
+                targets_m = calculate_metal_targets(m_hist, m_price)
+
+                # ===== SMART AI VERDICT =====
+                if SMART_VERDICT_AVAILABLE:
+                    pattern_bias_m, bull_n_m, bear_n_m, pattern_sigs_m = analyze_pattern_bias(
+                        m_indicators, m_price
+                    )
+
+                    macro_sent_norm = (scores["macro"] - 50) / 50
+                    metal_sentiment = {
+                        "article_count": 5,
+                        "sentiment_score": macro_sent_norm,
+                        "label": (
+                            "Bullish" if macro_sent_norm > 0.3 else
+                            "Bearish" if macro_sent_norm < -0.3 else
+                            "Neutral"
+                        ),
+                    }
+
+                    metal_regime = "SAFE_HAVEN" if safe_haven_active else "NORMAL"
+                    metal_regime_conf = 75 if safe_haven_active else 60
+
+                    try:
+                        verdict_m = generate_smart_verdict(
+                            ticker=m_symbol,
+                            name=m_info["longName"],
+                            price=m_price,
+                            currency="USD",
+                            score=overall,
+                            recommendation=rec,
+                            regime=metal_regime,
+                            regime_confidence=float(metal_regime_conf),
+                            f_score=scores["macro"],
+                            t_score=scores["technical"],
+                            targets=targets_m,
+                            hist=m_hist,
+                            info=m_info,
+                            sentiment_data=metal_sentiment,
+                            earnings_data=None,
+                            pattern_bias=pattern_bias_m,
+                            pattern_bullish_n=bull_n_m,
+                            pattern_bearish_n=bear_n_m,
+                            dcf_upside=None,
+                        )
+                        render_smart_verdict(verdict_m, m_symbol, m_info["longName"], m_price, "USD")
+
+                        if pattern_sigs_m:
+                            with st.expander(f"🔍 Tekniske patterns brugt i AI-vurdering ({pattern_bias_m})"):
+                                bias_color = (
+                                    "#16a34a" if pattern_bias_m == "BULLISH"
+                                    else "#ef4444" if pattern_bias_m == "BEARISH"
+                                    else "#eab308"
+                                )
+                                st.markdown(
+                                    f"<div style='background:{bias_color}22;padding:0.8rem;"
+                                    f"border-radius:8px;border-left:4px solid {bias_color};margin-bottom:0.8rem'>"
+                                    f"<b>Overall bias:</b> <span style='color:{bias_color}'>{pattern_bias_m}</span> · "
+                                    f"Bullish: {bull_n_m} · Bearish: {bear_n_m}"
+                                    f"</div>",
+                                    unsafe_allow_html=True
+                                )
+                                for sig in pattern_sigs_m:
+                                    st.caption(sig)
+
+                        if verdict_m["final_recommendation"] != verdict_m["original_recommendation"]:
+                            rec = verdict_m["final_recommendation"]
+                            color = verdict_m["verdict_color"]
+                    except Exception as e:
+                        if st.session_state.get("dev_mode", False):
+                            st.warning(f"⚠️ Smart verdict fejlede: {e}")
+
+                st.markdown("---")
+
+                # ===== SCORE CARDS =====
+                st.markdown("### 📊 Score-oversigt")
+                sc = st.columns(4)
+                sc[0].markdown(
+                    f"<div style='background:{color}22;padding:1rem;border-radius:10px;"
+                    f"border-left:4px solid {color};text-align:center'>"
+                    f"<h3 style='color:{color};margin:0'>{rec}</h3>"
+                    f"<h1 style='margin:0.3rem 0'>{overall:.0f}/100</h1>"
+                    f"<small>Samlet score</small></div>",
+                    unsafe_allow_html=True,
+                )
+                sc[1].metric("🔧 Teknisk", f"{scores['technical']:.0f}/100", "60% vægt")
+                sc[2].metric("📊 Makro", f"{scores['macro']:.0f}/100", "40% vægt")
+                sc[3].metric(
+                    "🛡️ Regime",
+                    "SAFE HAVEN" if safe_haven_active else "NORMAL",
+                    "Guld-favorabel" if safe_haven_active else "Neutral"
+                )
+
+                # ===== TARGETS =====
+                if targets_m:
+                    st.markdown("---")
+                    st.markdown("### 💰 Kursniveauer")
+                    tg = st.columns(5)
+
+                    def _target_card(col, label, val, curr_price, color_c, sub=""):
+                        pct = (val / curr_price - 1) * 100 if curr_price else 0
+                        col.markdown(
+                            f"<div style='background:{color_c}22;padding:0.8rem;border-radius:10px;"
+                            f"border-left:4px solid {color_c};text-align:center'>"
+                            f"<small>{label}</small>"
+                            f"<h4 style='margin:0.3rem 0'>${val:,.2f}</h4>"
+                            f"<small>{pct:+.1f}% {sub}</small>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+
+                    _target_card(tg[0], "🟢 KØB ZONE", targets_m["buy_low"], m_price, "#16a34a")
+                    _target_card(tg[1], "📍 NUVÆRENDE", m_price, m_price, "#0099ff")
+                    _target_card(tg[2], "🛑 STOP LOSS", targets_m["stop_loss"], m_price, "#ef4444", "(2.5x ATR)")
+                    _target_card(tg[3], "🎯 KORT SIGT", targets_m["target_short"], m_price, "#eab308")
+                    _target_card(tg[4], "🚀 LANG SIGT", targets_m["target_long"], m_price, "#22c55e")
+
+                # ===== TABS =====
+                st.markdown("---")
+                m_tabs = st.tabs([
+                    "📊 Charts", "🔧 Indikatorer", "📉 Risiko",
+                    "🔍 Score breakdown", "📋 Detaljer"
+                ])
+
+                # ---- Charts ----
+                with m_tabs[0]:
+                    df_chart = m_indicators.tail(756)
+                    fig = make_subplots(
+                        rows=3, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.05,
+                        subplot_titles=("Pris + SMA + Bollinger", "RSI", "MACD")
+                    )
+                    fig.add_trace(go.Candlestick(
+                        x=df_chart.index, open=df_chart["Open"], high=df_chart["High"],
+                        low=df_chart["Low"], close=df_chart["Close"], name="Pris"
+                    ), 1, 1)
+                    if "SMA50" in df_chart.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_chart.index, y=df_chart["SMA50"], name="SMA50",
+                            line=dict(color="orange")
+                        ), 1, 1)
+                    if "SMA200" in df_chart.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_chart.index, y=df_chart["SMA200"], name="SMA200",
+                            line=dict(color="purple")
+                        ), 1, 1)
+                    if "BB_high" in df_chart.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_chart.index, y=df_chart["BB_high"], name="BB Upper",
+                            line=dict(color="rgba(255,255,255,0.3)", dash="dot")
+                        ), 1, 1)
+                        fig.add_trace(go.Scatter(
+                            x=df_chart.index, y=df_chart["BB_low"], name="BB Lower",
+                            line=dict(color="rgba(255,255,255,0.3)", dash="dot"),
+                            fill="tonexty", fillcolor="rgba(255,255,255,0.05)"
+                        ), 1, 1)
+                    if targets_m:
+                        fig.add_hline(y=targets_m["buy_high"], line_dash="dot", line_color="#16a34a",
+                                      annotation_text="Køb", row=1, col=1)
+                        fig.add_hline(y=targets_m["stop_loss"], line_dash="dot", line_color="#ef4444",
+                                      annotation_text="Stop", row=1, col=1)
+                        fig.add_hline(y=targets_m["target_long"], line_dash="dot", line_color="#22c55e",
+                                      annotation_text="Mål", row=1, col=1)
+                    if "RSI" in df_chart.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_chart.index, y=df_chart["RSI"], name="RSI",
+                            line=dict(color="#00d4aa")
+                        ), 2, 1)
+                        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+                        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+                    if "MACD" in df_chart.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_chart.index, y=df_chart["MACD"], name="MACD",
+                            line=dict(color="#0099ff")
+                        ), 3, 1)
+                        fig.add_trace(go.Scatter(
+                            x=df_chart.index, y=df_chart["MACD_signal"], name="Signal",
+                            line=dict(color="orange")
+                        ), 3, 1)
+                    fig.update_layout(
+                        height=800, xaxis_rangeslider_visible=False,
+                        template="plotly_dark",
+                        title=f"{m_symbol} - Teknisk analyse"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                # ---- Indikatorer ----
+                with m_tabs[1]:
+                    last = m_indicators.iloc[-1]
+                    ic = st.columns(4)
+                    ic[0].metric("RSI", f"{last['RSI']:.1f}" if pd.notna(last.get("RSI")) else "-")
+                    ic[1].metric("MACD", f"{last['MACD']:.4f}" if pd.notna(last.get("MACD")) else "-")
+                    ic[2].metric("ATR", f"${last['ATR']:.2f}" if pd.notna(last.get("ATR")) else "-")
+                    if pd.notna(last.get("ADX")):
+                        ic[3].metric("ADX", f"{last['ADX']:.1f}")
+
+                    ic2 = st.columns(3)
+                    ic2[0].metric("SMA20", f"${last['SMA20']:.2f}" if pd.notna(last.get("SMA20")) else "-")
+                    ic2[1].metric("SMA50", f"${last['SMA50']:.2f}" if pd.notna(last.get("SMA50")) else "-")
+                    ic2[2].metric("SMA200", f"${last['SMA200']:.2f}" if pd.notna(last.get("SMA200")) else "-")
+
+                # ---- Risiko ----
+                with m_tabs[2]:
+                    try:
+                        returns = m_hist["Close"].pct_change().dropna()
+                        if len(returns) >= 30:
+                            ann_r = returns.mean() * 252
+                            ann_v = returns.std() * np.sqrt(252)
+                            sharpe = ann_r / ann_v if ann_v > 0 else 0
+
+                            cum = (1 + returns).cumprod()
+                            dd = (cum / cum.cummax() - 1)
+                            max_dd = dd.min()
+
+                            rc = st.columns(4)
+                            rc[0].metric("Ann. afkast", f"{ann_r*100:.1f}%")
+                            rc[1].metric("Ann. vol", f"{ann_v*100:.1f}%")
+                            rc[2].metric("Sharpe", f"{sharpe:.2f}")
+                            rc[3].metric("Max DD", f"{max_dd*100:.1f}%")
+
+                            fig_dd = go.Figure(go.Scatter(
+                                x=dd.index, y=dd * 100,
+                                fill="tozeroy", line=dict(color="#ef4444")
+                            ))
+                            fig_dd.update_layout(template="plotly_dark", height=350, title="Drawdown %")
+                            st.plotly_chart(fig_dd, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Risk metrics fejlede: {e}")
+
+                # ---- Score breakdown ----
+                with m_tabs[3]:
+                    bt = st.tabs(["🔧 Teknisk", "📊 Makro"])
+                    for tab, key in zip(bt, ["technical", "macro"]):
+                        with tab:
+                            details = scores["details"][key]
+                            if details:
+                                df_d = pd.DataFrame(details)
+                                fig_d = px.bar(
+                                    df_d, x="impact", y="label", orientation="h",
+                                    color="impact", color_continuous_scale="RdYlGn"
+                                )
+                                fig_d.update_layout(template="plotly_dark", height=350, showlegend=False)
+                                st.plotly_chart(fig_d, use_container_width=True)
+                                st.dataframe(df_d, use_container_width=True, hide_index=True)
+                            else:
+                                st.info(f"Ingen {key}-detaljer")
+
+                # ---- Detaljer ----
+                with m_tabs[4]:
+                    det_data = [
+                        {"Metric": "Symbol", "Værdi": m_symbol},
+                        {"Metric": "Navn", "Værdi": m_info["longName"]},
+                        {"Metric": "Kategori", "Værdi": m_meta["category"]},
+                        {"Metric": "Type", "Værdi": m_meta["type"].upper()},
+                        {"Metric": "Enhed", "Værdi": m_info["unit"]},
+                        {"Metric": "Nuværende pris", "Værdi": f"${m_price:,.2f}"},
+                        {"Metric": "52w high", "Værdi": f"${high_52:,.2f}" if high_52 else "-"},
+                        {"Metric": "52w low", "Værdi": f"${low_52:,.2f}" if low_52 else "-"},
+                        {"Metric": "1-års afkast", "Værdi": f"{m_info.get('change_1y', 0):+.1f}%"},
+                        {"Metric": "3-års afkast", "Værdi": f"{m_info.get('change_3y', 0):+.1f}%"},
+                    ]
+                    if m_info.get("marketCap"):
+                        det_data.append({
+                            "Metric": "Market Cap",
+                            "Værdi": f"${m_info['marketCap']/1e9:.2f}B"
+                        })
+                    st.dataframe(pd.DataFrame(det_data), use_container_width=True, hide_index=True)
+
+                    if m_meta.get("description"):
+                        st.markdown(f"### ℹ️ Om {m_symbol}")
+                        st.write(m_meta["description"])
+
                 # ============ KRYPTO-VIEW ============
 
 elif st.session_state.active_view == "🪙 Krypto":
@@ -3104,6 +3616,13 @@ elif st.session_state.active_view == "📊 Analyse":
             st.session_state["crypto_analyzed"] = norm
             st.session_state.active_view = "🪙 Krypto"
             st.rerun()
+
+    # 🆕 Metal auto-redirect
+    if METALS_AVAILABLE and is_metal(ticker):
+        st.info(f"🥇 **{ticker}** er et metal. Skifter til **Metaller-fanen**...")
+        st.session_state["metal_analyzed"] = ticker.upper()
+        st.session_state.active_view = "🥇 Metaller"
+        st.rerun()
 
     _fetch_start = time.time()
     with st.spinner(f"Henter data for {ticker}..."):
