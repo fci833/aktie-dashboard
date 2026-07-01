@@ -335,6 +335,109 @@ def sanity_check_currency(ticker, info, price):
 
     return correct_currency, False, None
 
+def analyze_pattern_bias(df_indicators, price):
+    """
+    Hurtig pattern-bias analyse baseret på technical indicators.
+    Returnerer: (bias, bullish_count, bearish_count, signals)
+    """
+    if df_indicators is None or df_indicators.empty or len(df_indicators) < 50:
+        return "NEUTRAL", 0, 0, []
+
+    bullish = 0
+    bearish = 0
+    signals = []
+
+    try:
+        last = df_indicators.iloc[-1]
+
+        # 1. SMA trend
+        sma50 = last.get("SMA50")
+        sma200 = last.get("SMA200")
+        if pd.notna(sma50) and pd.notna(sma200) and price:
+            if price > sma50 > sma200:
+                bullish += 2
+                signals.append("✅ Pris > SMA50 > SMA200 (stærk uptrend)")
+            elif price < sma50 < sma200:
+                bearish += 2
+                signals.append("❌ Pris < SMA50 < SMA200 (downtrend)")
+            elif price > sma50:
+                bullish += 1
+                signals.append("✅ Pris over SMA50")
+            elif price < sma50:
+                bearish += 1
+                signals.append("❌ Pris under SMA50")
+
+        # 2. RSI
+        rsi = last.get("RSI")
+        if pd.notna(rsi):
+            if rsi < 30:
+                bullish += 1
+                signals.append(f"✅ RSI oversold ({rsi:.0f}) — buy zone")
+            elif rsi > 70:
+                bearish += 1
+                signals.append(f"❌ RSI overbought ({rsi:.0f}) — caution")
+
+        # 3. MACD
+        macd = last.get("MACD")
+        macd_sig = last.get("MACD_signal")
+        if pd.notna(macd) and pd.notna(macd_sig):
+            if macd > macd_sig and macd > 0:
+                bullish += 1
+                signals.append("✅ MACD bullish crossover")
+            elif macd < macd_sig and macd < 0:
+                bearish += 1
+                signals.append("❌ MACD bearish crossover")
+
+        # 4. ADX (trend strength)
+        adx = last.get("ADX")
+        if pd.notna(adx) and adx > 25:
+            if bullish > bearish:
+                bullish += 1
+                signals.append(f"✅ Stærk trend (ADX={adx:.0f}) bekræfter bullish")
+            elif bearish > bullish:
+                bearish += 1
+                signals.append(f"❌ Stærk trend (ADX={adx:.0f}) bekræfter bearish")
+
+        # 5. Bollinger Bands position
+        bb_high = last.get("BB_high")
+        bb_low = last.get("BB_low")
+        if pd.notna(bb_high) and pd.notna(bb_low) and price:
+            bb_range = bb_high - bb_low
+            if bb_range > 0:
+                bb_pos = (price - bb_low) / bb_range * 100
+                if bb_pos > 95:
+                    bearish += 1
+                    signals.append(f"❌ Pris over BB upper ({bb_pos:.0f}%) — overstretched")
+                elif bb_pos < 5:
+                    bullish += 1
+                    signals.append(f"✅ Pris under BB lower ({bb_pos:.0f}%) — oversold bounce mulig")
+
+        # 6. Recent momentum (sidste 20 dage)
+        if len(df_indicators) >= 20:
+            recent_close = df_indicators["Close"].tail(20)
+            if recent_close.iloc[0] > 0:
+                momentum = (recent_close.iloc[-1] / recent_close.iloc[0] - 1) * 100
+                if momentum > 10:
+                    bullish += 1
+                    signals.append(f"✅ 20-dages momentum +{momentum:.1f}%")
+                elif momentum < -10:
+                    bearish += 1
+                    signals.append(f"❌ 20-dages momentum {momentum:.1f}%")
+
+    except Exception:
+        pass
+
+    # Bestem overall bias
+    diff = bullish - bearish
+    if diff >= 3:
+        bias = "BULLISH"
+    elif diff <= -3:
+        bias = "BEARISH"
+    else:
+        bias = "NEUTRAL"
+
+    return bias, bullish, bearish, signals
+
 # ============ AUTOMATISK TRACK-RECORD UPDATE (kører én gang per session) ============
 
 if TRACK_RECORD_AVAILABLE and not st.session_state.track_record_initialized:
