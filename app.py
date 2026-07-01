@@ -258,6 +258,68 @@ def add_to_search_history(ticker):
     st.session_state.search_history = history[:10]
 
 
+def get_correct_currency(ticker, info, price=None):
+    """
+    Overrider forkert currency-info fra API baseret på ticker-suffix.
+    """
+    if not ticker:
+        return info.get("currency", "USD") if info else "USD"
+
+    ticker_upper = ticker.upper().strip()
+
+    suffix_map = {
+        ".CO": "DKK",
+        ".DE": "EUR", ".F": "EUR", ".BE": "EUR",
+        ".AS": "EUR", ".PA": "EUR", ".MI": "EUR",
+        ".MC": "EUR", ".BR": "EUR", ".LS": "EUR",
+        ".HE": "EUR", ".VI": "EUR", ".IR": "EUR",
+        ".OL": "NOK",
+        ".ST": "SEK",
+        ".SW": "CHF", ".VX": "CHF",
+        ".L": "GBp",
+        ".TO": "CAD", ".V": "CAD", ".NE": "CAD",
+        ".HK": "HKD",
+        ".T": "JPY", ".JP": "JPY",
+        ".SS": "CNY", ".SZ": "CNY",
+        ".AX": "AUD",
+        ".SA": "BRL",
+        ".MX": "MXN",
+        ".JO": "ZAR",
+        ".SI": "SGD",
+        ".KS": "KRW", ".KQ": "KRW",
+        ".BO": "INR", ".NS": "INR",
+        ".TW": "TWD",
+    }
+
+    for suffix, currency in suffix_map.items():
+        if ticker_upper.endswith(suffix):
+            return currency
+
+    # Ingen suffix = US-listet (inkl. ADR'er som NVO, ASML, TSM)
+    return "USD"
+
+
+def sanity_check_currency(ticker, info, price):
+    """
+    Tjekker om API's currency stemmer med ticker-suffix.
+    Returnerer (corrected_currency, was_corrected, warning_msg)
+    """
+    if not info:
+        return "USD", False, None
+
+    api_currency = info.get("currency", "USD")
+    correct_currency = get_correct_currency(ticker, info, price)
+
+    if api_currency != correct_currency:
+        warning = (
+            f"⚠️ **API returnerede forkert valuta:** "
+            f"'{api_currency}' → korrekt er '{correct_currency}' "
+            f"baseret på ticker-suffix. Overskrevet automatisk."
+        )
+        return correct_currency, True, warning
+
+    return correct_currency, False, None
+
 # ============ AUTOMATISK TRACK-RECORD UPDATE (kører én gang per session) ============
 
 if TRACK_RECORD_AVAILABLE and not st.session_state.track_record_initialized:
@@ -3072,6 +3134,20 @@ elif st.session_state.active_view == "📊 Analyse":
 
     info = data["info"]
     hist = data["hist"]
+
+    # 🆕 Currency sanity check + auto-correct
+    price_temp = info.get("currentPrice")
+    if price_temp is None and not hist.empty:
+        price_temp = float(hist["Close"].iloc[-1])
+
+    corrected_currency, was_corrected, currency_warning = sanity_check_currency(
+        ticker, info, price_temp
+    )
+
+    if was_corrected:
+        info["currency"] = corrected_currency
+        if st.session_state.get("dev_mode", False):
+            st.info(currency_warning)
 
     if ticker not in st.session_state.watchlist:
         st.session_state.watchlist.append(ticker)
