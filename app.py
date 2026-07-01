@@ -2207,12 +2207,46 @@ elif st.session_state.active_view == "🥇 Metaller":
                 if custom_metal:
                     st.session_state["metal_analyzed"] = custom_metal
 
-        # Populære knapper
-        st.markdown("##### 🔥 Populære (klik for instant analyse):")
-        popular_metals = ["GLD", "SLV", "GC=F", "SI=F", "GDX", "NEM", "PPLT", "HG=F"]
-        pop_cols = st.columns(len(popular_metals))
-        for i, sym in enumerate(popular_metals):
-            if pop_cols[i].button(sym, key=f"pop_metal_{sym}", use_container_width=True):
+                # ===== Populære knapper - opdelt efter type =====
+        st.markdown("##### 🥇 FYSISK SPOT-PRIS (den ægte metal-pris):")
+        phys_cols = st.columns(5)
+        physical_metals = [
+            ("GC=F", "🥇 Guld"),
+            ("SI=F", "🥈 Sølv"),
+            ("PL=F", "🔩 Platin"),
+            ("PA=F", "⚙️ Palladium"),
+            ("HG=F", "🏭 Kobber"),
+        ]
+        for i, (sym, label) in enumerate(physical_metals):
+            if phys_cols[i].button(label, key=f"pop_phys_{sym}", use_container_width=True):
+                st.session_state["metal_analyzed"] = sym
+                st.rerun()
+
+        st.markdown("##### 📊 ETF'er (nemmest at handle via broker):")
+        etf_cols = st.columns(5)
+        etf_metals = [
+            ("GLD", "GLD"),
+            ("IAU", "IAU"),
+            ("SLV", "SLV"),
+            ("PPLT", "PPLT"),
+            ("PHYS", "PHYS"),
+        ]
+        for i, (sym, label) in enumerate(etf_metals):
+            if etf_cols[i].button(label, key=f"pop_etf_{sym}", use_container_width=True):
+                st.session_state["metal_analyzed"] = sym
+                st.rerun()
+
+        st.markdown("##### ⛏️ Mining-aktier (indirekte, geared eksponering):")
+        min_cols = st.columns(5)
+        mining_metals = [
+            ("GDX", "GDX"),
+            ("GDXJ", "GDXJ"),
+            ("NEM", "NEM"),
+            ("GOLD", "GOLD"),
+            ("FNV", "FNV"),
+        ]
+        for i, (sym, label) in enumerate(mining_metals):
+            if min_cols[i].button(label, key=f"pop_min_{sym}", use_container_width=True):
                 st.session_state["metal_analyzed"] = sym
                 st.rerun()
 
