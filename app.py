@@ -2843,6 +2843,97 @@ elif st.session_state.active_view == "🪙 Krypto":
                 sc[3].metric("💬 Sentiment", f"{scores['sentiment']:.0f}/100", "20% vægt")
                 sc[4].metric("👨‍💻 Developer", f"{scores['developer']:.0f}/100", "15% vægt")
 
+                # ============ 🆕 SMART AI VERDICT (CRYPTO) ============
+                if SMART_VERDICT_AVAILABLE:
+                    st.markdown("---")
+
+                    # Pattern bias for krypto
+                    df_ind_for_pattern = crypto_indicators(hist)
+                    pattern_bias_c, bull_n_c, bear_n_c, pattern_sigs_c = analyze_pattern_bias(
+                        df_ind_for_pattern, price
+                    )
+
+                    # Targets til verdict
+                    targets_for_verdict_c = crypto_price_targets(hist, price, scores)
+
+                    # Sentiment for krypto (baseret på scores)
+                    sentiment_norm = (scores["sentiment"] - 50) / 50
+                    crypto_sentiment_verdict = {
+                        "article_count": 5,
+                        "sentiment_score": sentiment_norm,
+                        "label": (
+                            "Bullish" if sentiment_norm > 0.3 else
+                            "Bearish" if sentiment_norm < -0.3 else
+                            "Neutral"
+                        ),
+                    }
+
+                    # Bestem crypto regime
+                    crypto_regime_c = (
+                        "BULL" if scores["market"] >= 60 else
+                        "BEAR" if scores["market"] < 40 else
+                        "SIDEWAYS"
+                    )
+
+                    try:
+                        verdict_crypto = generate_smart_verdict(
+                            ticker=symbol,
+                            name=info.get("longName", symbol),
+                            price=price,
+                            currency="USD",
+                            score=scores["overall"],
+                            recommendation=rec,
+                            regime=crypto_regime_c,
+                            regime_confidence=70.0,
+                            f_score=scores["market"],
+                            t_score=scores["technical"],
+                            targets=targets_for_verdict_c,
+                            hist=hist,
+                            info=info,
+                            sentiment_data=crypto_sentiment_verdict,
+                            earnings_data=None,
+                            pattern_bias=pattern_bias_c,
+                            pattern_bullish_n=bull_n_c,
+                            pattern_bearish_n=bear_n_c,
+                            dcf_upside=None,
+                            asset_class="crypto",
+                        )
+                        render_smart_verdict(
+                            verdict_crypto, symbol,
+                            info.get("longName", symbol), price, "USD"
+                        )
+
+                        if pattern_sigs_c:
+                            with st.expander(f"🔍 Tekniske patterns brugt i AI-vurdering ({pattern_bias_c})"):
+                                bias_color = (
+                                    "#16a34a" if pattern_bias_c == "BULLISH"
+                                    else "#ef4444" if pattern_bias_c == "BEARISH"
+                                    else "#eab308"
+                                )
+                                st.markdown(
+                                    f"<div style='background:{bias_color}22;padding:0.8rem;"
+                                    f"border-radius:8px;border-left:4px solid {bias_color};"
+                                    f"margin-bottom:0.8rem'>"
+                                    f"<b>Overall bias:</b> "
+                                    f"<span style='color:{bias_color}'>{pattern_bias_c}</span> · "
+                                    f"Bullish: {bull_n_c} · Bearish: {bear_n_c}"
+                                    f"</div>",
+                                    unsafe_allow_html=True
+                                )
+                                for sig in pattern_sigs_c:
+                                    st.caption(sig)
+
+                        # Override anbefaling hvis AI har nedjusteret
+                        if verdict_crypto["final_recommendation"] != verdict_crypto["original_recommendation"]:
+                            rec = verdict_crypto["final_recommendation"]
+                            color = verdict_crypto["verdict_color"]
+                    except Exception as e:
+                        if st.session_state.get("dev_mode", False):
+                            st.warning(f"⚠️ Smart verdict fejlede: {e}")
+                            import traceback
+                            with st.expander("🐛 Traceback"):
+                                st.code(traceback.format_exc())
+
                 st.markdown("---")
                 st.markdown("### 💰 Kursniveauer & Risk Management")
                 st.caption("Baseret på ATR, Bollinger Bands og 90/365 dages high/low")
@@ -4040,6 +4131,11 @@ elif st.session_state.active_view == "📊 Analyse":
     except Exception:
         dcf_upside = None
         fv_early = None
+
+    # 🆕 Beregn pattern-bias (bruges af Smart Verdict)
+    pattern_bias, bullish_n, bearish_n, pattern_signals = analyze_pattern_bias(
+        df_indicators, price
+    )
 
         # 🆕 ============ SMART AI VERDICT ============
     if SMART_VERDICT_AVAILABLE:
