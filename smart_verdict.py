@@ -17,6 +17,92 @@ def _safe_get(d, key, default=None):
     except (AttributeError, TypeError):
         return default
 
+def _get_asset_class_context(asset_class):
+    """
+    Returnerer asset-class specifik kontekst der påvirker hvordan
+    verdict tolkes og præsenteres.
+    """
+    contexts = {
+        "stock": {
+            "name": "aktie",
+            "sell_action": "📤 Overvej at exit positionen",
+            "sell_reason": (
+                "Modellen ser nedside-risiko. Hvis du har positionen, så reducér "
+                "eller sæt stram trailing stop. Hvis ikke, bliv væk."
+            ),
+            "correction_threshold": -10,
+            "bear_threshold": -20,
+            "typical_holding": "3-12 måneder",
+            "trend_persistence": "medium",
+        },
+        "crypto": {
+            "name": "kryptovaluta",
+            "sell_action": "⚠️ Reducér eller exit — krypto kan tabe 50%+ hurtigt",
+            "sell_reason": (
+                "Krypto har ekstrem volatilitet. Ved SÆLG-signal: reducér "
+                "position til kernen (5-10% af portfolio) eller exit helt. "
+                "Sæt stop-loss og genindstig ved tydelig bund."
+            ),
+            "correction_threshold": -25,
+            "bear_threshold": -50,
+            "typical_holding": "3-24 måneder",
+            "trend_persistence": "kort-medium",
+        },
+        "metal": {
+            "name": "ædelmetal",
+            "sell_action": "📊 Correction fase — vurder om long-term thesis stadig gælder",
+            "sell_reason": (
+                "Metaller har LANGE cyklusser (år, ikke måneder). En 10-20% "
+                "correction er NORMAL i et bull market. Hvis din grund til at eje "
+                "guld/sølv (inflation-hedge, geopolitik, USD-svaghed) stadig "
+                "gælder → HOLD. Sælg kun hvis long-term drivere er brudt."
+            ),
+            "correction_threshold": -10,
+            "bear_threshold": -25,
+            "typical_holding": "1-5 år",
+            "trend_persistence": "LANG (år)",
+        },
+        "forex": {
+            "name": "valuta-par",
+            "sell_action": "🔄 Vent på retracement — forex vender ofte",
+            "sell_reason": (
+                "Forex-trends kan vende på centralbank-beslutninger. Overvej "
+                "at exit og genindstig ved bedre entry. Undgå at holde "
+                "modstridende positioner over rente-meddelelser."
+            ),
+            "correction_threshold": -3,
+            "bear_threshold": -8,
+            "typical_holding": "1-4 uger",
+            "trend_persistence": "medium",
+        },
+    }
+    return contexts.get(asset_class, contexts["stock"])
+
+
+def _is_correction_vs_bear(hist, asset_class):
+    """
+    Skelner mellem 'normal correction' (behold) og 'bear market' (exit).
+    Kritisk for metaller!
+    """
+    if hist is None or hist.empty or len(hist) < 200:
+        return None, None
+
+    try:
+        recent = hist.tail(252) if len(hist) >= 252 else hist
+        peak = recent["Close"].max()
+        current = recent["Close"].iloc[-1]
+        drawdown = (current / peak - 1) * 100
+
+        ctx = _get_asset_class_context(asset_class)
+
+        if drawdown <= ctx["bear_threshold"]:
+            return "bear", drawdown
+        elif drawdown <= ctx["correction_threshold"]:
+            return "correction", drawdown
+        else:
+            return "normal", drawdown
+    except Exception:
+        return None, None
 
 def generate_smart_verdict(
     ticker, name, price, currency,
@@ -29,6 +115,7 @@ def generate_smart_verdict(
     pattern_bullish_n=0,
     pattern_bearish_n=0,
     dcf_upside=None,
+    asset_class="stock",  # 🆕 "stock", "crypto", "metal", "forex"
 ):
     """
     Genererer en smart helhedsvurdering der:
@@ -406,15 +493,53 @@ def generate_smart_verdict(
             if "stop" in adj.lower():
                 actions.append({"icon": "🛡️", "title": "Stop-loss justering", "text": adj})
 
-    elif "SÆLG" in final_recommendation:
-        actions.append({
-            "icon": "📤",
-            "title": "Overvej at exit positionen",
-            "text": (
-                "Modellen ser nedside-risiko. Hvis du har positionen, så reducér "
-                "eller sæt stram trailing stop. Hvis ikke, bliv væk."
-            )
-        })
+        elif "SÆLG" in final_recommendation:
+        # 🆕 Asset-class specifik SÆLG-anbefaling
+        ctx = _get_asset_class_context(asset_class)
+        market_phase, dd = _is_correction_vs_bear(hist, asset_class)
+
+        # For metaller: differentier mellem correction og bear market
+        if asset_class == "metal" and market_phase == "correction":
+            actions.append({
+                "icon": "🟡",
+                "title": "Correction fase — ikke bear market",
+                "text": (
+                    f"**{ctx['name'].capitalize()}** er i correction "
+                    f"({dd:.1f}% fra top), hvilket er NORMALT i lange bull markets. "
+                    f"Hvis din investerings-thesis (inflation-hedge, geopolitik, "
+                    f"USD-svaghed) stadig gælder → **HOLD & vær tålmodig**. "
+                    f"Sælg kun hvis fundamentale drivere er brudt."
+                )
+            })
+        elif asset_class == "metal" and market_phase == "bear":
+            actions.append({
+                "icon": "🐻",
+                "title": "Bear market — reducér eksponering",
+                "text": (
+                    f"**{ctx['name'].capitalize()}** er ned {dd:.1f}% fra top — "
+                    f"dette er større end typisk correction. Overvej at reducere "
+                    f"til core-position (25-50% af oprindelig). Genindstig ved "
+                    f"tydelige tegn på bunddannelse (RSI < 30 + bullish divergence)."
+                )
+            })
+        elif asset_class == "crypto":
+            actions.append({
+                "icon": "⚠️",
+                "title": "Krypto SÆLG-signal — vær aggressiv",
+                "text": ctx["sell_reason"]
+            })
+        elif asset_class == "forex":
+            actions.append({
+                "icon": "🔄",
+                "title": "Vent på retracement",
+                "text": ctx["sell_reason"]
+            })
+        else:  # stock (default)
+            actions.append({
+                "icon": "📤",
+                "title": "Overvej at exit positionen",
+                "text": ctx["sell_reason"]
+            })
     else:  # HOLD
         actions.append({
             "icon": "🟡",
@@ -431,7 +556,9 @@ def generate_smart_verdict(
     summary = _build_summary(
         ticker, name, recommendation, final_recommendation,
         score, final_confidence, regime, pos_in_range,
-        red_flags, yellow_flags, green_flags
+        red_flags, yellow_flags, green_flags,
+        asset_class=asset_class,  # 🆕
+        hist=hist,                 # 🆕
     )
 
     return {
@@ -477,33 +604,73 @@ def _get_verdict_color(rec):
 
 
 def _build_summary(ticker, name, orig_rec, final_rec, score, confidence,
-                   regime, pos_in_range, red_flags, yellow_flags, green_flags):
-    """Bygger en menneskelig sammenfatning"""
+                   regime, pos_in_range, red_flags, yellow_flags, green_flags,
+                   asset_class="stock", hist=None):
+    """Bygger en menneskelig sammenfatning med asset-class kontekst"""
     parts = []
     name = name or ticker
+    ctx = _get_asset_class_context(asset_class)
 
     # Opening
     if "VENT" in final_rec.upper() or "PAS PÅ" in final_rec.upper():
         parts.append(
             f"**{name}** ser umiddelbart fornuftig ud (score {score:.0f}/100), "
-            f"men der er **kritiske advarselsflag** der gør at jeg ikke ville købe lige nu."
+            f"men der er **kritiske advarselsflag** der gør at jeg ikke ville "
+            f"tage positionen lige nu."
         )
     elif final_rec != orig_rec:
         parts.append(
             f"**{name}** scorer {score:.0f}/100 og modellen siger oprindeligt "
-            f"**{orig_rec}**. Men når jeg ser på helheden, er der nuancer der gør "
-            f"at jeg vil justere til **{final_rec}**."
+            f"**{orig_rec}**. Men når jeg ser på helheden, er der nuancer der "
+            f"gør at jeg vil justere til **{final_rec}**."
         )
     elif len(green_flags) >= 3 and len(red_flags) == 0:
         parts.append(
             f"**{name}** ser stærk ud — score {score:.0f}/100, "
-            f"alle systemer bekræfter **{final_rec}**, og der er ingen kritiske advarsler."
+            f"alle systemer bekræfter **{final_rec}**, og der er ingen "
+            f"kritiske advarsler."
         )
     else:
         parts.append(
-            f"**{name}** scorer {score:.0f}/100 i {regime} marked. "
-            f"Anbefaling: **{final_rec}** — med nogle nuancer du skal være opmærksom på."
+            f"**{name}** scorer {score:.0f}/100 i {regime} regime. "
+            f"Anbefaling: **{final_rec}** — med nogle nuancer du skal være "
+            f"opmærksom på."
         )
+
+    # 🆕 Asset-class specifik kontekst
+    if asset_class == "metal" and "SÆLG" in final_rec.upper():
+        market_phase, dd = _is_correction_vs_bear(hist, asset_class)
+        if market_phase == "correction":
+            parts.append(
+                f"\n\n📊 **VIGTIGT — det er en correction, ikke et krak:** "
+                f"{ctx['name'].capitalize()} er faldet **{dd:.1f}%** fra top. "
+                f"Dette er NORMALT for metaller i lange bull markets. "
+                f"Metaller har trend-persistens over **{ctx['trend_persistence']}** — "
+                f"kortsigtede SÆLG-signaler bør IKKE få dig til at dumpe hele positionen "
+                f"hvis din long-term thesis (inflation, geopolitik, USD-svaghed) "
+                f"stadig gælder."
+            )
+        elif market_phase == "bear":
+            parts.append(
+                f"\n\n🐻 **Dette ser mere alvorligt ud:** "
+                f"{ctx['name'].capitalize()} er ned **{dd:.1f}%** — "
+                f"større end typisk correction. Vær forsigtig med at 'buy the dip' "
+                f"her, og respektér stop-losses."
+            )
+
+    elif asset_class == "crypto":
+        if "SÆLG" in final_rec.upper():
+            parts.append(
+                f"\n\n⚠️ **Krypto-kontekst:** Kryptovalutaer kan tabe **50%+** "
+                f"på uger. Ved SÆLG-signaler skal du være hurtig og disciplineret. "
+                f"Ingen 'buy and hold' gennem bear markets — sæt stops."
+            )
+        elif "KØB" in final_rec:
+            parts.append(
+                f"\n\n💎 **Krypto-kontekst:** Typisk holding-periode er "
+                f"**{ctx['typical_holding']}**. Sig ikke ja hvis du ikke kan "
+                f"håndtere 30-50% drawdown undervejs — det er normalt i crypto."
+            )
 
     # Key concern (highest priority red flag)
     if red_flags:
@@ -531,18 +698,27 @@ def _build_summary(ticker, name, orig_rec, final_rec, score, confidence,
                 f"**Vær mere defensiv** end normalt."
             )
         elif pos_in_range < 30:
-            parts.append(
-                f"\n\n💎 **Min ærlige holdning:** Det er den slags setup jeg kan lide — "
-                f"aktien handles tæt på 52w-low og har potentielt stort opside hvis "
-                f"thesis holder. Lavere downside-risk fra mean reversion."
-            )
+            if asset_class == "metal":
+                parts.append(
+                    f"\n\n💎 **Min ærlige holdning:** {ctx['name'].capitalize()} "
+                    f"handles nær 52-uger low ({pos_in_range:.0f}% i range). "
+                    f"For metaller er dette ofte **excellent entry** — "
+                    f"corrections i lange bull markets bliver typisk købt op igen. "
+                    f"Overvej at skalere ind gradvist."
+                )
+            else:
+                parts.append(
+                    f"\n\n💎 **Min ærlige holdning:** Det er den slags setup jeg kan "
+                    f"lide — {ctx['name']} handles tæt på 52w-low og har potentielt "
+                    f"stort opside hvis thesis holder."
+                )
 
     # Closing advice
     if "KØB" in final_rec and "VENT" not in final_rec.upper():
         if len(red_flags) == 0 and len(green_flags) >= 2:
             parts.append(
-                "\n\n✅ **Konklusion:** Solidt setup. Brug standard position, "
-                "respektér stop-loss, og lad winneren løbe."
+                f"\n\n✅ **Konklusion:** Solidt setup. Brug standard position, "
+                f"respektér stop-loss, og hold på **{ctx['typical_holding']}** horisont."
             )
         else:
             parts.append(
@@ -556,10 +732,31 @@ def _build_summary(ticker, name, orig_rec, final_rec, score, confidence,
             "Sæt en alarm og vend tilbage når flagene er væk."
         )
     elif "SÆLG" in final_rec.upper():
-        parts.append(
-            "\n\n📤 **Konklusion:** Modellen ser klart nedside. "
-            "Hvis du har positionen, beskyt din kapital."
-        )
+        # 🆕 Asset-class specifik konklusion
+        if asset_class == "metal":
+            market_phase, dd = _is_correction_vs_bear(hist, asset_class)
+            if market_phase == "correction":
+                parts.append(
+                    "\n\n🟡 **Konklusion:** Behold hvis din long-term thesis "
+                    "stadig gælder. Corrections i metaller varer typisk 3-6 måneder "
+                    "før ny opgang. Panik ikke."
+                )
+            else:
+                parts.append(
+                    "\n\n📤 **Konklusion:** Reducér til core-position eller exit. "
+                    "Genindstig når teknisk billede vender."
+                )
+        elif asset_class == "crypto":
+            parts.append(
+                "\n\n📤 **Konklusion:** I krypto er SÆLG-signaler alvorlige — "
+                "bear markets kan tabe 70-80%. Beskyt din kapital, genindstig "
+                "senere ved tydelig bund."
+            )
+        else:
+            parts.append(
+                "\n\n📤 **Konklusion:** Modellen ser klart nedside. "
+                "Hvis du har positionen, beskyt din kapital."
+            )
 
     return "".join(parts)
 
