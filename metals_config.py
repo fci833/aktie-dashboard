@@ -1,141 +1,170 @@
 """
 Konfiguration for ædelmetaller og relaterede råvarer.
+Klart adskilt: FYSISK spot vs ETF vs MINING-aktier.
 """
 
 METALS_UNIVERSE = {
-    # ============ ÆDELMETALLER (Futures - spot pris) ============
+    # ============ 🥇 FYSISK SPOT-PRIS (futures = spot) ============
     "GC=F": {
-        "name": "Guld (Futures)",
-        "category": "Ædelmetal",
-        "type": "future",
+        "name": "🥇 GULD (fysisk spot-pris)",
+        "category": "Fysisk metal",
+        "type": "spot",
         "unit": "USD/oz",
-        "description": "Guld spot-pris. Den ultimative safe haven.",
+        "description": "Fysisk guld spot-pris i USD per ounce. Den ægte guldpris - det man betaler for guldbarrer/-mønter. Handles via futures-kontrakter (COMEX).",
     },
     "SI=F": {
-        "name": "Sølv (Futures)",
-        "category": "Ædelmetal",
-        "type": "future",
+        "name": "🥈 SØLV (fysisk spot-pris)",
+        "category": "Fysisk metal",
+        "type": "spot",
         "unit": "USD/oz",
-        "description": "Sølv - mere volatilt end guld, delvist industrielt.",
+        "description": "Fysisk sølv spot-pris. Delvist industrielt metal (solceller, elektronik) - derfor mere volatilt end guld.",
     },
     "PL=F": {
-        "name": "Platin (Futures)",
-        "category": "Ædelmetal",
-        "type": "future",
+        "name": "🔩 PLATIN (fysisk spot-pris)",
+        "category": "Fysisk metal",
+        "type": "spot",
         "unit": "USD/oz",
-        "description": "Platin - industriel efterspørgsel (biler).",
+        "description": "Fysisk platin spot-pris. Bruges primært i bilkatalysatorer, smykker og medicinsk udstyr.",
     },
     "PA=F": {
-        "name": "Palladium (Futures)",
-        "category": "Ædelmetal",
-        "type": "future",
+        "name": "⚙️ PALLADIUM (fysisk spot-pris)",
+        "category": "Fysisk metal",
+        "type": "spot",
         "unit": "USD/oz",
-        "description": "Palladium - katalysatorer, meget volatilt.",
+        "description": "Fysisk palladium spot-pris. Ekstremt volatilt - bruges primært i benzinbil-katalysatorer.",
     },
 
-    # ============ ETF'er (nemmere at handle) ============
+    # ============ 📊 ETF'er (papir-metal, handles som aktier) ============
     "GLD": {
-        "name": "SPDR Gold Shares",
+        "name": "📊 SPDR Gold Shares ETF",
         "category": "Metal-ETF",
         "type": "etf",
         "unit": "USD",
-        "description": "Størst guld-ETF. 1 andel ≈ 1/10 oz guld.",
+        "description": "Størst guld-ETF. 1 andel ≈ 1/10 oz guld. Handles som en aktie via din normale broker.",
     },
     "IAU": {
-        "name": "iShares Gold Trust",
+        "name": "📊 iShares Gold Trust",
         "category": "Metal-ETF",
         "type": "etf",
         "unit": "USD",
-        "description": "Billigere alternativ til GLD (lavere expense ratio).",
+        "description": "Billigere guld-ETF alternativ til GLD (lavere expense ratio 0.25% vs 0.40%).",
     },
     "SLV": {
-        "name": "iShares Silver Trust",
+        "name": "📊 iShares Silver Trust",
         "category": "Metal-ETF",
         "type": "etf",
         "unit": "USD",
-        "description": "Største sølv-ETF.",
+        "description": "Største sølv-ETF. 1 andel ≈ 1 oz sølv.",
     },
     "PPLT": {
-        "name": "Aberdeen Platinum ETF",
+        "name": "📊 Aberdeen Platinum ETF",
         "category": "Metal-ETF",
         "type": "etf",
         "unit": "USD",
-        "description": "Platinum ETF.",
+        "description": "Platinum ETF - fysisk backet.",
     },
     "PALL": {
-        "name": "Aberdeen Palladium ETF",
+        "name": "📊 Aberdeen Palladium ETF",
         "category": "Metal-ETF",
         "type": "etf",
         "unit": "USD",
-        "description": "Palladium ETF.",
+        "description": "Palladium ETF - fysisk backet.",
+    },
+    "PHYS": {
+        "name": "📊 Sprott Physical Gold Trust",
+        "category": "Metal-ETF",
+        "type": "etf",
+        "unit": "USD",
+        "description": "100% fysisk guld-ETF (indløselig mod fysiske barrer). Populær hos hardcore guld-fans.",
+    },
+    "PSLV": {
+        "name": "📊 Sprott Physical Silver Trust",
+        "category": "Metal-ETF",
+        "type": "etf",
+        "unit": "USD",
+        "description": "100% fysisk sølv-ETF - indløselig mod barrer.",
     },
 
-    # ============ MINING-AKTIER (indirekte eksponering) ============
+    # ============ ⛏️ MINING-AKTIER (indirekte eksponering) ============
     "GDX": {
-        "name": "VanEck Gold Miners ETF",
+        "name": "⛏️ VanEck Gold Miners ETF",
         "category": "Mining",
         "type": "etf",
         "unit": "USD",
-        "description": "Store guldminer-selskaber. Gearet eksponering til guld.",
+        "description": "Store guldminer-selskaber. Gearet eksponering til guld - kan stige/falde 2-3x mere end guldprisen.",
     },
     "GDXJ": {
-        "name": "VanEck Junior Gold Miners",
+        "name": "⛏️ VanEck Junior Gold Miners",
         "category": "Mining",
         "type": "etf",
         "unit": "USD",
         "description": "Små/mellemstore guldminer-selskaber - HØJ risk/reward.",
     },
     "SIL": {
-        "name": "Global X Silver Miners",
+        "name": "⛏️ Global X Silver Miners",
         "category": "Mining",
         "type": "etf",
         "unit": "USD",
-        "description": "Sølvminer-selskaber.",
+        "description": "Sølvminer-selskaber - endnu mere geared end guldminer.",
     },
     "NEM": {
-        "name": "Newmont Corporation",
+        "name": "⛏️ Newmont Corporation",
         "category": "Mining",
         "type": "stock",
         "unit": "USD",
-        "description": "Verdens største guldminer-selskab.",
+        "description": "Verdens største guldminer-selskab. Solid, diversificeret producent.",
     },
     "GOLD": {
-        "name": "Barrick Gold",
+        "name": "⛏️ Barrick Gold",
         "category": "Mining",
         "type": "stock",
         "unit": "USD",
-        "description": "En af verdens største guldproducenter.",
+        "description": "En af verdens største guldproducenter. Global diversificering.",
     },
     "AEM": {
-        "name": "Agnico Eagle Mines",
+        "name": "⛏️ Agnico Eagle Mines",
         "category": "Mining",
         "type": "stock",
         "unit": "USD",
-        "description": "Canadisk guldminer med lave omkostninger.",
+        "description": "Canadisk guldminer med meget lave produktionsomkostninger. Kvalitetsvalg.",
+    },
+    "FNV": {
+        "name": "⛏️ Franco-Nevada (royalty)",
+        "category": "Mining",
+        "type": "stock",
+        "unit": "USD",
+        "description": "Royalty-selskab (køber rettigheder fra minerne). Lavere risiko end miner selv.",
+    },
+    "WPM": {
+        "name": "⛏️ Wheaton Precious Metals",
+        "category": "Mining",
+        "type": "stock",
+        "unit": "USD",
+        "description": "Streaming-selskab (køber sølv/guld til fast pris). Lavere risiko model.",
     },
 
-    # ============ INDUSTRIELLE METALLER (bonus) ============
+    # ============ 🏭 INDUSTRIELLE METALLER ============
     "HG=F": {
-        "name": "Kobber (Futures)",
+        "name": "🏭 Kobber (fysisk spot-pris)",
         "category": "Industri-metal",
-        "type": "future",
+        "type": "spot",
         "unit": "USD/lb",
-        "description": "Kobber - 'Dr. Copper' - økonomisk indikator.",
+        "description": "Kobber - 'Dr. Copper' - regnes som økonomisk indikator (stiger når økonomien vokser).",
     },
     "CPER": {
-        "name": "United States Copper Fund",
+        "name": "📊 US Copper Fund ETF",
         "category": "Industri-metal",
         "type": "etf",
         "unit": "USD",
-        "description": "Kobber-ETF for private investorer.",
+        "description": "Kobber-ETF for private investorer der ikke kan handle futures.",
     },
 }
 
 
 METALS_UNIVERSES = {
-    "🥇 Kun ædelmetaller (Futures)": ["GC=F", "SI=F", "PL=F", "PA=F"],
-    "📊 Metal-ETF'er": ["GLD", "IAU", "SLV", "PPLT", "PALL"],
-    "⛏️ Mining-aktier & ETF'er": ["GDX", "GDXJ", "SIL", "NEM", "GOLD", "AEM"],
+    "🥇 FYSISK spot-pris (guld/sølv/platin)": ["GC=F", "SI=F", "PL=F", "PA=F", "HG=F"],
+    "📊 Metal-ETF'er (nemmest at handle)": ["GLD", "IAU", "SLV", "PPLT", "PALL", "PHYS", "PSLV"],
+    "⛏️ Mining-aktier & ETF'er": ["GDX", "GDXJ", "SIL", "NEM", "GOLD", "AEM", "FNV", "WPM"],
     "🏭 Industri-metaller": ["HG=F", "CPER"],
     "🌍 Alle metaller": list(METALS_UNIVERSE.keys()),
 }
