@@ -2412,9 +2412,9 @@ elif st.session_state.active_view == "🥇 Metaller":
                             earnings_data=None,
                             pattern_bias=pattern_bias_m,
                             pattern_bullish_n=bull_n_m,
-                            pattern_bearish_n=bearish_n_c,
+                            pattern_bearish_n=bear_n_m,           # ✅ FIX 1
                             dcf_upside=None,
-                            asset_class="crypto",  # 🆕
+                            asset_class="metal",                   # ✅ FIX 2
                         )
                         render_smart_verdict(verdict_m, m_symbol, m_info["longName"], m_price, "USD")
 
