@@ -4200,6 +4200,36 @@ elif st.session_state.active_view == "📊 Analyse":
             )
             render_smart_verdict(verdict, ticker, company_name_temp, price, currency)
 
+            # 🆕 VIS pattern-signaler så brugeren kan se HVAD AI'en tæller
+            if pattern_signals:
+                with st.expander(
+                    f"🔍 Tekniske signaler brugt i AI-vurdering "
+                    f"(bias: {pattern_bias} · {bullish_n} bullish vs {bearish_n} bearish)"
+                ):
+                    bias_color = (
+                        "#16a34a" if pattern_bias == "BULLISH"
+                        else "#ef4444" if pattern_bias == "BEARISH"
+                        else "#eab308"
+                    )
+                    st.markdown(
+                        f"<div style='background:{bias_color}22;padding:0.8rem;"
+                        f"border-radius:8px;border-left:4px solid {bias_color};"
+                        f"margin-bottom:0.8rem'>"
+                        f"<b>Overall bias:</b> "
+                        f"<span style='color:{bias_color}'>{pattern_bias}</span> · "
+                        f"Bullish signaler: {bullish_n} · Bearish signaler: {bearish_n}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                    st.caption(
+                        "💡 **OBS:** Dette er tekniske **indikator-signaler** "
+                        "(RSI, MACD, SMA, BB, momentum) — ikke rigtige chart patterns. "
+                        "Rigtige chart patterns findes i **📊 Visuel chart-analyse** nedenfor."
+                    )
+                    st.markdown("**Detaljerede signaler:**")
+                    for sig in pattern_signals:
+                        st.markdown(f"- {sig}")
+
             # Override anbefaling hvis AI har nedjusteret
             if verdict["final_recommendation"] != verdict["original_recommendation"]:
                 rec = verdict["final_recommendation"]
